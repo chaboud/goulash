@@ -73,5 +73,12 @@ should turn into edits on the linked pages.
   engine it found and what data flows where?
 - Latency budget for suggestions; when does the engine *proactively*
   prepare one vs. only on demand (cost/privacy trade-off)?
+- Rules vendor: which curated subset of thefuck's rules ships first;
+  confidence threshold for passive vending —
+  [suggestion-vendors](../architecture/suggestion-vendors.md).
+- Is a tiny bundled continuation/spell-check model ever worth it beyond
+  rules + history + n-grams?
+- `#/` command set v1 and whether commands take args (`#/model watcher`) —
+  [settings-and-nav](../interaction/settings-and-nav.md).
 - Autonomy dial: scope-grant language and UI for `accept-each` /
   `auto-evaluated` modes — [chat-mode](../interaction/chat-mode.md).

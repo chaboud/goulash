@@ -33,6 +33,28 @@ Goulash's space is navigated **spatially, D-pad style**:
    `config.toml` immediately; no separate "save" step, no drift between
    UI and file.
 
+## `#/` commands: direct addressing
+
+Browsing (remote/menus) is for discovery; **`#/` commands are for going
+straight there**. At the prompt, `#/name` opens a quick selector or
+status surface in goulash's space:
+
+```
+#/status      engine, provider, watcher health, memory-tree stats
+#/model       pick the model for a role (watcher/thinker)
+#/provider    pick/configure a provider, run bootstrap
+#/split       jump straight to the split-height adjuster
+#/help        list available #/ commands
+```
+
+- Selectors are the same widgets as the menus — arrows, Enter, Esc —
+  and obey the same [write-back rule](../architecture/implementation.md).
+- `#/` is unambiguous inside the `#` namespace: a leading `/` can't
+  start a sensible LLM question, and tab-completion on `#/` can list the
+  command set right at the prompt.
+- Same commands work from `##` chat as `/status`, `/model`, … (the `#`
+  is already implied there).
+
 ## Menus too — "both" is the answer
 
 Spatial shortcuts cover the handful of live-tunable things (split

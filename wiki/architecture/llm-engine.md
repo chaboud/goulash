@@ -19,15 +19,17 @@ the best available engine to the watcher role:
 3. offer: goulash bootstrap local             → fetch/build llama.cpp +
                                                  vetted small model
 4. API key present (env or providers.toml)    → cloud provider
-5. none of the above                          → run dumb: overlay,
-                                                 history, and status rows
-                                                 all work; LLM features
-                                                 politely absent
+5. none of the above                          → no-LLM tier: overlay,
+                                                 history, status rows,
+                                                 and the deterministic
+                                                 suggestion vendors
 ```
 
-Level 5 matters: the [PTY overlay](pty-overlay.md) and
-[block history](block-history.md) must never require an LLM to be
-useful.
+Level 5 matters — and it isn't dumb: the [PTY overlay](pty-overlay.md)
+and [block history](block-history.md) never require an LLM, and the
+rules/history/n-gram [suggestion vendors](suggestion-vendors.md)
+(thefuck-style corrections, fish-style history matches) make goulash
+worth installing before any model is configured.
 
 ### Platform engines (mac-first notes)
 

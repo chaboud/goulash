@@ -11,9 +11,14 @@ terminal.
 
 ```
 #    ask     one-shot aside to the LLM, answered inline
+#/   command quick selectors: #/status, #/model, #/provider, …
 ##   chat    conversational mode; LLM gets tools, can drive delegated work
 ↓    pull    accept an async suggestion into the command line
+\#   escape  literal comment, passed to the shell untouched
 ```
+
+`#/` commands are goulash controls, not LLM asides — they open the same
+selector widgets as the menus ([settings-and-nav](settings-and-nav.md)).
 
 ## 1. The `#` aside
 

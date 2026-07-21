@@ -1,8 +1,11 @@
 # The Suggestion List
 
-The LLM is **totally async** to interaction. It vends suggestions into a
-list surfaced in the [status rows](../architecture/status-rows.md); the
-user pulls from it when *they* want ([down-arrow protocol](down-arrow-protocol.md)).
+Suggestion sources are **totally async** to interaction. Pluggable
+[vendors](../architecture/suggestion-vendors.md) — deterministic rules,
+history matching, n-grams, and LLMs — vend into one list surfaced in the
+[status rows](../architecture/status-rows.md); each entry carries vendor
+attribution. The user pulls from it when *they* want
+([down-arrow protocol](down-arrow-protocol.md)).
 
 ## Semantics
 

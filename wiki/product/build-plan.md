@@ -32,21 +32,28 @@ invariant.
   [block-history](../architecture/block-history.md),
   [opaque-blocks](../architecture/opaque-blocks.md)
 
-## Milestone 3 — the `#` aside
-Intercept `#`-prefixed lines at PROMPT, assemble context from recent
-block history (flat recency window is fine here — the full
-[memory hierarchy](../architecture/memory-hierarchy.md) comes later),
-answer inline. First LLM integration, provider-pluggable from the start.
-- Spec: [interaction model](../interaction/model.md),
-  [llm-engine](../architecture/llm-engine.md)
-
-## Milestone 4 — suggestion list + down-arrow
-Async suggestion vending into the status rows; freeze-on-focus,
-ID-bound acceptance, staleness invalidation. ZLE widget for zsh,
-`bind -x` prototype for bash, bracketed-paste injection as the generic
-path. Record accept/edit/ignore.
-- Spec: [suggestion-list](../interaction/suggestion-list.md),
+## Milestone 3 — suggestion list + deterministic vendors (no LLM yet)
+Async vending into the status rows; freeze-on-focus, ID-bound
+acceptance, staleness invalidation. ZLE widget for zsh, `bind -x`
+prototype for bash, bracketed-paste injection as the generic path.
+First vendors are the **free ones** — rules (thefuck-style corrections),
+history/fuzzy, n-gram — so this milestone needs no LLM at all and is
+already the zero-setup demo (`gti status` → fix waiting in the list).
+Record accept/edit/ignore.
+- Spec: [suggestion-vendors](../architecture/suggestion-vendors.md),
+  [suggestion-list](../interaction/suggestion-list.md),
   [down-arrow-protocol](../interaction/down-arrow-protocol.md)
+
+## Milestone 4 — the `#` aside + `#/` commands
+Intercept `#`-prefixed lines at PROMPT: `#/` opens selector widgets
+(`#/status`, `#/provider`, …); plain `#` assembles context from recent
+block history (flat recency window is fine here — the full
+[memory hierarchy](../architecture/memory-hierarchy.md) comes later) and
+answers inline. First LLM integration, provider-pluggable from the
+start, probe chain live.
+- Spec: [interaction model](../interaction/model.md),
+  [settings-and-nav](../interaction/settings-and-nav.md),
+  [llm-engine](../architecture/llm-engine.md)
 
 ## Milestone 5 — memory hierarchy + watcher tier
 Rolling cleanup loop (local model if available) setting region markers;
