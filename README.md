@@ -13,9 +13,13 @@ and the [build plan](wiki/product/build-plan.md).
 
 ## Status
 
-Milestone 0 in progress: transparent PTY wrapper with the reserved
-status row (shrunken-winsize trick), config loading, resize and
-exit-code propagation.
+Working today (no LLM yet): transparent PTY wrapper with reserved
+status row, session sensing and transcripts, shell integration
+(command blocks with text/exit/cwd), and deterministic thefuck-style
+suggestions — typo a command, and with zsh integration press **Down**
+(past end of history) to pull the fix into your prompt; `#` asides are
+intercepted and recorded. Generic shells: **Alt-Down**. LLM engines
+land next.
 
 ## Build & run
 

@@ -59,7 +59,7 @@ invariant.
   IDs (currently a flat event stream that implies blocks), opaque-block
   lifecycle summaries for TUI children, zsh adapter field-testing.
 
-## Milestone 3 — suggestion list + deterministic vendors (no LLM yet)
+## Milestone 3 — suggestion list + deterministic vendors (no LLM yet) 🚧 in progress
 Async vending into the status rows; freeze-on-focus, ID-bound
 acceptance, staleness invalidation. ZLE widget for zsh, `bind -x`
 prototype for bash, bracketed-paste injection as the generic path.
@@ -70,6 +70,22 @@ Record accept/edit/ignore.
 - Spec: [suggestion-vendors](../architecture/suggestion-vendors.md),
   [suggestion-list](../interaction/suggestion-list.md),
   [down-arrow-protocol](../interaction/down-arrow-protocol.md)
+- **Done**: rules vendor v1 (command-not-found PATH fuzzy with
+  subsequence-preferring tie-break, git set-upstream lift, git similar
+  command, permission-denied→sudo, cd typo) firing on failed blocks
+  with output-tail context; ID'd suggestion list with insert-at-top and
+  cwd-change staleness clear; top suggestion shown in the bar with the
+  `↓` affordance; **plain Down in zsh** (ZLE binding: history-forward
+  always wins, suggestion pull only past end of history); **`#` aside
+  interception in zsh** (accept-line wrapper → OSC `Q` mark, nothing
+  executes, `\#` escapes, aside recorded — engine hookup is M4);
+  Alt-Down + bracketed-paste injection as the generic path (bash
+  today); suggest/accept/aside events in the transcript; unit + e2e
+  coverage.
+- **Remaining**: history/fuzzy and n-gram vendors, scrollable list UI
+  (today: top-of-list pull only), bash Readline Down-widget parity,
+  aside history-recall in zsh (`print -s` in widget not sticking),
+  freeze-on-focus semantics (needs the list UI).
 
 ## Milestone 4 — the `#` aside + `#/` commands
 Intercept `#`-prefixed lines at PROMPT: `#/` opens selector widgets

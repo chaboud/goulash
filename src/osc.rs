@@ -15,6 +15,10 @@ pub enum Mark {
     CmdEnd(i32),
     /// P;<base64 cwd> — working directory report
     Cwd(String),
+    /// Q;<base64 text> — a `#` aside intercepted at accept-line
+    Ask(String),
+    /// S — line editor requests the top suggestion be pulled in
+    Pull,
 }
 
 const MARKER: &[u8] = b"\x1b]7770;";
@@ -33,13 +37,15 @@ impl OscFilter {
         }
     }
 
-    /// Returns (clean bytes to forward, marks found).
-    pub fn feed(&mut self, chunk: &[u8]) -> (Vec<u8>, Vec<Mark>) {
+    /// Returns clean bytes and marks as ordered segments, so callers can
+    /// attribute output to the correct command block even when the
+    /// B/output/D sequence of a fast command arrives in one read.
+    pub fn feed(&mut self, chunk: &[u8]) -> Vec<Seg> {
         let mut data = std::mem::take(&mut self.pending);
         data.extend_from_slice(chunk);
 
-        let mut out = Vec::with_capacity(data.len());
-        let mut marks = Vec::new();
+        let mut segs: Vec<Seg> = Vec::new();
+        let mut run: Vec<u8> = Vec::new();
         let mut i = 0;
         while i < data.len() {
             if data[i] != 0x1b {
@@ -48,21 +54,22 @@ impl OscFilter {
                     .position(|&b| b == 0x1b)
                     .map(|p| i + p)
                     .unwrap_or(data.len());
-                out.extend_from_slice(&data[i..next]);
+                run.extend_from_slice(&data[i..next]);
                 i = next;
                 continue;
             }
             let rest = &data[i..];
             let m = MARKER.len().min(rest.len());
             if rest[..m] != MARKER[..m] {
-                out.push(0x1b);
+                run.push(0x1b);
                 i += 1;
                 continue;
             }
             if m < MARKER.len() {
                 // Partial marker at the end of the chunk; wait for more.
                 self.pending = rest.to_vec();
-                return (out, marks);
+                flush_run(&mut segs, &mut run);
+                return segs;
             }
             // Full marker: look for BEL or ST terminator.
             let body_start = i + MARKER.len();
@@ -85,7 +92,8 @@ impl OscFilter {
             match end {
                 Some((e, tlen)) => {
                     if let Some(mark) = parse_mark(&data[body_start..e]) {
-                        marks.push(mark);
+                        flush_run(&mut segs, &mut run);
+                        segs.push(Seg::Mark(mark));
                     }
                     i = e + tlen;
                 }
@@ -94,13 +102,28 @@ impl OscFilter {
                         self.pending = data[i..].to_vec();
                     } else {
                         // Unterminated and oversized: give up, forward raw.
-                        out.extend_from_slice(&data[i..]);
+                        run.extend_from_slice(&data[i..]);
                     }
-                    return (out, marks);
+                    flush_run(&mut segs, &mut run);
+                    return segs;
                 }
             }
         }
-        (out, marks)
+        flush_run(&mut segs, &mut run);
+        segs
+    }
+}
+
+/// One ordered piece of a filtered chunk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Seg {
+    Bytes(Vec<u8>),
+    Mark(Mark),
+}
+
+fn flush_run(segs: &mut Vec<Seg>, run: &mut Vec<u8>) {
+    if !run.is_empty() {
+        segs.push(Seg::Bytes(std::mem::take(run)));
     }
 }
 
@@ -124,6 +147,8 @@ fn parse_mark(body: &[u8]) -> Option<Mark> {
             .ok()
             .map(Mark::CmdEnd),
         b"P" => Some(Mark::Cwd(b64(payload)?)),
+        b"Q" => Some(Mark::Ask(b64(payload)?)),
+        b"S" => Some(Mark::Pull),
         _ => None,
     }
 }
@@ -137,6 +162,18 @@ mod tests {
         base64::engine::general_purpose::STANDARD.encode(s)
     }
 
+    fn split(segs: Vec<Seg>) -> (Vec<u8>, Vec<Mark>) {
+        let mut bytes = Vec::new();
+        let mut marks = Vec::new();
+        for s in segs {
+            match s {
+                Seg::Bytes(b) => bytes.extend(b),
+                Seg::Mark(m) => marks.push(m),
+            }
+        }
+        (bytes, marks)
+    }
+
     #[test]
     fn passthrough_and_extract() {
         let mut f = OscFilter::new();
@@ -144,7 +181,7 @@ mod tests {
             "hello\x1b]7770;A\x07world\x1b]7770;B;{}\x07!",
             enc("ls -la")
         );
-        let (clean, marks) = f.feed(input.as_bytes());
+        let (clean, marks) = split(f.feed(input.as_bytes()));
         assert_eq!(clean, b"helloworld!");
         assert_eq!(
             marks,
@@ -153,27 +190,42 @@ mod tests {
     }
 
     #[test]
-    fn split_across_chunks() {
+    fn ordering_preserved() {
         let mut f = OscFilter::new();
-        let full = format!("a\x1b]7770;D;3\x07b");
+        let input = format!(
+            "\x1b]7770;B;{}\x07output-text\x1b]7770;D;1\x07",
+            enc("false")
+        );
+        let segs = f.feed(input.as_bytes());
+        assert_eq!(
+            segs,
+            vec![
+                Seg::Mark(Mark::CmdStart("false".to_string())),
+                Seg::Bytes(b"output-text".to_vec()),
+                Seg::Mark(Mark::CmdEnd(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn split_across_chunks() {
+        let full = "a\x1b]7770;D;3\x07b";
         let bytes = full.as_bytes();
         for cut in 1..bytes.len() {
-            let mut f2 = OscFilter::new();
-            let (mut clean, mut marks) = f2.feed(&bytes[..cut]);
-            let (c2, m2) = f2.feed(&bytes[cut..]);
-            clean.extend_from_slice(&c2);
+            let mut f = OscFilter::new();
+            let (mut clean, mut marks) = split(f.feed(&bytes[..cut]));
+            let (c2, m2) = split(f.feed(&bytes[cut..]));
+            clean.extend(c2);
             marks.extend(m2);
             assert_eq!(clean, b"ab", "cut at {cut}");
             assert_eq!(marks, vec![Mark::CmdEnd(3)], "cut at {cut}");
         }
-        let _ = f;
     }
 
     #[test]
     fn st_terminator_and_unknown_osc() {
         let mut f = OscFilter::new();
-        let (clean, marks) = f.feed(b"x\x1b]7770;A\x1b\\y\x1b]0;title\x07z");
-        // Goulash mark extracted; unknown OSC 0 forwarded verbatim.
+        let (clean, marks) = split(f.feed(b"x\x1b]7770;A\x1b\\y\x1b]0;title\x07z"));
         assert_eq!(clean, b"xy\x1b]0;title\x07z" as &[u8]);
         assert_eq!(marks, vec![Mark::Prompt]);
     }
@@ -182,7 +234,7 @@ mod tests {
     fn cwd_mark() {
         let mut f = OscFilter::new();
         let input = format!("\x1b]7770;P;{}\x07", enc("/home/user/proj"));
-        let (clean, marks) = f.feed(input.as_bytes());
+        let (clean, marks) = split(f.feed(input.as_bytes()));
         assert!(clean.is_empty());
         assert_eq!(marks, vec![Mark::Cwd("/home/user/proj".to_string())]);
     }

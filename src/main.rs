@@ -6,6 +6,7 @@ mod sense;
 mod session;
 mod status;
 mod term;
+mod vendor;
 
 use std::os::fd::AsRawFd;
 use std::process::ExitCode;

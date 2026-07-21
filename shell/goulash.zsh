@@ -27,3 +27,37 @@ __goulash_preexec() {
 autoload -Uz add-zsh-hook
 add-zsh-hook precmd __goulash_precmd
 add-zsh-hook preexec __goulash_preexec
+
+# `#` aside: intercepted at accept-line, shipped to goulash over the OSC
+# channel — never executed, kept in history. `\#` escapes to a real
+# comment line for the shell.
+__goulash_accept_line() {
+  case "$BUFFER" in
+    '\#'*)
+      BUFFER="${BUFFER#\\}"
+      ;;
+    '#'*)
+      __goulash_osc "Q;$(__goulash_b64 "$BUFFER")"
+      print -s -- "$BUFFER"
+      BUFFER=""
+      zle reset-prompt
+      return 0
+      ;;
+  esac
+  zle .accept-line
+}
+zle -N accept-line __goulash_accept_line
+
+# Down arrow: ordinary movement always wins — multiline buffers and
+# history-forward behave exactly as before. Only past the end of history
+# does Down ask goulash to pull the top suggestion into the line.
+__goulash_down_or_suggest() {
+  if [[ "$RBUFFER" == *$'\n'* ]] || (( HISTNO < HISTCMD )); then
+    zle down-line-or-history
+    return
+  fi
+  __goulash_osc "S"
+}
+zle -N __goulash_down_or_suggest
+bindkey '^[[B' __goulash_down_or_suggest
+bindkey '^[OB' __goulash_down_or_suggest

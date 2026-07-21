@@ -222,6 +222,35 @@ def test_shell_hooks():
     check("marks stripped from recorded output", b"\x1b]7770;" not in raw_out)
 
 
+def test_suggestions():
+    print("rules vendor + Alt-Down acceptance:")
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    rc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "shell", "goulash.bash"))
+    proc, mfd = spawn(["bash", "--rcfile", rc, "-i"], home=home)
+    read_until(mfd, rb"\$")
+    os.write(mfd, b"lls\r")  # typo'd ls -> command not found -> rules vendor
+    out = read_until(mfd, "↓".encode())  # bar redraw with the suggestion arrow
+    check("suggestion shown in bar", "↓ ls".encode() in out, out[-200:])
+
+    if sys.platform.startswith("linux"):  # bracketed paste needs readline >= 8.1
+        os.write(mfd, b"\x1b[1;3B")  # Alt-Down: pull suggestion into the line
+        time.sleep(0.5)
+        os.write(mfd, b"\r")
+        out = read_until(mfd, rb"Cargo\.toml")
+        check("accepted suggestion executed", b"Cargo.toml" in out, out[-200:])
+
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+
+    logs = glob.glob(os.path.join(home, "history", "session-*.jsonl"))
+    events = [json.loads(line) for line in open(logs[0])] if logs else []
+    sugg = [e for e in events if e["ev"] == "suggest"]
+    check("suggest event recorded", any(s["cmd"] == "ls" for s in sugg), f"{sugg}")
+    check("suggestion has a why", any("PATH" in s["why"] for s in sugg))
+    if sys.platform.startswith("linux"):
+        check("accept event recorded", any(e["ev"] == "accept" for e in events))
+
+
 def test_non_tty():
     print("refuses to run without a tty:")
     r = subprocess.run([BIN, "true"], capture_output=True)
@@ -237,6 +266,7 @@ def main():
         test_erase_below,
         test_state_log,
         test_shell_hooks,
+        test_suggestions,
         test_non_tty,
     ):
         try:

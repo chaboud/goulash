@@ -1,10 +1,11 @@
 use crate::config::Config;
-use crate::osc::{Mark, OscFilter};
+use crate::osc::{Mark, OscFilter, Seg};
 use crate::pty;
 use crate::record::Recorder;
 use crate::sense::{self, HookPhase, Sensor, State};
 use crate::status;
 use crate::term::{self, RawGuard, Size};
+use crate::vendor::{self, RulesVendor};
 use nix::poll::{PollFd, PollFlags, PollTimeout};
 use nix::sys::signal::{self, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use std::io;
@@ -166,6 +167,29 @@ fn fixup_bytes(layout: &Layout, screen: &vt100::Screen, bar: &str) -> Vec<u8> {
     out
 }
 
+#[allow(clippy::type_complexity)]
+fn render_bar(
+    layout: &Layout,
+    shell_name: &str,
+    st: &State,
+    hook: Option<HookPhase>,
+    suggestions: &[(u64, String, String)],
+    notice: &Option<String>,
+) -> String {
+    // A notice (e.g. an acknowledged aside) displays verbatim; a pending
+    // suggestion gets the pull-arrow affordance.
+    let extra = notice
+        .clone()
+        .or_else(|| suggestions.first().map(|s| format!("\u{2193} {}", s.1)));
+    status::render(
+        layout.real,
+        layout.inner().rows,
+        shell_name,
+        sense::label(st, hook),
+        extra.as_deref(),
+    )
+}
+
 pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let real = term::get_size(STDOUT)?;
     if real.rows < 4 || real.cols < 10 {
@@ -223,11 +247,20 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
 
     let mut oscf = OscFilter::new();
     let mut hook: Option<HookPhase> = None;
-    let mut last_bar = status::render(
-        layout.real,
-        inner_rows,
+    let mut rules = RulesVendor::new();
+    let mut suggestions: Vec<(u64, String, String)> = Vec::new();
+    let mut next_sid: u64 = 1;
+    let mut cur_cmd: Option<String> = None;
+    let mut block_tail: Vec<u8> = Vec::new();
+    let mut last_cwd = String::new();
+    let mut notice: Option<String> = None;
+    let mut last_bar = render_bar(
+        &layout,
         &shell_name,
-        sense::label(&cur_state, hook),
+        &cur_state,
+        hook,
+        &suggestions,
+        &notice,
     );
     write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_bar))?;
     if !typed_ahead.is_empty() {
@@ -274,50 +307,106 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
             match read_some(master, &mut buf) {
                 Ok(0) => break 'session,
                 Ok(len) => {
-                    // Extract shell-integration marks; the terminal (and
-                    // the transcript) only ever see the cleaned stream.
-                    let (clean, marks) = oscf.feed(&buf[..len]);
-                    rec.output(&clean);
-                    for m in marks {
-                        match m {
-                            Mark::Prompt => {
-                                hook = Some(HookPhase::Prompt);
-                                rec.prompt();
+                    // Cleaned stream and marks arrive as ordered segments,
+                    // so output is attributed to the correct command block
+                    // even when B/output/D land in a single read.
+                    let mut trigger_seen = false;
+                    for seg in oscf.feed(&buf[..len]) {
+                        match seg {
+                            Seg::Bytes(bytes) => {
+                                if cur_cmd.is_some() {
+                                    block_tail.extend_from_slice(&bytes);
+                                    let excess = block_tail.len().saturating_sub(8192);
+                                    if excess > 0 {
+                                        block_tail.drain(..excess);
+                                    }
+                                }
+                                rec.output(&bytes);
+                                // Re-pin the scroll region at trigger
+                                // boundaries (see find_trigger_end).
+                                let mut rest: &[u8] = &bytes;
+                                while let Some(end) = find_trigger_end(rest) {
+                                    let (pre, post) = rest.split_at(end);
+                                    parser.process(pre);
+                                    write_all(STDOUT, pre)?;
+                                    let mut fix =
+                                        format!("\x1b[1;{}r", layout.inner().rows).into_bytes();
+                                    fix.extend_from_slice(
+                                        &parser.screen().cursor_state_formatted(),
+                                    );
+                                    write_all(STDOUT, &fix)?;
+                                    trigger_seen = true;
+                                    rest = post;
+                                }
+                                parser.process(rest);
+                                write_all(STDOUT, rest)?;
                             }
-                            Mark::CmdStart(cmd) => {
-                                hook = Some(HookPhase::Command);
-                                rec.cmd_start(&cmd);
-                            }
-                            Mark::CmdEnd(code) => rec.cmd_end(code),
-                            Mark::Cwd(p) => rec.cwd(&p),
+                            Seg::Mark(m) => match m {
+                                Mark::Prompt => {
+                                    hook = Some(HookPhase::Prompt);
+                                    rec.prompt();
+                                }
+                                Mark::CmdStart(cmd) => {
+                                    hook = Some(HookPhase::Command);
+                                    rec.cmd_start(&cmd);
+                                    cur_cmd = Some(cmd);
+                                    block_tail.clear();
+                                    notice = None;
+                                }
+                                Mark::CmdEnd(code) => {
+                                    rec.cmd_end(code);
+                                    if let Some(cmd) = cur_cmd.take() {
+                                        let block = vendor::CmdBlock {
+                                            cmd,
+                                            exit_code: code,
+                                            cwd: last_cwd.clone(),
+                                            output_tail: String::from_utf8_lossy(&block_tail)
+                                                .into_owned(),
+                                        };
+                                        for v in rules.suggest(&block) {
+                                            let id = next_sid;
+                                            next_sid += 1;
+                                            rec.suggest(id, &v.command, &v.why, v.vendor);
+                                            suggestions.insert(0, (id, v.command, v.why));
+                                        }
+                                        suggestions.truncate(8);
+                                    }
+                                }
+                                Mark::Cwd(p) => {
+                                    if !last_cwd.is_empty() && p != last_cwd {
+                                        // cwd changed: context moved, old
+                                        // suggestions are stale.
+                                        suggestions.clear();
+                                    }
+                                    rec.cwd(&p);
+                                    last_cwd = p;
+                                }
+                                Mark::Ask(q) => {
+                                    rec.aside(&q);
+                                    notice = Some(format!("{q} \u{2014} no engine configured yet"));
+                                }
+                                Mark::Pull => {
+                                    if !suggestions.is_empty() {
+                                        let (id, cmdtext, _why) = suggestions.remove(0);
+                                        rec.accept(id);
+                                        let mut paste = Vec::new();
+                                        paste.extend_from_slice(b"\x1b[200~");
+                                        paste.extend_from_slice(cmdtext.as_bytes());
+                                        paste.extend_from_slice(b"\x1b[201~");
+                                        write_all(master, &paste)?;
+                                    }
+                                }
+                            },
                         }
                     }
-                    // Forward the chunk, but re-pin the scroll region at
-                    // each trigger boundary so scrolling output later in
-                    // the same chunk can't drag the status row up into
-                    // the inner region.
-                    let mut rest: &[u8] = &clean;
-                    let mut trigger_seen = false;
-                    while let Some(end) = find_trigger_end(rest) {
-                        let (pre, post) = rest.split_at(end);
-                        parser.process(pre);
-                        write_all(STDOUT, pre)?;
-                        // DECSTBM homes the cursor; restore it from
-                        // tracked state.
-                        let mut fix = format!("\x1b[1;{}r", layout.inner().rows).into_bytes();
-                        fix.extend_from_slice(&parser.screen().cursor_state_formatted());
-                        write_all(STDOUT, &fix)?;
-                        trigger_seen = true;
-                        rest = post;
-                    }
-                    parser.process(rest);
-                    write_all(STDOUT, rest)?;
                     if trigger_seen {
-                        last_bar = status::render(
-                            layout.real,
-                            layout.inner().rows,
+                        last_bar = render_bar(
+                            &layout,
                             &shell_name,
-                            sense::label(&cur_state, hook),
+                            &cur_state,
+                            hook,
+                            &suggestions,
+                            &notice,
                         );
                         write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_bar))?;
                         dirty = false;
@@ -339,11 +428,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 parser.screen_mut().set_size(inner.rows, inner.cols);
                 let _ = term::set_size(master, inner);
                 rec.resize(real.rows, real.cols);
-                last_bar = status::render(
-                    layout.real,
-                    inner.rows,
+                last_bar = render_bar(
+                    &layout,
                     &shell_name,
-                    sense::label(&cur_state, hook),
+                    &cur_state,
+                    hook,
+                    &suggestions,
+                    &notice,
                 );
                 write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_bar))?;
                 dirty = false;
@@ -353,7 +444,32 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         if stdin_ready {
             match read_some(STDIN, &mut buf) {
                 Ok(0) => stdin_open = false,
-                Ok(len) => write_all(master, &buf[..len])?,
+                Ok(len) => {
+                    // Alt-Down: generic-shell suggestion pull. Only ever
+                    // intercepted at a hook-confirmed prompt with a live
+                    // suggestion; everything else passes through verbatim.
+                    const ALT_DOWN: &[u8] = b"\x1b[1;3B";
+                    let chunk = &buf[..len];
+                    let pos = if hook == Some(HookPhase::Prompt) && !suggestions.is_empty() {
+                        chunk.windows(ALT_DOWN.len()).position(|w| w == ALT_DOWN)
+                    } else {
+                        None
+                    };
+                    if let Some(p) = pos {
+                        write_all(master, &chunk[..p])?;
+                        let (id, cmdtext, _why) = suggestions.remove(0);
+                        rec.accept(id);
+                        let mut paste = Vec::new();
+                        paste.extend_from_slice(b"\x1b[200~");
+                        paste.extend_from_slice(cmdtext.as_bytes());
+                        paste.extend_from_slice(b"\x1b[201~");
+                        write_all(master, &paste)?;
+                        write_all(master, &chunk[p + ALT_DOWN.len()..])?;
+                        dirty = true;
+                    } else {
+                        write_all(master, chunk)?;
+                    }
+                }
                 Err(_) => stdin_open = false,
             }
         }
@@ -376,11 +492,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         // invisible, so this costs nothing visually.
         if n == 0 {
             if dirty {
-                let bar = status::render(
-                    layout.real,
-                    layout.inner().rows,
+                let bar = render_bar(
+                    &layout,
                     &shell_name,
-                    sense::label(&cur_state, hook),
+                    &cur_state,
+                    hook,
+                    &suggestions,
+                    &notice,
                 );
                 if bar != last_bar {
                     write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &bar))?;

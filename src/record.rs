@@ -112,6 +112,24 @@ impl Recorder {
         self.flush();
     }
 
+    pub fn aside(&mut self, text: &str) {
+        self.write(json!({"t": now_ms() as u64, "ev": "aside", "text": text}));
+        self.flush();
+    }
+
+    pub fn suggest(&mut self, id: u64, cmd: &str, why: &str, vendor: &str) {
+        self.write(json!({
+            "t": now_ms() as u64, "ev": "suggest",
+            "id": id, "cmd": cmd, "why": why, "vendor": vendor,
+        }));
+        self.flush();
+    }
+
+    pub fn accept(&mut self, id: u64) {
+        self.write(json!({"t": now_ms() as u64, "ev": "accept", "id": id}));
+        self.flush();
+    }
+
     pub fn end(&mut self, code: i32) {
         self.write(json!({"t": now_ms() as u64, "ev": "end", "code": code}));
         self.flush();
