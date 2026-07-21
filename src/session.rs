@@ -555,6 +555,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 match ev {
                     engine::Event::Ready { provider, model } => {
                         rec.engine_ready(&provider, &model);
+                        notice = Some(format!("engine: {provider} \u{b7} {model}"));
                         engine_model = Some(model);
                     }
                     engine::Event::Answer(text) => {

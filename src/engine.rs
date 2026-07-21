@@ -85,10 +85,26 @@ fn probe_ollama(agent: &ureq::Agent, cfg: &EngineConfig) -> Option<String> {
         .call()
         .ok()?;
     let v: serde_json::Value = serde_json::from_str(&resp.into_string().ok()?).ok()?;
-    if let Some(m) = &cfg.model {
-        return Some(m.clone());
+    pick_model(&v, cfg.model.as_deref())
+}
+
+/// Configured model wins; otherwise pick the SMALLEST installed model.
+/// One-line status-bar answers want the watcher-tier default — cheap and
+/// fast; users pin a heavyweight explicitly via `[engine] model`.
+fn pick_model(tags: &serde_json::Value, configured: Option<&str>) -> Option<String> {
+    if let Some(m) = configured {
+        return Some(m.to_string());
     }
-    v["models"][0]["name"].as_str().map(String::from)
+    let models = tags["models"].as_array()?;
+    models
+        .iter()
+        .filter_map(|m| {
+            let name = m["name"].as_str()?;
+            let size = m["size"].as_u64().unwrap_or(u64::MAX);
+            Some((size, name))
+        })
+        .min()
+        .map(|(_, name)| name.to_string())
 }
 
 fn generate(agent: &ureq::Agent, host: &str, model: &str, job: &Job) -> Result<String, String> {
@@ -134,4 +150,35 @@ pub fn build_context(blocks: &[(String, i32, String)], cwd: &str) -> String {
         s.push_str(&format!("cwd: {cwd}\n"));
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_model;
+    use serde_json::json;
+
+    #[test]
+    fn picks_smallest_model_by_default() {
+        let tags = json!({"models": [
+            {"name": "gemma3:12b", "size": 8_100_000_000u64},
+            {"name": "llama3.2:1b", "size": 1_300_000_000u64},
+            {"name": "qwen2.5:7b", "size": 4_700_000_000u64},
+        ]});
+        assert_eq!(pick_model(&tags, None).as_deref(), Some("llama3.2:1b"));
+    }
+
+    #[test]
+    fn configured_model_wins() {
+        let tags = json!({"models": [{"name": "llama3.2:1b", "size": 1u64}]});
+        assert_eq!(
+            pick_model(&tags, Some("gemma3:12b")).as_deref(),
+            Some("gemma3:12b")
+        );
+    }
+
+    #[test]
+    fn missing_sizes_still_pick_something() {
+        let tags = json!({"models": [{"name": "mystery"}]});
+        assert_eq!(pick_model(&tags, None).as_deref(), Some("mystery"));
+    }
 }
