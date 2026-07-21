@@ -19,6 +19,14 @@ Goulash's space is navigated **spatially, D-pad style**:
   **live effect** (the [splitter](../architecture/status-rows.md) moves
   as you arrow), Enter commits, Esc reverts.
 
+- **Tab cycles panes within the down space**: once focus is in
+  goulash's widgets, Tab moves between the suggestion list and the
+  scrollable [heckle/annotation band](heckle-mode.md); Shift+Tab
+  reverses. Because this only applies *after* entering the down space,
+  shell tab-completion is never shadowed — at the prompt, Tab still
+  belongs to the shell. (Watch for muscle-memory collisions with other
+  tools' Tab conventions, e.g. Claude Code's — keep it rebindable.)
+
 ### Rules that keep it sane
 
 1. **Spatial nav exists only inside goulash widgets** — lists, menus,
@@ -40,12 +48,26 @@ straight there**. At the prompt, `#/name` opens a quick selector or
 status surface in goulash's space:
 
 ```
-#/status      engine, provider, watcher health, memory-tree stats
-#/model       pick the model for a role (watcher/thinker)
-#/provider    pick/configure a provider, run bootstrap
-#/split       jump straight to the split-height adjuster
-#/help        list available #/ commands
+#/status              engine, provider, watcher health, memory-tree stats
+#/model               pick the model for a role (watcher/thinker)
+#/provider            pick/configure a provider, run bootstrap
+#/split               jump straight to the split-height adjuster
+#/heckle              toggle/resize the heckle band
+#/help                list available #/ commands
 ```
+
+**Commands take one argument — the single most obvious swivel.** The
+bare form opens the selector; the argued form goes straight to done:
+
+```
+#/model watcher       select which role you're re-binding
+#/provider ollama     bind provider directly
+#/split 40            set split height in one shot
+#/heckle off          collapse the band
+```
+
+One argument, the obvious axis, nothing clever. Anything needing more
+than that belongs in the selector or the TOML.
 
 - Selectors are the same widgets as the menus — arrows, Enter, Esc —
   and obey the same [write-back rule](../architecture/implementation.md).

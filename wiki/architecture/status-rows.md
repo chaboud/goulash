@@ -16,6 +16,12 @@ inner PTY winsize:  rows = N - reserved
 outer scroll region (DECSTBM): rows 1 .. N - reserved
 ```
 
+`reserved` is dynamic: the status row plus the
+[heckle band](../interaction/heckle-mode.md) when open (and the whole
+bottom section grows to the chat pane in
+[`##` mode](../interaction/chat-mode.md)). Every change is just another
+winsize update to the inner PTY.
+
 The wrapped shell — and everything inside it, including inner tmux,
 full-screen TUIs, alternate-screen apps — believes the terminal is
 `N - reserved` rows tall. The reserved rows are **outside its world**:

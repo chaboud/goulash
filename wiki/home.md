@@ -73,7 +73,8 @@ mindmap
 - [interaction/down-arrow-protocol.md](interaction/down-arrow-protocol.md) — `goulash-down-or-suggest`
 - [interaction/chat-mode.md](interaction/chat-mode.md) — `##`: chat with tools, top third stays shell, autonomy dial
 - [interaction/delegated-agents.md](interaction/delegated-agents.md) — `# go recon this folder`, sub-tabs, scouts and stewards
-- [interaction/settings-and-nav.md](interaction/settings-and-nav.md) — TV-remote spatial nav, menus, config write-back
+- [interaction/settings-and-nav.md](interaction/settings-and-nav.md) — TV-remote spatial nav, `#/` commands with args, config write-back
+- [interaction/heckle-mode.md](interaction/heckle-mode.md) — MST3K commentary band: explanations above the status row, collapsible
 
 ### Product
 - [product/positioning.md](product/positioning.md) — coach, not agent overlord

@@ -78,7 +78,12 @@ should turn into edits on the linked pages.
   [suggestion-vendors](../architecture/suggestion-vendors.md).
 - Is a tiny bundled continuation/spell-check model ever worth it beyond
   rules + history + n-grams?
-- `#/` command set v1 and whether commands take args (`#/model watcher`) —
-  [settings-and-nav](../interaction/settings-and-nav.md).
+- ~~Whether `#/` commands take args~~ **Resolved: one argument, the
+  single most obvious swivel** (`#/model watcher`, `#/split 40`); bare
+  form opens the selector — [settings-and-nav](../interaction/settings-and-nav.md).
+  Remaining: the v1 command set.
+- Heckle band: tone/verbosity dial, when commentary is worth the pixels,
+  and how hard to rate-limit the sass —
+  [heckle-mode](../interaction/heckle-mode.md).
 - Autonomy dial: scope-grant language and UI for `accept-each` /
   `auto-evaluated` modes — [chat-mode](../interaction/chat-mode.md).

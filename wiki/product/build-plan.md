@@ -4,7 +4,7 @@ Naming is [shortlisted, not blocking](../naming/decision.md) — the repo
 runs under the working name `goulash`; a rename before 1.0 is cheap.
 **The priority now is building it.**
 
-## Milestone 0 — transparent PTY wrapper
+## Milestone 0 — transparent PTY wrapper 🚧 in progress
 **In Rust** ([implementation](../architecture/implementation.md)), with
 `~/.goulash/config.toml` loading from day one. The null overlay:
 `goulash "$SHELL"` allocates a PTY, spawns the shell,
@@ -15,6 +15,14 @@ retrofitting it later touches everything. Success = you can live in it
 all day (including inside and around tmux) and forget it's there.
 - Spec: [pty-overlay](../architecture/pty-overlay.md),
   [status-rows](../architecture/status-rows.md)
+- **Done**: PTY spawn with controlling tty, byte forwarding, shrunken
+  winsize + DECSTBM scroll region, vt100 state tracking with
+  cursor/SGR-restoring status redraws (debounced, plus immediate fixup
+  on RIS/DECSTR/`ESC[r`/2J/3J), no-clear startup via DSR cursor query,
+  SIGWINCH propagation, exit-code propagation, config loading,
+  PTY-driven e2e test suite (`tests/e2e.py`).
+- **Remaining**: daily-driving validation (TUIs, inner/outer tmux,
+  ssh), then call it done.
 
 ## Milestone 1 — session sensing
 Poll/track `tcgetpgrp()` to classify PROMPT / COMMAND /
