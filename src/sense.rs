@@ -18,9 +18,17 @@ pub struct State {
 
 impl State {
     /// Short label for the status row.
+    ///
+    /// Line editors (zle, readline) put the terminal in non-canonical
+    /// mode with ECHO off and echo keystrokes themselves — so
+    /// `fg_shell && !icanon` reads as the prompt being active, and
+    /// "secret" is reserved for canonical-mode echo-off (sudo, `read -s`),
+    /// where the tty would normally echo but was told not to.
     pub fn label(&self) -> &'static str {
         if !self.fg_shell {
             if self.alt_screen { "tui" } else { "run" }
+        } else if !self.icanon {
+            "prompt"
         } else if !self.echo {
             "secret"
         } else {
@@ -65,5 +73,33 @@ impl Sensor {
             icanon,
             alt_screen,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::State;
+
+    fn st(fg_shell: bool, echo: bool, icanon: bool, alt_screen: bool) -> State {
+        State {
+            fg_shell,
+            echo,
+            icanon,
+            alt_screen,
+        }
+    }
+
+    #[test]
+    fn labels() {
+        // zle/readline at an idle prompt: raw-ish mode, echoes itself
+        assert_eq!(st(true, false, false, false).label(), "prompt");
+        // sudo / read -s: canonical mode, echo suppressed
+        assert_eq!(st(true, false, true, false).label(), "secret");
+        // builtin or script reading normally
+        assert_eq!(st(true, true, true, false).label(), "shell");
+        // external command in the foreground
+        assert_eq!(st(false, true, true, false).label(), "run");
+        // full-screen app
+        assert_eq!(st(false, false, false, true).label(), "tui");
     }
 }

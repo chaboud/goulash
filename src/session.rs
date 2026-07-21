@@ -109,13 +109,22 @@ fn query_cursor_row(real: Size) -> (u16, u16, Vec<u8>) {
 }
 
 /// Sequences in the child's output that can blow away our scroll region or
-/// status row and therefore warrant an immediate fixup rather than waiting
-/// for quiescence: DECSTBM reset, RIS, DECSTR soft reset, full clears.
-fn needs_immediate_fixup(chunk: &[u8]) -> bool {
+/// status row: DECSTBM reset, RIS, DECSTR soft reset, full clears.
+/// Returns the end index of the earliest trigger in `chunk`, so the caller
+/// can re-pin the scroll region at exactly that boundary — before any
+/// scrolling output that follows it in the same chunk can drag the status
+/// row up into the inner region.
+fn find_trigger_end(chunk: &[u8]) -> Option<usize> {
     const TRIGGERS: [&[u8]; 5] = [b"\x1b[r", b"\x1bc", b"[!p", b"[2J", b"[3J"];
     TRIGGERS
         .iter()
-        .any(|t| chunk.windows(t.len()).any(|w| w == *t))
+        .filter_map(|t| {
+            chunk
+                .windows(t.len())
+                .position(|w| w == *t)
+                .map(|i| i + t.len())
+        })
+        .min()
 }
 
 struct Layout {
@@ -138,13 +147,13 @@ impl Layout {
 
 /// Scroll-region assertion + status redraw + cursor/attribute restore,
 /// derived from the tracked inner-screen state.
-fn fixup_bytes(layout: &Layout, screen: &vt100::Screen, shell_name: &str, state: &str) -> Vec<u8> {
+fn fixup_bytes(layout: &Layout, screen: &vt100::Screen, bar: &str) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(256);
     let inner = layout.inner();
     out.extend_from_slice(b"\x1b[?25l"); // hide cursor while we work
     out.extend_from_slice(format!("\x1b[1;{}r", inner.rows).as_bytes());
     out.extend_from_slice(format!("\x1b[{};1H", layout.status_row()).as_bytes());
-    out.extend_from_slice(status::render(layout.real, inner.rows, shell_name, state).as_bytes());
+    out.extend_from_slice(bar.as_bytes());
     out.extend_from_slice(&screen.attributes_formatted());
     out.extend_from_slice(&screen.cursor_state_formatted());
     out
@@ -205,10 +214,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut cur_state: State = sensor.read(false);
     rec.state(cur_state);
 
-    write_all(
-        STDOUT,
-        &fixup_bytes(&layout, parser.screen(), &shell_name, cur_state.label()),
-    )?;
+    let mut last_bar = status::render(layout.real, inner_rows, &shell_name, cur_state.label());
+    write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_bar))?;
     if !typed_ahead.is_empty() {
         let _ = write_all(master, &typed_ahead);
     }
@@ -252,15 +259,35 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
             match read_some(master, &mut buf) {
                 Ok(0) => break 'session,
                 Ok(len) => {
-                    let chunk = &buf[..len];
-                    parser.process(chunk);
-                    rec.output(chunk);
-                    write_all(STDOUT, chunk)?;
-                    if needs_immediate_fixup(chunk) {
-                        write_all(
-                            STDOUT,
-                            &fixup_bytes(&layout, parser.screen(), &shell_name, cur_state.label()),
-                        )?;
+                    rec.output(&buf[..len]);
+                    // Forward the chunk, but re-pin the scroll region at
+                    // each trigger boundary so scrolling output later in
+                    // the same chunk can't drag the status row up into
+                    // the inner region.
+                    let mut rest = &buf[..len];
+                    let mut trigger_seen = false;
+                    while let Some(end) = find_trigger_end(rest) {
+                        let (pre, post) = rest.split_at(end);
+                        parser.process(pre);
+                        write_all(STDOUT, pre)?;
+                        // DECSTBM homes the cursor; restore it from
+                        // tracked state.
+                        let mut fix = format!("\x1b[1;{}r", layout.inner().rows).into_bytes();
+                        fix.extend_from_slice(&parser.screen().cursor_state_formatted());
+                        write_all(STDOUT, &fix)?;
+                        trigger_seen = true;
+                        rest = post;
+                    }
+                    parser.process(rest);
+                    write_all(STDOUT, rest)?;
+                    if trigger_seen {
+                        last_bar = status::render(
+                            layout.real,
+                            layout.inner().rows,
+                            &shell_name,
+                            cur_state.label(),
+                        );
+                        write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_bar))?;
                         dirty = false;
                     } else {
                         dirty = true;
@@ -280,10 +307,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 parser.screen_mut().set_size(inner.rows, inner.cols);
                 let _ = term::set_size(master, inner);
                 rec.resize(real.rows, real.cols);
-                write_all(
-                    STDOUT,
-                    &fixup_bytes(&layout, parser.screen(), &shell_name, cur_state.label()),
-                )?;
+                last_bar = status::render(layout.real, inner.rows, &shell_name, cur_state.label());
+                write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_bar))?;
                 dirty = false;
             }
         }
@@ -304,12 +329,22 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
             dirty = true;
         }
 
-        // Quiescent and dirty: redraw the status row.
+        // Quiescent and dirty: redraw the status row — but only if its
+        // content actually changed. Ordinary output can't touch the bar
+        // (the inner world is winsize-fenced; region-threatening
+        // sequences are handled as triggers above), so skipping
+        // no-op redraws eliminates per-keystroke flicker.
         if n == 0 && dirty {
-            write_all(
-                STDOUT,
-                &fixup_bytes(&layout, parser.screen(), &shell_name, cur_state.label()),
-            )?;
+            let bar = status::render(
+                layout.real,
+                layout.inner().rows,
+                &shell_name,
+                cur_state.label(),
+            );
+            if bar != last_bar {
+                write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &bar))?;
+                last_bar = bar;
+            }
             dirty = false;
         }
     }
