@@ -1,39 +1,56 @@
 use crate::term::Size;
 
-/// SGR palette for the reserved area: the agent's content block and the
-/// static chrome read as visually distinct surfaces.
-pub const AGENT_SGR: &str = "\x1b[0;97;44m"; // white on blue: agent content
-pub const QUERY_SGR: &str = "\x1b[0;93;44m"; // yellow on blue: user question
-pub const CHROME_SGR: &str = "\x1b[0;97;100m"; // white on gray: static chrome
+/// Palette: most of the goulash area is plain terminal background; the
+/// chrome chip is white-on-grey; the suggestion chip is orange.
+pub const CHROME_SGR: &str = "\x1b[0;97;100m"; // white on grey chip
+pub const SUGGEST_SGR: &str = "\x1b[0;30;48;5;208m"; // black on orange chip
+pub const RULE_SGR: &str = "\x1b[0;37m"; // white rule on default bg
+pub const QUERY_SGR: &str = "\x1b[0;2m"; // dim question on default bg
+pub const TEXT_SGR: &str = "\x1b[0m"; // plain answer text
 
-/// The status row: agent content (suggestion/notice) fills the left in
-/// the agent block color; the static chrome — identity, shell, state,
-/// and geometry — sits right-justified in its own shading so it visibly
-/// does not ride along with the agent party.
-pub fn render(
+/// Top boundary of the goulash area: a horizontal rule with optional text
+/// cutting in near the right edge — orange chip for a pullable
+/// suggestion, plain inset text for notices.
+pub fn rule_row(text: Option<&str>, orange: bool, cols: usize) -> String {
+    let Some(t) = text else {
+        return format!("{RULE_SGR}{}\x1b[0m", "\u{2500}".repeat(cols));
+    };
+    let clipped: String = t.chars().take(cols.saturating_sub(6)).collect();
+    let tlen = clipped.chars().count();
+    let lead = cols.saturating_sub(tlen + 2);
+    let mid = if orange {
+        format!("{SUGGEST_SGR}{clipped}")
+    } else {
+        format!("\x1b[0m{clipped}")
+    };
+    format!(
+        "{RULE_SGR}{}{mid}{RULE_SGR}{}\x1b[0m",
+        "\u{2500}".repeat(lead),
+        "\u{2500}".repeat(2)
+    )
+}
+
+/// Bottom row of the goulash area: terminal-default background with the
+/// static chrome — identity, shell, state, `#` geometry — right-justified
+/// in its own grey chip.
+pub fn chrome_row(
     real: Size,
     inner_rows: u16,
     reserved: u16,
     shell_name: &str,
     state: &str,
-    extra: Option<&str>,
 ) -> String {
     let cols = real.cols as usize;
     let chrome = format!(
         " goulash \u{2502} {shell_name} \u{2502} {state} # {}x{inner_rows}+{reserved} ",
         real.cols
     );
-    let chrome_len = chrome.chars().count();
-    if chrome_len >= cols {
-        let clipped: String = chrome.chars().take(cols).collect();
-        return format!("{CHROME_SGR}{clipped}\x1b[0m");
-    }
-    let content_width = cols - chrome_len;
-    let content = extra.map(|e| format!(" {e} ")).unwrap_or_default();
-    let mut left: String = content.chars().take(content_width).collect();
-    let used = left.chars().count();
-    left.push_str(&" ".repeat(content_width - used));
-    format!("{AGENT_SGR}{left}{CHROME_SGR}{chrome}\x1b[0m")
+    let clipped: String = chrome.chars().take(cols).collect();
+    let pad = cols.saturating_sub(clipped.chars().count());
+    format!(
+        "\x1b[0m\x1b[K{}{CHROME_SGR}{clipped}\x1b[0m",
+        " ".repeat(pad)
+    )
 }
 
 /// One full-width styled band row (padded/truncated to cols).

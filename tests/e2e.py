@@ -86,7 +86,7 @@ def test_basic():
     print("basic session (bash --norc):")
     proc, mfd = spawn(["bash", "--norc"])
     out = read_until(mfd, rb"\$")  # prompt
-    inner = ROWS - 1
+    inner = ROWS - 4  # fixed goulash area: rule+question+text+chrome
     check("scroll region asserted", f"\x1b[1;{inner}r".encode() in out,
           "no DECSTBM 1..%d in %r" % (inner, out[-200:]))
     check("status row drawn", b"goulash" in out and b"bash" in out)
@@ -110,7 +110,7 @@ def test_basic():
     os.write(mfd, b"echo RESIZED=$(tput lines)x$(tput cols)\r")
     out = read_until(mfd, rb"RESIZED=\d+x\d+")
     m = re.search(rb"RESIZED=(\d+)x(\d+)", out)
-    check("resize propagates (rows-1)", m and m.group(1) == b"29", f"got {m and m.group(1)}")
+    check("resize propagates (rows-4)", m and m.group(1) == b"26", f"got {m and m.group(1)}")
     check("resize propagates (cols)", m and m.group(2) == b"100", f"got {m and m.group(2)}")
 
     os.write(mfd, b"exit\r")
@@ -230,8 +230,8 @@ def test_suggestions():
     proc, mfd = spawn(["bash", "--rcfile", rc, "-i"], home=home)
     read_until(mfd, rb"\$")
     os.write(mfd, b"lls\r")  # typo'd ls -> command not found -> rules vendor
-    out = read_until(mfd, "↓".encode())  # bar redraw with the suggestion arrow
-    check("suggestion shown in bar", "↓ ls".encode() in out, out[-200:])
+    out = read_until(mfd, "suggestion: ls".encode())  # bar redraw with the suggestion arrow
+    check("suggestion shown in bar", "suggestion: ls".encode() in out, out[-200:])
 
     if sys.platform.startswith("linux"):  # bracketed paste needs readline >= 8.1
         os.write(mfd, b"\x1b[1;3B")  # Alt-Down: pull suggestion into the line
@@ -261,8 +261,8 @@ def test_zsh_auto_integration():
     proc, mfd = spawn(["zsh"], home=home)
     time.sleep(1.5)
     os.write(mfd, b"lls\r")
-    out = read_until(mfd, "↓ ls".encode())
-    check("suggestion vended under zsh", "↓ ls".encode() in out, out[-300:])
+    out = read_until(mfd, "suggestion: ls".encode())
+    check("suggestion vended under zsh", "suggestion: ls".encode() in out, out[-300:])
     os.write(mfd, b"\x1b[B")  # plain Down, past end of history
     time.sleep(0.6)
     os.write(mfd, b"\r")
@@ -327,7 +327,7 @@ def test_engine_ollama():
             assert opts.get("num_ctx"), "num_ctx missing"
             assert req.get("think") is False, "think:false missing"
             ans = f"ANS-{req.get('model')}"
-            if "goulash answered" in req.get("prompt", ""):
+            if "goulash:" in req.get("prompt", ""):
                 ans += "-CTX"  # proof the chat history reached the prompt
             ans += f"\nCMD: echo from-{req.get('model')}"
             if req.get("stream"):
@@ -367,6 +367,11 @@ def test_engine_ollama():
     os.write(mfd, b"#/status\r")
     out = read_until(mfd, rb"blocks this session", 5.0)
     check("#/status shows engine", b"bigmodel" in out, out[-300:])
+    # Proactive commentary: a plain command turn should produce an
+    # unprompted engine answer (fake always replies, never PASS).
+    os.write(mfd, b"echo ctest-$((3*4))\r")
+    read_until(mfd, rb"ctest-12", 5.0)
+    time.sleep(1.5)
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
     srv.shutdown()
@@ -382,6 +387,12 @@ def test_engine_ollama():
     check("candidate command vended as suggestion",
           any(e["ev"] == "suggest" and e["vendor"] == "engine"
               and e["cmd"].startswith("echo from-") for e in events))
+    asides = [e for e in events if e["ev"] == "aside"]
+    answers = [e for e in events if e["ev"] == "answer" and e["ok"]]
+    check("proactive commentary answered without an ask",
+          len(answers) > 2, f"{len(asides)} asides, {len(answers)} answers")
+    check("commentary suggestion tagged",
+          any(e["ev"] == "suggest" and e.get("why") == "commentary" for e in events))
 
 
 def test_non_tty():

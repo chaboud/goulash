@@ -143,6 +143,16 @@ start, probe chain live.
   height while open. Asks and answers append to the session log, so
   follow-up questions ("recursively") resolve against the running
   conversation — CI asserts the chat history reaches the prompt.
+  **Fixed-height area + proactive commentary**: the goulash area holds
+  constant height (rule/question/text/chrome; blank when idle) — no
+  terminal resizes mid-session; chrome sits bottom-right in its own
+  chip, agent content on plain terminal background with an orange
+  suggestion chip cutting into the rule (Claude-Code-style). CMD
+  vending hardened: point-of-use directive, history rewritten to teach
+  the CMD: shape, and a PATH-executable fallback catches bare-command
+  replies. `#/commentary [on|off]` (default on) has the model review
+  each command turn and volunteer one tip or stay silent (PASS
+  discarded; user asks always win the band; failures silent).
 - **Remaining**: selector *widgets* for `#/` (today: text notices, no
   arrow-driven pickers), config write-back for `#/model`, richer answer
   surface (heckle band — one bar row truncates real answers), streaming

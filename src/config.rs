@@ -46,6 +46,10 @@ pub struct EngineConfig {
     /// Record raw engine responses into the session transcript for
     /// debugging (ev: "engine_debug").
     pub debug: bool,
+    /// Proactive commentary: after each command turn the model may
+    /// volunteer one short tip (or stay silent). Toggle live with
+    /// #/commentary.
+    pub commentary: bool,
 }
 
 impl Default for EngineConfig {
@@ -63,6 +67,7 @@ impl Default for EngineConfig {
             num_ctx: 8192,
             prewarm: true,
             debug: false,
+            commentary: true,
         }
     }
 }
@@ -119,7 +124,7 @@ impl Default for StatusConfig {
             enabled: true,
             rows: 1,
             band: true,
-            band_rows: 2,
+            band_rows: 1,
         }
     }
 }
@@ -144,12 +149,17 @@ impl Config {
         }
     }
 
-    /// Rows kept out of the inner PTY's world (status row; later + heckle band).
+    /// Rows kept out of the inner PTY's world. With the band enabled the
+    /// goulash area holds a FIXED height (rule + question + text rows +
+    /// chrome) so the terminal never resizes mid-session.
     pub fn reserved_rows(&self) -> u16 {
-        if self.status.enabled {
-            self.status.rows.clamp(1, 8)
+        if !self.status.enabled {
+            return 0;
+        }
+        if self.status.band {
+            3 + self.status.band_rows.clamp(1, 4)
         } else {
-            0
+            self.status.rows.clamp(1, 8)
         }
     }
 }

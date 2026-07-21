@@ -7,7 +7,12 @@
 > the agent's colored content block; then the question row; then
 > exactly `band_rows` explanation rows. The band is **fixed-height
 > while open** (no mid-answer jitter) and resizes only at open/close —
-> pure winsize arithmetic. Knobs: `[status] band`, `band_rows`.
+> pure winsize arithmetic — and as of v2, the area holds a constant
+> height with blank rows when idle (field feedback: mid-session
+> resizing sucks). Proactive commentary (`#/commentary`, default on)
+> reviews each command turn and may volunteer one tip — the
+> rate-limited-sass rule enforced by the PASS contract. Knobs:
+> `[status] band`, `band_rows`, `[engine] commentary`.
 
 MST3K energy: alongside vended commands, the agent gets a small band of
 **visible commentary space** — because sometimes the explanation is more

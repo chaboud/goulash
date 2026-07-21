@@ -181,8 +181,11 @@ fn wrap_chars(s: &str, width: usize, max_rows: usize) -> Vec<String> {
     rows
 }
 
-/// Compose all reserved rows, top to bottom: status row (state + pullable
-/// suggestion), then question row, then explanation rows.
+/// Compose the goulash area, top to bottom: rule row with the pullable
+/// suggestion (what Down reaches first) or a notice cutting in; the
+/// question and answer excerpt on plain terminal background; and the
+/// chrome chip bottom-right. FIXED height: rows are blank when idle so
+/// the terminal never resizes mid-session.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn compose_rows(
     cfg: &Config,
@@ -195,44 +198,56 @@ fn compose_rows(
     band: &Option<Band>,
 ) -> Vec<String> {
     let cols = layout.real.cols as usize;
-    let mut band_rows: Vec<String> = Vec::new();
-    if cfg.status.band
-        && let Some(b) = band
-    {
-        // Fixed height while open: question row + band_rows, padded —
-        // the band only changes size at open/close, never mid-answer.
-        let q = b.question.as_deref().unwrap_or("");
-        band_rows.push(status::pad_row(&format!(" {q}"), cols, status::QUERY_SGR));
-        let mut lines = wrap_chars(
-            &b.text,
-            cols.saturating_sub(2),
-            cfg.status.band_rows as usize,
-        );
-        while (lines.len() as u16) < cfg.status.band_rows.max(1) {
-            lines.push(String::new());
-        }
-        for line in lines {
-            band_rows.push(status::pad_row(
-                &format!(" {line}"),
-                cols,
-                status::AGENT_SGR,
-            ));
-        }
-    }
-    let reserved = 1 + band_rows.len() as u16;
-    let inner_rows = layout.real.rows.saturating_sub(reserved).max(1);
-    let extra = notice
+    let sug_chip = suggestions
+        .first()
+        .map(|s| format!(" \u{2193} suggestion: {} ", s.1));
+    let rule_text = sug_chip
         .clone()
-        .or_else(|| suggestions.first().map(|s| format!("\u{2193} {}", s.1)));
-    let mut rows = vec![status::render(
+        .or_else(|| notice.clone().map(|n| format!(" {n} ")));
+    let reserved = cfg.reserved_rows();
+    let inner_rows = layout.real.rows.saturating_sub(reserved).max(1);
+    let label = sense::label(st, hook);
+
+    if !cfg.status.band {
+        // Minimal mode: a single chrome row.
+        return vec![status::chrome_row(
+            layout.real,
+            inner_rows,
+            reserved,
+            shell_name,
+            label,
+        )];
+    }
+
+    let n_text = cfg.status.band_rows.clamp(1, 4);
+    let mut rows = Vec::new();
+    rows.push(status::rule_row(
+        rule_text.as_deref(),
+        sug_chip.is_some(),
+        cols,
+    ));
+    let q = band
+        .as_ref()
+        .and_then(|b| b.question.as_deref())
+        .unwrap_or("");
+    rows.push(status::pad_row(&format!(" {q}"), cols, status::QUERY_SGR));
+    let mut lines = band
+        .as_ref()
+        .map(|b| wrap_chars(&b.text, cols.saturating_sub(2), n_text as usize))
+        .unwrap_or_default();
+    while (lines.len() as u16) < n_text {
+        lines.push(String::new());
+    }
+    for line in lines {
+        rows.push(status::pad_row(&format!(" {line}"), cols, status::TEXT_SGR));
+    }
+    rows.push(status::chrome_row(
         layout.real,
         inner_rows,
         reserved,
         shell_name,
-        sense::label(st, hook),
-        extra.as_deref(),
-    )];
-    rows.extend(band_rows);
+        label,
+    ));
     rows
 }
 
@@ -284,8 +299,20 @@ fn slash_command(
     engine: Option<&Engine>,
     engine_model: &Option<String>,
     blocks: u64,
+    commentary: &mut bool,
 ) -> Option<String> {
     match (cmd, arg) {
+        ("commentary", arg) => {
+            *commentary = match arg {
+                Some("on") | Some("true") => true,
+                Some("off") | Some("false") => false,
+                _ => !*commentary,
+            };
+            Some(format!(
+                "commentary {}",
+                if *commentary { "on" } else { "off" }
+            ))
+        }
         ("model", Some(name)) => match engine {
             Some(eng) => {
                 eng.set_model(name.to_string());
@@ -306,9 +333,9 @@ fn slash_command(
             engine_model.as_deref().unwrap_or("none"),
             blocks,
         )),
-        ("help", _) => {
-            Some("#/model [name] \u{b7} #/status \u{b7} #/help \u{b7} # <question>".to_string())
-        }
+        ("help", _) => Some(
+            "#/model [name] \u{b7} #/commentary [on|off] \u{b7} #/status \u{b7} #/help".to_string(),
+        ),
         _ => Some(format!("unknown command /{cmd} \u{2014} try #/help")),
     }
 }
@@ -389,6 +416,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         None
     };
     let mut engine_model: Option<String> = None;
+    let mut commentary = cfg.engine.commentary;
     let mut band: Option<Band> = None;
     #[allow(unused_assignments)] // initialized by the first redraw! below
     let mut last_rows: Vec<String> = Vec::new();
@@ -572,6 +600,12 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             suggestions.insert(0, (id, v.command, v.why));
                                         }
                                         suggestions.truncate(8);
+                                        if commentary
+                                            && engine_model.is_some()
+                                            && let Some(eng) = engine.as_ref()
+                                        {
+                                            eng.ask_proactive(ctx_log.clone());
+                                        }
                                     }
                                 }
                                 Mark::Cwd(p) => {
@@ -600,6 +634,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             engine.as_ref(),
                                             &engine_model,
                                             blocks_seen,
+                                            &mut commentary,
                                         );
                                     } else if let Some(eng) = engine.as_ref() {
                                         eng.ask(body.to_string(), ctx_log.clone());
@@ -732,21 +767,48 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             notice = Some(format!("{one_line} \u{2026}"));
                         }
                     },
-                    engine::Event::Answer { text, command } => {
+                    engine::Event::Answer {
+                        text,
+                        command,
+                        proactive,
+                    } => {
                         let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                        rec.aside_answer(&one_line, true);
-                        ctx_log.push_str(&format!("goulash answered: {one_line}\n"));
-                        if let Some(cmd) = command {
-                            let id = next_sid;
-                            next_sid += 1;
-                            rec.suggest(id, &cmd, "from # ask", "engine");
-                            suggestions.insert(0, (id, cmd.clone(), "from # ask".to_string()));
-                            suggestions.truncate(8);
-                            ctx_log.push_str(&format!("goulash suggested: {cmd}\n"));
-                        }
-                        match band.as_mut() {
-                            Some(b) => b.text = text,
-                            None => notice = Some(one_line),
+                        let passed = proactive
+                            && one_line
+                                .trim_matches(['.', '!'])
+                                .eq_ignore_ascii_case("PASS");
+                        // A proactive tip never overwrites a user ask's band.
+                        let user_band_active =
+                            band.as_ref().map(|b| b.question.is_some()).unwrap_or(false);
+                        if passed || (proactive && user_band_active) {
+                            rec.aside_answer(&one_line, true);
+                        } else {
+                            rec.aside_answer(&one_line, true);
+                            ctx_log.push_str(&format!("goulash: {one_line}\n"));
+                            if let Some(cmd) = command {
+                                let id = next_sid;
+                                next_sid += 1;
+                                let why = if proactive {
+                                    "commentary"
+                                } else {
+                                    "from # ask"
+                                };
+                                rec.suggest(id, &cmd, why, "engine");
+                                suggestions.insert(0, (id, cmd.clone(), why.to_string()));
+                                suggestions.truncate(8);
+                                ctx_log.push_str(&format!("CMD: {cmd}\n"));
+                            }
+                            if proactive {
+                                band = Some(Band {
+                                    question: None,
+                                    text,
+                                });
+                            } else {
+                                match band.as_mut() {
+                                    Some(b) => b.text = text,
+                                    None => notice = Some(one_line),
+                                }
+                            }
                         }
                     }
                     engine::Event::Error(msg) => {

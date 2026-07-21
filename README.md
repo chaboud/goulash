@@ -41,9 +41,12 @@ context_max_chars = 12000  # prompt budget; log epoch-trims to half
 tail_chars = 800           # per-command output kept in context
 ```
 
-Answers open the **band**: the bottom of the terminal grows to show
-your question and 1-2 lines of explanation (knobs: `[status] band`,
-`band_rows`), collapsing on your next command. If the model proposes a
+The goulash area holds a **fixed height** (rule row with the pullable
+suggestion cutting in, question, answer, chrome bottom-right — knobs:
+`[status] band`, `band_rows`); rows blank when idle, so the terminal
+never resizes mid-session. With `commentary` on (default), the model
+reviews each command turn and may volunteer one short tip — toggle live
+with `#/commentary`. If the model proposes a
 command (`CMD:` line), it drops into the suggestion list — press
 **Down** to pull it into your prompt. Reasoning-model "thinking" is
 disabled (it burned the whole token budget invisibly). `#` asides are

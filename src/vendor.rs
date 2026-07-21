@@ -61,21 +61,7 @@ impl RulesVendor {
     }
 
     fn path_executables(&mut self) -> &HashSet<String> {
-        self.path_cache.get_or_insert_with(|| {
-            let mut set = HashSet::new();
-            if let Some(path) = std::env::var_os("PATH") {
-                for dir in std::env::split_paths(&path) {
-                    if let Ok(entries) = std::fs::read_dir(&dir) {
-                        for e in entries.flatten() {
-                            if let Some(name) = e.file_name().to_str() {
-                                set.insert(name.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-            set
-        })
+        self.path_cache.get_or_insert_with(path_executable_set)
     }
 
     /// `lls: command not found` → closest PATH executable.
@@ -102,6 +88,24 @@ impl RulesVendor {
             vendor: "rules",
         })
     }
+}
+
+/// Executable names on PATH — shared by the rules vendor and the
+/// engine's bare-command answer heuristic.
+pub fn path_executable_set() -> HashSet<String> {
+    let mut set = HashSet::new();
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for e in entries.flatten() {
+                    if let Some(name) = e.file_name().to_str() {
+                        set.insert(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    set
 }
 
 /// git tells you the exact fix; lift it verbatim.

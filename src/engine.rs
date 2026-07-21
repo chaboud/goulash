@@ -19,6 +19,7 @@ pub enum Event {
     Answer {
         text: String,
         command: Option<String>,
+        proactive: bool,
     },
     Error(String),
     Models(Vec<String>),
@@ -27,7 +28,11 @@ pub enum Event {
 }
 
 pub enum Job {
-    Ask { question: String, context: String },
+    Ask {
+        question: String,
+        context: String,
+        proactive: bool,
+    },
     SetModel(String),
     ListModels,
 }
@@ -53,7 +58,25 @@ impl Engine {
     }
 
     pub fn ask(&self, question: String, context: String) {
-        let _ = self.job_tx.send(Job::Ask { question, context });
+        let _ = self.job_tx.send(Job::Ask {
+            question,
+            context,
+            proactive: false,
+        });
+    }
+
+    /// Unprompted per-turn review; coalescing lets a user ask supersede it.
+    pub fn ask_proactive(&self, context: String) {
+        let question = "Without being asked, briefly review the most recent \
+                        command and its result. If you have ONE genuinely \
+                        useful short tip or fix, say it (add a CMD: line if \
+                        a command applies). Otherwise reply exactly: PASS"
+            .to_string();
+        let _ = self.job_tx.send(Job::Ask {
+            question,
+            context,
+            proactive: true,
+        });
     }
 
     pub fn set_model(&self, model: String) {
@@ -70,6 +93,7 @@ fn notify(wr: &OwnedFd) {
 }
 
 fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>, wr: OwnedFd) {
+    let path_set = crate::vendor::path_executable_set();
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(2))
         .timeout(Duration::from_secs(120))
@@ -128,28 +152,49 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
                 Err(_) => break,
             }
         }
-        if let Some(Job::Ask { question, context }) = latest_ask {
+        if let Some(Job::Ask {
+            question,
+            context,
+            proactive,
+        }) = latest_ask
+        {
             let Some((model, _)) = &state else {
                 unreachable_engine(&ev, &wr, &cfg);
                 continue;
             };
-            let result = generate(&agent, &cfg, model, &question, &context, &ev, &wr);
+            let result = generate(
+                &agent, &cfg, model, &question, &context, &ev, &wr, proactive,
+            );
             let _ = match result {
                 Ok(ans) => {
                     if cfg.debug {
                         let _ = ev.send(Event::Debug(ans.clone()));
                     }
-                    let (text, command) = split_answer(&ans);
+                    let (text, command) = split_answer(&ans, &path_set);
                     if text.is_empty() && command.is_none() {
-                        ev.send(Event::Error(format!(
-                            "empty answer from {model} (thinking model? try #/model \
-                             or raise max_tokens)"
-                        )))
+                        if proactive {
+                            Ok(()) // silent pass
+                        } else {
+                            ev.send(Event::Error(format!(
+                                "empty answer from {model} (thinking model? try \
+                                 #/model or raise max_tokens)"
+                            )))
+                        }
                     } else {
-                        ev.send(Event::Answer { text, command })
+                        ev.send(Event::Answer {
+                            text,
+                            command,
+                            proactive,
+                        })
                     }
                 }
-                Err(e) => ev.send(Event::Error(e)),
+                Err(e) => {
+                    if proactive {
+                        Ok(()) // commentary failures stay silent
+                    } else {
+                        ev.send(Event::Error(e))
+                    }
+                }
             };
             notify(&wr);
         }
@@ -241,12 +286,12 @@ fn pick_model(
 const PREAMBLE: &str = "You are goulash, an assistant living in the user's \
 terminal status bar. Answer tersely in ONE short line of plain text, no \
 markdown. Each command carries the local time it ran; treat old output as \
-stale. The log also contains the running conversation: lines starting with \
-'#' are earlier user questions and 'goulash answered/suggested' lines are \
-your own replies — follow-up questions refer back to them. If a shell \
-command would help, add ONE extra line starting exactly with 'CMD: ' \
-followed by the command.\n\nSession log (oldest first):\n";
+stale. The log also contains the running conversation: '#' lines are \
+earlier user questions, 'goulash:' lines are your earlier replies, and \
+'CMD:' lines are commands you suggested — follow-up questions refer back \
+to them.\n\nSession log (oldest first):\n";
 
+#[allow(clippy::too_many_arguments)]
 fn generate(
     agent: &ureq::Agent,
     cfg: &EngineConfig,
@@ -255,11 +300,15 @@ fn generate(
     context: &str,
     ev: &mpsc::Sender<Event>,
     wr: &OwnedFd,
+    proactive: bool,
 ) -> Result<String, String> {
     // Volatile parts (current time, question) go AFTER the stable prefix.
+    // The command directive is repeated at point-of-use: small models
+    // lose instructions that only appear at the top of a long prompt.
     let prompt = format!(
         "{PREAMBLE}{context}\nCurrent local time: {}\nQuestion: {question}\n\
-         Answer (one short line, plain text):",
+         Reply with ONE short prose line. If a shell command applies, add a \
+         second line formatted exactly as: CMD: <command>\nAnswer:",
         local_now()
     );
     let mut body = serde_json::json!({
@@ -311,35 +360,13 @@ fn generate(
         if v["done"].as_bool() == Some(true) {
             break;
         }
-        if !acc.is_empty() && last_emit.elapsed() >= Duration::from_millis(150) {
+        if !proactive && !acc.is_empty() && last_emit.elapsed() >= Duration::from_millis(150) {
             let _ = ev.send(Event::Partial(acc.clone()));
             notify(wr);
             last_emit = Instant::now();
         }
     }
     Ok(acc.trim().to_string())
-}
-
-/// Split a raw answer into (prose, candidate command): the first
-/// non-empty non-CMD line is the prose (one-line contract enforced
-/// here), and the first `CMD: ...` line is the command.
-fn split_answer(raw: &str) -> (String, Option<String>) {
-    let mut text = String::new();
-    let mut command = None;
-    for line in raw.lines() {
-        let l = line.trim();
-        if l.is_empty() {
-            continue;
-        }
-        if let Some(c) = l.strip_prefix("CMD:") {
-            if command.is_none() && !c.trim().is_empty() {
-                command = Some(c.trim().to_string());
-            }
-        } else if text.is_empty() {
-            text = l.to_string();
-        }
-    }
-    (text, command)
 }
 
 fn tm_now() -> libc::tm {
@@ -374,8 +401,99 @@ pub fn hms() -> String {
     format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
+/// Split a raw answer into (prose, candidate command): the first
+/// non-empty non-CMD line is the prose (one-line contract enforced
+/// here), and the first `CMD: ...` line is the command. Small models
+/// often reply with a bare command and no tag, so a fallback treats a
+/// short line whose first word is a PATH executable as the command.
+fn split_answer(
+    raw: &str,
+    path_set: &std::collections::HashSet<String>,
+) -> (String, Option<String>) {
+    let mut text = String::new();
+    let mut command = None;
+    for line in raw.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        if let Some(c) = l.strip_prefix("CMD:") {
+            if command.is_none() && !c.trim().is_empty() {
+                command = Some(c.trim().to_string());
+            }
+        } else if text.is_empty() {
+            text = l.to_string();
+        }
+    }
+    if command.is_none() {
+        for line in raw.lines().take(4) {
+            let l = line.trim().trim_matches('`');
+            let words: Vec<&str> = l.split_whitespace().collect();
+            if !l.is_empty()
+                && !l.starts_with('#')
+                && (1..=8).contains(&words.len())
+                && !l.ends_with(['.', '!', '?'])
+                && path_set.contains(words[0])
+            {
+                command = Some(l.to_string());
+                break;
+            }
+        }
+    }
+    (text, command)
+}
+
 #[cfg(test)]
-mod tests {
+mod answer_tests {
+    use super::split_answer;
+    use std::collections::HashSet;
+
+    fn paths(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn text_only() {
+        assert_eq!(
+            split_answer("It is Tuesday.\n", &paths(&[])),
+            ("It is Tuesday.".into(), None)
+        );
+    }
+
+    #[test]
+    fn text_and_command() {
+        let (t, c) = split_answer(
+            "Disk is mostly node_modules.\nCMD: du -sh * | sort -h\n",
+            &paths(&[]),
+        );
+        assert_eq!(t, "Disk is mostly node_modules.");
+        assert_eq!(c.as_deref(), Some("du -sh * | sort -h"));
+    }
+
+    #[test]
+    fn command_first_and_rambling() {
+        let (t, c) = split_answer(
+            "\nCMD: git pull\nRun this to update.\nExtra ramble.",
+            &paths(&[]),
+        );
+        assert_eq!(t, "Run this to update.");
+        assert_eq!(c.as_deref(), Some("git pull"));
+    }
+
+    #[test]
+    fn bare_command_fallback() {
+        // The field case: model answers `ls -lhR` with no CMD: tag.
+        let (t, c) = split_answer("ls -lhR", &paths(&["ls", "du"]));
+        assert_eq!(t, "ls -lhR");
+        assert_eq!(c.as_deref(), Some("ls -lhR"));
+        // Prose sentences never trip the fallback.
+        let (_, c2) = split_answer("Use the ls command to list.", &paths(&["ls"]));
+        assert_eq!(c2, None);
+    }
+}
+
+#[cfg(test)]
+mod pick_tests {
     use super::pick_model;
     use serde_json::json;
 
@@ -426,32 +544,5 @@ mod tests {
             pick_model(&tags, None, &no_favs()).as_deref(),
             Some("mystery")
         );
-    }
-}
-
-#[cfg(test)]
-mod answer_tests {
-    use super::split_answer;
-
-    #[test]
-    fn text_only() {
-        assert_eq!(
-            split_answer("It is Tuesday.\n"),
-            ("It is Tuesday.".into(), None)
-        );
-    }
-
-    #[test]
-    fn text_and_command() {
-        let (t, c) = split_answer("Disk is mostly node_modules.\nCMD: du -sh * | sort -h\n");
-        assert_eq!(t, "Disk is mostly node_modules.");
-        assert_eq!(c.as_deref(), Some("du -sh * | sort -h"));
-    }
-
-    #[test]
-    fn command_first_and_rambling() {
-        let (t, c) = split_answer("\nCMD: git pull\nRun this to update.\nExtra ramble.");
-        assert_eq!(t, "Run this to update.");
-        assert_eq!(c.as_deref(), Some("git pull"));
     }
 }
