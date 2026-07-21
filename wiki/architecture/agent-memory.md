@@ -1,6 +1,15 @@
 # Agent Memory: Remember-as-a-Tool
 
-**Status: backlog, design captured.** Give goulash the ability to
+**Status: v1 shipped — the prime store, as a flat slot-limited file.**
+`#/memory on` (default off) enables `~/.goulash/memory.toml`: 25 slots ×
+≤240 chars (~55 tokens), baked into the stable prefix, written by the
+model via `REMEMBER:`/`FORGET:` lines (a revision = both in one reply;
+forgets apply first so a full store can still be revised) and by the
+user via `#/memory add|delete|modify|find|limit`. The memory-bank tier,
+memory vendor, and promotion policy below remain backlog. Original
+design follows.
+
+Give goulash the ability to
 *decide to remember things* — the first durable, cross-session memory,
 distinct from the [session log](memory-hierarchy.md) (which dies with
 the session) and curated by the agent rather than recorded

@@ -1,6 +1,7 @@
 mod config;
 mod engine;
 mod integrate;
+mod memory;
 mod osc;
 mod pty;
 mod record;

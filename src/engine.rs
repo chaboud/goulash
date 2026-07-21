@@ -20,6 +20,8 @@ pub enum Event {
         text: String,
         command: Option<String>,
         proactive: bool,
+        remembers: Vec<String>,
+        forgets: Vec<u64>,
     },
     Error(String),
     Models(Vec<String>),
@@ -31,6 +33,7 @@ pub enum Job {
     Ask {
         question: String,
         context: String,
+        memories: String,
         proactive: bool,
     },
     SetModel(String),
@@ -57,16 +60,17 @@ impl Engine {
         })
     }
 
-    pub fn ask(&self, question: String, context: String) {
+    pub fn ask(&self, question: String, context: String, memories: String) {
         let _ = self.job_tx.send(Job::Ask {
             question,
             context,
+            memories,
             proactive: false,
         });
     }
 
     /// Unprompted per-turn review; coalescing lets a user ask supersede it.
-    pub fn ask_proactive(&self, context: String) {
+    pub fn ask_proactive(&self, context: String, memories: String) {
         let question = "Without being asked, briefly review the most recent \
                         command and its result. If you have ONE genuinely \
                         useful short tip or fix, say it (add a CMD: line if \
@@ -75,6 +79,7 @@ impl Engine {
         let _ = self.job_tx.send(Job::Ask {
             question,
             context,
+            memories,
             proactive: true,
         });
     }
@@ -155,6 +160,7 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
         if let Some(Job::Ask {
             question,
             context,
+            memories,
             proactive,
         }) = latest_ask
         {
@@ -163,15 +169,20 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
                 continue;
             };
             let result = generate(
-                &agent, &cfg, model, &question, &context, &ev, &wr, proactive,
+                &agent, &cfg, model, &question, &context, &memories, &ev, &wr, proactive,
             );
             let _ = match result {
                 Ok(ans) => {
                     if cfg.debug {
                         let _ = ev.send(Event::Debug(ans.clone()));
                     }
-                    let (text, command) = split_answer(&ans, &path_set);
-                    if text.is_empty() && command.is_none() {
+                    let (rest, remembers, forgets) = extract_memory_ops(&ans);
+                    let (text, command) = split_answer(&rest, &path_set);
+                    if text.is_empty()
+                        && command.is_none()
+                        && remembers.is_empty()
+                        && forgets.is_empty()
+                    {
                         if proactive {
                             Ok(()) // silent pass
                         } else {
@@ -185,6 +196,8 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
                             text,
                             command,
                             proactive,
+                            remembers,
+                            forgets,
                         })
                     }
                 }
@@ -289,7 +302,7 @@ markdown. Each command carries the local time it ran; treat old output as \
 stale. The log also contains the running conversation: '#' lines are \
 earlier user questions, 'goulash:' lines are your earlier replies, and \
 'CMD:' lines are commands you suggested — follow-up questions refer back \
-to them.\n\nSession log (oldest first):\n";
+to them.\n\n";
 
 #[allow(clippy::too_many_arguments)]
 fn generate(
@@ -298,6 +311,7 @@ fn generate(
     model: &str,
     question: &str,
     context: &str,
+    memories: &str,
     ev: &mpsc::Sender<Event>,
     wr: &OwnedFd,
     proactive: bool,
@@ -305,8 +319,11 @@ fn generate(
     // Volatile parts (current time, question) go AFTER the stable prefix.
     // The command directive is repeated at point-of-use: small models
     // lose instructions that only appear at the top of a long prompt.
+    // Prompt shape (stable-prefix first): preamble, pinned memories,
+    // session log, then the volatile time/question/directive suffix.
     let prompt = format!(
-        "{PREAMBLE}{context}\nCurrent local time: {}\nQuestion: {question}\n\
+        "{PREAMBLE}{memories}Session log (oldest first):\n{context}\n\
+         Current local time: {}\nQuestion: {question}\n\
          Reply with ONE short prose line. If a shell command applies, add a \
          second line formatted exactly as: CMD: <command>\nAnswer:",
         local_now()
@@ -381,7 +398,7 @@ fn tm_now() -> libc::tm {
 }
 
 /// "2026-07-21 01:10:53" — volatile, kept out of the stable prefix.
-fn local_now() -> String {
+pub fn local_now() -> String {
     let tm = tm_now();
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
@@ -399,6 +416,29 @@ fn local_now() -> String {
 pub fn hms() -> String {
     let tm = tm_now();
     format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+}
+
+/// Pull REMEMBER:/FORGET: tool lines out of an answer; returns the
+/// remaining text plus the requested memory operations.
+fn extract_memory_ops(raw: &str) -> (String, Vec<String>, Vec<u64>) {
+    let mut rest = Vec::new();
+    let mut remembers = Vec::new();
+    let mut forgets = Vec::new();
+    for line in raw.lines() {
+        let l = line.trim();
+        if let Some(note) = l.strip_prefix("REMEMBER:") {
+            if !note.trim().is_empty() {
+                remembers.push(note.trim().to_string());
+            }
+        } else if let Some(id) = l.strip_prefix("FORGET:") {
+            if let Ok(n) = id.trim().trim_matches(['[', ']']).parse::<u64>() {
+                forgets.push(n);
+            }
+        } else {
+            rest.push(line);
+        }
+    }
+    (rest.join("\n"), remembers, forgets)
 }
 
 /// Split a raw answer into (prose, candidate command): the first

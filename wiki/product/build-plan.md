@@ -153,6 +153,13 @@ start, probe chain live.
   replies. `#/commentary [on|off]` (default on) has the model review
   each command turn and volunteer one tip or stay silent (PASS
   discarded; user asks always win the band; failures silent).
+  **Agent memory v1 (flat prime store)**: `#/memory on` (default off)
+  bakes a slot-limited pinned store (25 × ≤240 chars,
+  `~/.goulash/memory.toml`) into the stable prefix; the model writes
+  via `REMEMBER:`/`FORGET:` lines (revision = both in one reply,
+  forgets applied first), the user via
+  `#/memory add|delete|modify|find|limit` —
+  [agent-memory](../architecture/agent-memory.md).
 - **Remaining**: selector *widgets* for `#/` (today: text notices, no
   arrow-driven pickers), config write-back for `#/model`, richer answer
   surface (heckle band — one bar row truncates real answers), streaming
@@ -174,7 +181,7 @@ status. Suggest-only autonomy first; `accept-each` behind a flag.
   [delegated-agents](../interaction/delegated-agents.md)
 
 ## Later
-**agent memory** (remember-as-a-tool: prime store in the stable prefix +
+**agent memory tier 2** (prime store shipped in M4 — remaining: the
 searchable bank + memory vendor —
 [agent-memory](../architecture/agent-memory.md)), fish adapter, remote
 markers over ssh

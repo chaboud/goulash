@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::engine::{self, Engine};
+use crate::memory::MemoryStore;
 use crate::osc::{Mark, OscFilter, Seg};
 use crate::pty;
 use crate::record::Recorder;
@@ -292,17 +293,24 @@ fn fixup_bytes(layout: &Layout, screen: &vt100::Screen, rows: &[String]) -> Vec<
     out
 }
 
-/// `#/` command dispatch. Returns the bar notice to show.
+/// `#/` command dispatch over the full command line (memory verbs take
+/// free text). Returns the bar notice to show.
 fn slash_command(
-    cmd: &str,
-    arg: Option<&str>,
+    cmdline: &str,
     engine: Option<&Engine>,
     engine_model: &Option<String>,
     blocks: u64,
     commentary: &mut bool,
+    memory: &mut MemoryStore,
 ) -> Option<String> {
+    let mut it = cmdline.splitn(2, char::is_whitespace);
+    let cmd = it.next().unwrap_or("");
+    let rest = it.next().unwrap_or("").trim();
+    let arg = if rest.is_empty() { None } else { Some(rest) };
     match (cmd, arg) {
+        ("memory", sub) => Some(memory_command(sub, memory)),
         ("commentary", arg) => {
+            let arg = arg.map(|a| a.split_whitespace().next().unwrap_or(a));
             *commentary = match arg {
                 Some("on") | Some("true") => true,
                 Some("off") | Some("false") => false,
@@ -315,6 +323,7 @@ fn slash_command(
         }
         ("model", Some(name)) => match engine {
             Some(eng) => {
+                let name = name.split_whitespace().next().unwrap_or(name);
                 eng.set_model(name.to_string());
                 Some(format!("switching model to {name} \u{2026}"))
             }
@@ -334,9 +343,67 @@ fn slash_command(
             blocks,
         )),
         ("help", _) => Some(
-            "#/model [name] \u{b7} #/commentary [on|off] \u{b7} #/status \u{b7} #/help".to_string(),
+            "#/model [name] \u{b7} #/commentary [on|off] \u{b7} #/memory \u{2026} \u{b7} #/status"
+                .to_string(),
         ),
         _ => Some(format!("unknown command /{cmd} \u{2014} try #/help")),
+    }
+}
+
+/// `#/memory on|off|limit N|add TEXT|delete ID|modify ID TEXT|find Q`
+fn memory_command(sub: Option<&str>, memory: &mut MemoryStore) -> String {
+    let sub = sub.unwrap_or("");
+    let mut it = sub.splitn(2, char::is_whitespace);
+    let verb = it.next().unwrap_or("");
+    let rest = it.next().unwrap_or("").trim();
+    match verb {
+        "" => memory.status_line(),
+        "on" | "true" => {
+            memory.set_enabled(true);
+            memory.status_line()
+        }
+        "off" | "false" => {
+            memory.set_enabled(false);
+            memory.status_line()
+        }
+        "limit" => match rest.parse::<usize>() {
+            Ok(n) => {
+                memory.set_limit(n);
+                memory.status_line()
+            }
+            Err(_) => "usage: #/memory limit <n>".to_string(),
+        },
+        "add" => match memory.add(rest, "user") {
+            Ok(id) => format!("remembered [{id}] \u{b7} {}", memory.status_line()),
+            Err(e) => e,
+        },
+        "delete" | "forget" => match rest.parse::<u64>() {
+            Ok(id) if memory.delete(id) => format!("forgot [{id}]"),
+            Ok(id) => format!("no memory [{id}]"),
+            Err(_) => "usage: #/memory delete <id>".to_string(),
+        },
+        "modify" => {
+            let mut p = rest.splitn(2, char::is_whitespace);
+            match (p.next().and_then(|s| s.parse::<u64>().ok()), p.next()) {
+                (Some(id), Some(text)) if memory.modify(id, text) => {
+                    format!("updated [{id}]")
+                }
+                (Some(id), Some(_)) => format!("no memory [{id}]"),
+                _ => "usage: #/memory modify <id> <text>".to_string(),
+            }
+        }
+        "find" | "list" => {
+            let hits = memory.find(rest);
+            if hits.is_empty() {
+                "no matching memories".to_string()
+            } else {
+                hits.iter()
+                    .map(|s| format!("[{}] {}", s.id, s.text))
+                    .collect::<Vec<_>>()
+                    .join(" \u{b7} ")
+            }
+        }
+        _ => "usage: #/memory on|off|limit|add|delete|modify|find".to_string(),
     }
 }
 
@@ -417,6 +484,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     };
     let mut engine_model: Option<String> = None;
     let mut commentary = cfg.engine.commentary;
+    let mut memory = MemoryStore::load(Config::dir());
     let mut band: Option<Band> = None;
     #[allow(unused_assignments)] // initialized by the first redraw! below
     let mut last_rows: Vec<String> = Vec::new();
@@ -604,7 +672,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             && engine_model.is_some()
                                             && let Some(eng) = engine.as_ref()
                                         {
-                                            eng.ask_proactive(ctx_log.clone());
+                                            eng.ask_proactive(
+                                                ctx_log.clone(),
+                                                memory.context_block(),
+                                            );
                                         }
                                     }
                                 }
@@ -625,19 +696,20 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         // #/ commands: goulash controls, not
                                         // LLM asides. One arg max — the
                                         // single most obvious swivel.
-                                        let mut it = cmdline.split_whitespace();
-                                        let cmd = it.next().unwrap_or("");
-                                        let arg = it.next();
                                         notice = slash_command(
-                                            cmd,
-                                            arg,
+                                            cmdline,
                                             engine.as_ref(),
                                             &engine_model,
                                             blocks_seen,
                                             &mut commentary,
+                                            &mut memory,
                                         );
                                     } else if let Some(eng) = engine.as_ref() {
-                                        eng.ask(body.to_string(), ctx_log.clone());
+                                        eng.ask(
+                                            body.to_string(),
+                                            ctx_log.clone(),
+                                            memory.context_block(),
+                                        );
                                         ctx_log.push_str(&format!(
                                             "# {} [asked {}]\n",
                                             body,
@@ -771,7 +843,24 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         text,
                         command,
                         proactive,
+                        remembers,
+                        forgets,
                     } => {
+                        if memory.enabled {
+                            // Forgets first: a modify is FORGET + REMEMBER in
+                            // one reply, and the delete must free the slot
+                            // before the add when the store is full.
+                            for id in &forgets {
+                                if memory.delete(*id) {
+                                    rec.memory("forget", *id, "");
+                                }
+                            }
+                            for note in &remembers {
+                                if let Ok(id) = memory.add(note, "llm") {
+                                    rec.memory("add", id, note);
+                                }
+                            }
+                        }
                         let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
                         let passed = proactive
                             && one_line

@@ -56,6 +56,14 @@ Debugging: everything lands in `~/.goulash/history/session-*.jsonl`.
 At the prompt: `#/model` lists installed models, `#/model <name>`
 switches live, `#/status`, `#/help`.
 
+**Memory** (off by default): `#/memory on` gives the model a flat,
+slot-limited pinned store (25 slots × ≤240 chars, durable in
+`~/.goulash/memory.toml`) baked into the prompt's stable prefix. The
+model saves with a `REMEMBER: <note>` line and drops with
+`FORGET: <id>` — a revision is both in one reply. You hold the same
+levers: `#/memory add|delete|modify|find|limit`, plus bare `#/memory`
+for status.
+
 ## Build & run
 
 ```

@@ -161,7 +161,6 @@ fn parse_mark(body: &[u8]) -> Option<Mark> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::Engine as _;
 
     fn enc(s: &str) -> String {
         base64::engine::general_purpose::STANDARD.encode(s)

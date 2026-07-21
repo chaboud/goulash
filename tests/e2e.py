@@ -395,6 +395,102 @@ def test_engine_ollama():
           any(e["ev"] == "suggest" and e.get("why") == "commentary" for e in events))
 
 
+def test_memory():
+    print("#/memory flat store + model REMEMBER line (fake ollama):")
+    if not shutil.which("zsh"):
+        print("  [SKIP] zsh not installed")
+        return
+    import http.server
+    import threading
+
+    class FakeOllama(http.server.BaseHTTPRequestHandler):
+        def _send(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/api/tags":
+                self._send({"models": [{"name": "memmodel", "size": 1}]})
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            req = json.loads(self.rfile.read(n) or b"{}")
+            if "prompt" not in req:
+                self._send({"done": True})
+                return
+            p = req["prompt"]
+            if "Question: save a note" in p:
+                # Echo proof that the pinned block (with the user's slot)
+                # reached the stable prefix, and exercise the tool line.
+                if "Pinned memories" in p and "make release TARGET=prod" in p:
+                    ans = "noted MEM-SEEN\nREMEMBER: model saved this note"
+                else:
+                    ans = "MEM-MISSING"
+            else:
+                ans = "PASS"  # keep proactive commentary silent
+            if req.get("stream"):
+                body = (json.dumps({"response": ans, "done": False}) + "\n"
+                        + json.dumps({"response": "", "done": True}) + "\n").encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self._send({"response": ans})
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), FakeOllama)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write(f'[engine]\nprovider = "ollama"\nhost = "http://127.0.0.1:{port}"\n')
+    proc, mfd = spawn(["zsh"], home=home)
+    time.sleep(1.5)
+    os.write(mfd, b"#/memory\r")
+    out = read_until(mfd, rb"memory off", 5.0)
+    check("memory defaults off", b"memory off" in out, out[-300:])
+    os.write(mfd, b"#/memory on\r")
+    out = read_until(mfd, rb"memory on", 5.0)
+    check("#/memory on", b"memory on" in out, out[-300:])
+    os.write(mfd, b"#/memory add deploy is make release TARGET=prod\r")
+    out = read_until(mfd, rb"remembered \[1\]", 5.0)
+    check("user add stored", b"remembered [1]" in out, out[-300:])
+    os.write(mfd, b"# save a note\r")
+    out = read_until(mfd, rb"MEM-SEEN", 8.0)
+    check("pinned block reached the prompt", b"MEM-SEEN" in out, out[-300:])
+    time.sleep(0.5)  # let the REMEMBER op land in the store
+    os.write(mfd, b"#/memory find saved\r")
+    out = read_until(mfd, rb"model saved this note", 5.0)
+    check("model REMEMBER stored", b"model saved this note" in out, out[-300:])
+    os.write(mfd, b"#/memory delete 1\r")
+    out = read_until(mfd, rb"forgot \[1\]", 5.0)
+    check("#/memory delete", b"forgot [1]" in out, out[-300:])
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+    srv.shutdown()
+
+    mpath = os.path.join(home, "memory.toml")
+    check("memory.toml durable", os.path.exists(mpath))
+    mt = open(mpath).read() if os.path.exists(mpath) else ""
+    check("model note persisted", "model saved this note" in mt, mt[-300:])
+    check("deleted slot gone from toml", "TARGET=prod" not in mt, mt[-300:])
+    check("enabled persists in toml", "enabled = true" in mt, mt[:120])
+    logs = glob.glob(os.path.join(home, "history", "session-*.jsonl"))
+    events = [json.loads(line) for line in open(logs[0])] if logs else []
+    check("llm memory add recorded",
+          any(e["ev"] == "memory" and e["op"] == "add" for e in events))
+
+
 def test_non_tty():
     print("refuses to run without a tty:")
     r = subprocess.run([BIN, "true"], capture_output=True)
@@ -413,6 +509,7 @@ def main():
         test_suggestions,
         test_zsh_auto_integration,
         test_engine_ollama,
+        test_memory,
         test_non_tty,
     ):
         try:
