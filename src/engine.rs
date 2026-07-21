@@ -22,6 +22,8 @@ pub enum Event {
     },
     Error(String),
     Models(Vec<String>),
+    /// Raw model output, emitted when [engine] debug = true.
+    Debug(String),
 }
 
 pub enum Job {
@@ -126,8 +128,18 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
             let result = generate(&agent, &cfg, &model, &question, &context, &ev, &wr);
             let _ = match result {
                 Ok(ans) => {
+                    if cfg.debug {
+                        let _ = ev.send(Event::Debug(ans.clone()));
+                    }
                     let (text, command) = split_answer(&ans);
-                    ev.send(Event::Answer { text, command })
+                    if text.is_empty() && command.is_none() {
+                        ev.send(Event::Error(format!(
+                            "empty answer from {model} (thinking model? try #/model \
+                             or raise max_tokens)"
+                        )))
+                    } else {
+                        ev.send(Event::Answer { text, command })
+                    }
                 }
                 Err(e) => ev.send(Event::Error(e)),
             };
@@ -229,6 +241,10 @@ fn generate(
         "model": model,
         "prompt": prompt,
         "stream": cfg.stream,
+        // Reasoning models (qwen3+, deepseek-r1) otherwise spend the
+        // entire token budget in a separate `thinking` field, returning
+        // an empty `response` — a blank bar in the field.
+        "think": false,
         "options": {
             "temperature": 0.2,
             "num_predict": cfg.max_tokens as i64,

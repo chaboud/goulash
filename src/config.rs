@@ -43,6 +43,9 @@ pub struct EngineConfig {
     /// Load the model in the background at bind/switch time so the first
     /// ask doesn't pay the cold start.
     pub prewarm: bool,
+    /// Record raw engine responses into the session transcript for
+    /// debugging (ev: "engine_debug").
+    pub debug: bool,
 }
 
 impl Default for EngineConfig {
@@ -56,9 +59,10 @@ impl Default for EngineConfig {
             stream: true,
             context_max_chars: 12_000,
             tail_chars: 800,
-            max_tokens: 96,
+            max_tokens: 256,
             num_ctx: 8192,
             prewarm: true,
+            debug: false,
         }
     }
 }

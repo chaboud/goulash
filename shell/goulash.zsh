@@ -31,6 +31,10 @@ add-zsh-hook preexec __goulash_preexec
 # `#` aside: intercepted at accept-line, shipped to goulash over the OSC
 # channel — never executed, kept in history. `\#` escapes to a real
 # comment line for the shell.
+# Asides are accepted natively as comments: zsh records them in history
+# (Up-arrow recalls for edit/re-fire) and executes nothing.
+setopt interactivecomments
+
 __goulash_accept_line() {
   case "$BUFFER" in
     '\#'*)
@@ -38,10 +42,6 @@ __goulash_accept_line() {
       ;;
     '#'*)
       __goulash_osc "Q;$(__goulash_b64 "$BUFFER")"
-      print -s -- "$BUFFER"
-      BUFFER=""
-      zle reset-prompt
-      return 0
       ;;
   esac
   zle .accept-line

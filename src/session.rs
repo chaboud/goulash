@@ -654,6 +654,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         rec.aside_answer(&msg, false);
                         notice = Some(format!("engine error: {msg}"));
                     }
+                    engine::Event::Debug(raw) => rec.engine_debug(&raw),
                     engine::Event::Models(names) => {
                         let list = names
                             .iter()

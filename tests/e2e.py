@@ -271,6 +271,12 @@ def test_zsh_auto_integration():
     os.write(mfd, b"# hello goulash\r")
     out = read_until(mfd, rb"no engine configured", 5.0)
     check("aside acknowledged in bar", b"no engine configured" in out, out[-300:])
+    time.sleep(0.5)
+    os.write(mfd, b"\x1b[A")  # Up: native history recall of the aside
+    out = read_until(mfd, rb"# hello goulash", 4.0)
+    check("aside recallable from history", b"# hello goulash" in out, out[-200:])
+    os.write(mfd, b"\x03")  # abort the recalled line
+    time.sleep(0.3)
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
     logs = glob.glob(os.path.join(home, "history", "session-*.jsonl"))
@@ -319,6 +325,7 @@ def test_engine_ollama():
             opts = req.get("options", {})
             assert opts.get("num_predict"), "token cap missing"
             assert opts.get("num_ctx"), "num_ctx missing"
+            assert req.get("think") is False, "think:false missing"
             ans = f"ANS-{req.get('model')}\nCMD: echo from-{req.get('model')}"
             if req.get("stream"):
                 body = (json.dumps({"response": ans, "done": False}) + "\n"

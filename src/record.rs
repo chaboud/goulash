@@ -120,6 +120,11 @@ impl Recorder {
         self.flush();
     }
 
+    pub fn engine_debug(&mut self, raw: &str) {
+        self.write(json!({"t": now_ms() as u64, "ev": "engine_debug", "raw": raw}));
+        self.flush();
+    }
+
     pub fn aside_answer(&mut self, text: &str, ok: bool) {
         self.write(json!({"t": now_ms() as u64, "ev": "answer", "text": text, "ok": ok}));
         self.flush();
