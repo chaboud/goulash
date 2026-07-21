@@ -112,6 +112,19 @@ impl Recorder {
         self.flush();
     }
 
+    pub fn engine_ready(&mut self, provider: &str, model: &str) {
+        self.write(json!({
+            "t": now_ms() as u64, "ev": "engine",
+            "provider": provider, "model": model,
+        }));
+        self.flush();
+    }
+
+    pub fn aside_answer(&mut self, text: &str, ok: bool) {
+        self.write(json!({"t": now_ms() as u64, "ev": "answer", "text": text, "ok": ok}));
+        self.flush();
+    }
+
     pub fn aside(&mut self, text: &str) {
         self.write(json!({"t": now_ms() as u64, "ev": "aside", "text": text}));
         self.flush();

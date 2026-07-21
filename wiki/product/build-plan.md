@@ -87,7 +87,7 @@ Record accept/edit/ignore.
   aside history-recall in zsh (`print -s` in widget not sticking),
   freeze-on-focus semantics (needs the list UI).
 
-## Milestone 4 — the `#` aside + `#/` commands
+## Milestone 4 — the `#` aside + `#/` commands 🚧 in progress
 Intercept `#`-prefixed lines at PROMPT: `#/` opens selector widgets
 (`#/status`, `#/provider`, …); plain `#` assembles context from recent
 block history (flat recency window is fine here — the full
@@ -97,6 +97,21 @@ start, probe chain live.
 - Spec: [interaction model](../interaction/model.md),
   [settings-and-nav](../interaction/settings-and-nav.md),
   [llm-engine](../architecture/llm-engine.md)
+- **Done**: engine worker thread (inference never touches the PTY loop;
+  events return via mpsc + self-pipe poll wakeup), ollama provider
+  (probe `/api/tags`, auto-pick or configured model, `/api/generate`
+  answers), `[engine]` config (provider auto/ollama/none, host, model),
+  `#` asides answered with context from the last 8 command blocks
+  (cmd/exit/output-tail/cwd), one-line answers in the bar, thinking
+  indicator, engine/answer transcript events, dead-worker HUP
+  hardening, hermetic fake-ollama e2e. Also **down-arrow context
+  shifting**: the zsh pull sends its buffer, so Down on an empty line
+  pulls the top suggestion and Down on an injected suggestion cycles to
+  the next (kill-line + repaste, wrapping); the user's own typed text is
+  never clobbered. Successful commands clear stale suggestions.
+- **Remaining**: `#/` selector commands, richer answer surface (heckle
+  band — one bar row truncates real answers), streaming responses,
+  Apple FM / cloud providers, `##` chat mode (M6).
 
 ## Milestone 5 — memory hierarchy + watcher tier
 Rolling cleanup loop (local model if available) setting region markers;

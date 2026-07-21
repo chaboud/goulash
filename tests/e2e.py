@@ -280,6 +280,63 @@ def test_zsh_auto_integration():
     check("accept recorded", any(e["ev"] == "accept" for e in events))
 
 
+def test_engine_ollama():
+    print("engine probe + # aside answered (fake ollama):")
+    if not shutil.which("zsh"):
+        print("  [SKIP] zsh not installed")
+        return
+    import http.server
+    import threading
+
+    class FakeOllama(http.server.BaseHTTPRequestHandler):
+        def _send(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/api/tags":
+                self._send({"models": [{"name": "fakemodel"}]})
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            req = json.loads(self.rfile.read(n) or b"{}")
+            assert req.get("model") == "fakemodel"
+            self._send({"response": "FAKE-ANSWER-42"})
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), FakeOllama)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write(f'[engine]\nprovider = "ollama"\nhost = "http://127.0.0.1:{port}"\n')
+    proc, mfd = spawn(["zsh"], home=home)
+    time.sleep(1.5)
+    os.write(mfd, b"# what is the answer\r")
+    out = read_until(mfd, rb"FAKE-ANSWER-42", 8.0)
+    check("engine answer shown in bar", b"FAKE-ANSWER-42" in out, out[-300:])
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+    srv.shutdown()
+
+    logs = glob.glob(os.path.join(home, "history", "session-*.jsonl"))
+    events = [json.loads(line) for line in open(logs[0])] if logs else []
+    check("engine ready recorded",
+          any(e["ev"] == "engine" and e["model"] == "fakemodel" for e in events))
+    check("answer recorded",
+          any(e["ev"] == "answer" and e["ok"] and "FAKE-ANSWER-42" in e["text"]
+              for e in events))
+
+
 def test_non_tty():
     print("refuses to run without a tty:")
     r = subprocess.run([BIN, "true"], capture_output=True)
@@ -297,6 +354,7 @@ def main():
         test_shell_hooks,
         test_suggestions,
         test_zsh_auto_integration,
+        test_engine_ollama,
         test_non_tty,
     ):
         try:

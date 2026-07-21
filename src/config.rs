@@ -9,6 +9,28 @@ pub struct Config {
     pub status: StatusConfig,
     pub record: RecordConfig,
     pub shell: ShellConfig,
+    pub engine: EngineConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct EngineConfig {
+    /// "auto" probes for a local engine (ollama today); "ollama" requires
+    /// it; "none" disables LLM features entirely.
+    pub provider: String,
+    pub host: String,
+    /// Model name; None = first model the provider reports.
+    pub model: Option<String>,
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            provider: "auto".to_string(),
+            host: "http://127.0.0.1:11434".to_string(),
+            model: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

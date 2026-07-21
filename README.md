@@ -13,13 +13,23 @@ and the [build plan](wiki/product/build-plan.md).
 
 ## Status
 
-Working today (no LLM yet): transparent PTY wrapper with reserved
-status row, session sensing and transcripts, shell integration
-(command blocks with text/exit/cwd), and deterministic thefuck-style
-suggestions — typo a command, and with zsh integration press **Down**
-(past end of history) to pull the fix into your prompt; `#` asides are
-intercepted and recorded. Generic shells: **Alt-Down**. LLM engines
-land next.
+Working today: transparent PTY wrapper with reserved status row,
+session sensing and transcripts, shell integration (command blocks
+with text/exit/cwd), deterministic thefuck-style suggestions — typo a
+command and press **Down** (past end of history) to pull the fix into
+your prompt; Down again cycles candidates. **`#` asides are answered by
+a local LLM**: if ollama is running (`localhost:11434`), goulash finds
+it automatically and `# why did that fail` gets a one-line answer in
+the bar, with recent command context. No ollama → features degrade
+gracefully. Generic shells: **Alt-Down**.
+
+```toml
+# ~/.goulash/config.toml (all optional)
+[engine]
+provider = "auto"    # auto | ollama | none
+host = "http://127.0.0.1:11434"
+# model = "llama3.2" # default: first model ollama reports
+```
 
 ## Build & run
 

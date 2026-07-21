@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::engine::{self, Engine};
 use crate::osc::{Mark, OscFilter, Seg};
 use crate::pty;
 use crate::record::Recorder;
@@ -255,6 +256,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut block_tail: Vec<u8> = Vec::new();
     let mut last_cwd = String::new();
     let mut notice: Option<String> = None;
+    let mut recent_blocks: Vec<(String, i32, String)> = Vec::new();
+    let mut engine: Option<Engine> = if cfg.engine.provider != "none" {
+        Engine::start(cfg.engine.clone()).ok()
+    } else {
+        None
+    };
+    let mut engine_model: Option<String> = None;
     let mut last_bar = render_bar(
         &layout,
         &shell_name,
@@ -276,12 +284,21 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     'session: loop {
         let stdin_fd = unsafe { BorrowedFd::borrow_raw(STDIN) };
         let master_fd = unsafe { BorrowedFd::borrow_raw(master) };
-        let mut fds: Vec<PollFd> = Vec::with_capacity(3);
+        let mut fds: Vec<PollFd> = Vec::with_capacity(4);
         fds.push(PollFd::new(master_fd, PollFlags::POLLIN));
         fds.push(PollFd::new(winch_rd.as_fd(), PollFlags::POLLIN));
-        if stdin_open {
+        let engine_idx = if let Some(eng) = engine.as_ref() {
+            fds.push(PollFd::new(eng.wake.as_fd(), PollFlags::POLLIN));
+            Some(fds.len() - 1)
+        } else {
+            None
+        };
+        let stdin_idx = if stdin_open {
             fds.push(PollFd::new(stdin_fd, PollFlags::POLLIN));
-        }
+            Some(fds.len() - 1)
+        } else {
+            None
+        };
         // Tick at 250ms even when idle so job-control transitions with no
         // accompanying I/O (e.g. `sleep 5` starting) are still sensed;
         // 30ms while dirty for quiescence-debounced redraws.
@@ -297,10 +314,19 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
             && fds[1]
                 .revents()
                 .is_some_and(|r| r.contains(PollFlags::POLLIN));
+        let engine_revents = if n > 0 {
+            engine_idx
+                .and_then(|i| fds.get(i))
+                .and_then(|f| f.revents())
+        } else {
+            None
+        };
+        let engine_ready_fd = engine_revents.is_some_and(|r| r.contains(PollFlags::POLLIN));
+        let engine_hup =
+            engine_revents.is_some_and(|r| r.intersects(PollFlags::POLLHUP | PollFlags::POLLERR));
         let stdin_ready = n > 0
-            && stdin_open
-            && fds
-                .get(2)
+            && stdin_idx
+                .and_then(|i| fds.get(i))
                 .and_then(|f| f.revents())
                 .is_some_and(|r| !r.is_empty());
 
@@ -356,6 +382,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 }
                                 Mark::CmdEnd(code) => {
                                     rec.cmd_end(code);
+                                    if code == 0 {
+                                        // Whatever was broken got fixed (or
+                                        // moved past): drop stale fixes.
+                                        suggestions.clear();
+                                    }
                                     if let Some(cmd) = cur_cmd.take() {
                                         let block = vendor::CmdBlock {
                                             cmd,
@@ -364,6 +395,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             output_tail: String::from_utf8_lossy(&block_tail)
                                                 .into_owned(),
                                         };
+                                        recent_blocks.push((
+                                            block.cmd.clone(),
+                                            block.exit_code,
+                                            block.output_tail.chars().take(1200).collect(),
+                                        ));
+                                        if recent_blocks.len() > 8 {
+                                            recent_blocks.remove(0);
+                                        }
                                         for v in rules.suggest(&block) {
                                             let id = next_sid;
                                             next_sid += 1;
@@ -384,17 +423,45 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 }
                                 Mark::Ask(q) => {
                                     rec.aside(&q);
-                                    notice = Some(format!("{q} \u{2014} no engine configured yet"));
+                                    if let Some(eng) = engine.as_ref()
+                                        && engine_model.is_some()
+                                    {
+                                        let ctx = engine::build_context(&recent_blocks, &last_cwd);
+                                        let question = q.trim_start_matches('#').trim().to_string();
+                                        eng.ask(question, ctx);
+                                        notice = Some(format!("{q} \u{2026}"));
+                                    } else {
+                                        notice =
+                                            Some(format!("{q} \u{2014} no engine configured yet"));
+                                    }
                                 }
-                                Mark::Pull => {
-                                    if !suggestions.is_empty() {
-                                        let (id, cmdtext, _why) = suggestions.remove(0);
+                                Mark::Pull(buffer) => {
+                                    // Context shifting: empty buffer pulls
+                                    // the top suggestion; a buffer that IS
+                                    // one of our suggestions cycles to the
+                                    // next (kill line, repaste); the user's
+                                    // own text is never clobbered.
+                                    let next = if suggestions.is_empty() {
+                                        None
+                                    } else if buffer.is_empty() {
+                                        Some(0)
+                                    } else {
+                                        suggestions
+                                            .iter()
+                                            .position(|s| s.1 == buffer)
+                                            .map(|p| (p + 1) % suggestions.len())
+                                    };
+                                    if let Some(i) = next {
+                                        let (id, cmdtext, _why) = suggestions[i].clone();
                                         rec.accept(id);
-                                        let mut paste = Vec::new();
-                                        paste.extend_from_slice(b"\x1b[200~");
-                                        paste.extend_from_slice(cmdtext.as_bytes());
-                                        paste.extend_from_slice(b"\x1b[201~");
-                                        write_all(master, &paste)?;
+                                        let mut bytes = Vec::new();
+                                        if !buffer.is_empty() {
+                                            bytes.push(0x15); // ^U: kill line
+                                        }
+                                        bytes.extend_from_slice(b"\x1b[200~");
+                                        bytes.extend_from_slice(cmdtext.as_bytes());
+                                        bytes.extend_from_slice(b"\x1b[201~");
+                                        write_all(master, &bytes)?;
                                     }
                                 }
                             },
@@ -458,7 +525,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     };
                     if let Some(p) = pos {
                         write_all(master, &chunk[..p])?;
-                        let (id, cmdtext, _why) = suggestions.remove(0);
+                        let (id, cmdtext, _why) = suggestions[0].clone();
                         rec.accept(id);
                         let mut paste = Vec::new();
                         paste.extend_from_slice(b"\x1b[200~");
@@ -472,6 +539,35 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     }
                 }
                 Err(_) => stdin_open = false,
+            }
+        }
+
+        if engine_hup && !engine_ready_fd {
+            // Worker died (panic or clean end): stop polling its pipe.
+            engine = None;
+            engine_model = None;
+        }
+
+        if engine_ready_fd && let Some(eng) = engine.as_ref() {
+            let mut drain = [0u8; 64];
+            let _ = read_some(eng.wake.as_raw_fd(), &mut drain);
+            while let Ok(ev) = eng.events.try_recv() {
+                match ev {
+                    engine::Event::Ready { provider, model } => {
+                        rec.engine_ready(&provider, &model);
+                        engine_model = Some(model);
+                    }
+                    engine::Event::Answer(text) => {
+                        let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        rec.aside_answer(&one_line, true);
+                        notice = Some(one_line);
+                    }
+                    engine::Event::Error(msg) => {
+                        rec.aside_answer(&msg, false);
+                        notice = Some(format!("engine error: {msg}"));
+                    }
+                }
+                dirty = true;
             }
         }
 

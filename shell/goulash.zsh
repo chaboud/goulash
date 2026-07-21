@@ -56,7 +56,7 @@ __goulash_down_or_suggest() {
     zle down-line-or-history
     return
   fi
-  __goulash_osc "S"
+  __goulash_osc "S;$(__goulash_b64 "$BUFFER")"
 }
 zle -N __goulash_down_or_suggest
 bindkey '^[[B' __goulash_down_or_suggest

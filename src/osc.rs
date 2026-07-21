@@ -17,8 +17,9 @@ pub enum Mark {
     Cwd(String),
     /// Q;<base64 text> — a `#` aside intercepted at accept-line
     Ask(String),
-    /// S — line editor requests the top suggestion be pulled in
-    Pull,
+    /// S;<base64 buffer> — line editor requests a suggestion pull; the
+    /// current buffer contents let goulash cycle through the list
+    Pull(String),
 }
 
 const MARKER: &[u8] = b"\x1b]7770;";
@@ -148,7 +149,11 @@ fn parse_mark(body: &[u8]) -> Option<Mark> {
             .map(Mark::CmdEnd),
         b"P" => Some(Mark::Cwd(b64(payload)?)),
         b"Q" => Some(Mark::Ask(b64(payload)?)),
-        b"S" => Some(Mark::Pull),
+        b"S" => Some(Mark::Pull(if payload.is_empty() {
+            String::new()
+        } else {
+            b64(payload)?
+        })),
         _ => None,
     }
 }
