@@ -17,6 +17,10 @@ PulseSH were all [names for aspects of it](../naming/runner-ups.md).)
 | **Task/branch block** | a delegated agent's thread: its own report and context, branching from the main timeline | [delegated agents](../interaction/delegated-agents.md) |
 | **Pulse block** | most-recent-state, *replaceable* update — newer state overwrites rather than appends | live status of background work |
 
+Above the flat block sequence sits a hierarchy of LLM-set region markers
+and summaries used for context retrieval —
+[memory-hierarchy.md](memory-hierarchy.md).
+
 ## Properties
 
 - **Causal trace**: the history preserves the chain

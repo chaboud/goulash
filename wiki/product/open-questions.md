@@ -23,8 +23,24 @@ should turn into edits on the linked pages.
 ## History & context
 - Block store format and location; retention and size limits —
   [block-history](../architecture/block-history.md).
-- How much output per command block is kept verbatim vs. summarized?
+- Per-block raw caps for pathological output (head/tail + spool) —
+  [memory-hierarchy](../architecture/memory-hierarchy.md).
+- Epoch-boundary policy: when to compact the serving prefix (time?
+  token count? region closure?) — [llm-engine](../architecture/llm-engine.md).
 - Redaction beyond echo-off: patterns (tokens, keys) in *output*?
+- How does the rolling cleanup loop get audited — can the user see and
+  edit region markers?
+
+## Rendering & suggestion UX
+- Minimal VT-state tracker scope: exactly which sequences must be parsed
+  to keep [status rows](../architecture/status-rows.md) uncorrupted?
+- Suggestion list focus UX: inline in the status rows vs. a transient
+  popover above them; how much of the list is visible unfocused?
+- Bracketed-paste injection edge cases (readline < 8.1 defaults, shells
+  with paste hooks) — [suggestion-list](../interaction/suggestion-list.md).
+- `##` chat pane rendering: scroll-region tricks vs. full inner-screen
+  compositing vs. an interim tmux-split implementation —
+  [chat-mode](../interaction/chat-mode.md).
 
 ## TUIs & boundaries
 - Opt-in protocol for TUIs that *want* to integrate rather than be
@@ -39,6 +55,11 @@ should turn into edits on the linked pages.
   companion view?
 
 ## Engine
-- Which LLM(s), local vs. remote, and latency budget for suggestions.
-- When does the engine *proactively* prepare a suggestion vs. only on
-  demand (cost/privacy trade-off)?
+- Which local model for the watcher tier, and minimum viable hardware —
+  [llm-engine](../architecture/llm-engine.md).
+- Bundle llama.cpp vs. talk to an external server (ollama etc.)? Bundling
+  is an ops commitment; either way it must stay optional.
+- Latency budget for suggestions; when does the engine *proactively*
+  prepare one vs. only on demand (cost/privacy trade-off)?
+- Autonomy dial: scope-grant language and UI for `accept-each` /
+  `auto-evaluated` modes — [chat-mode](../interaction/chat-mode.md).

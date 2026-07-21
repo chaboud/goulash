@@ -7,8 +7,12 @@ runs under the working name `goulash`; a rename before 1.0 is cheap.
 ## Milestone 0 — transparent PTY wrapper
 The null overlay: `goulash "$SHELL"` allocates a PTY, spawns the shell,
 forwards all bytes both ways, handles window resize (SIGWINCH) and exit
-codes. Success = you can live in it all day and forget it's there.
-- Spec: [pty-overlay](../architecture/pty-overlay.md)
+codes. Include the **shrunken-winsize reserved rows** from day one (even
+if they just show a static status line) — it's foundational geometry and
+retrofitting it later touches everything. Success = you can live in it
+all day (including inside and around tmux) and forget it's there.
+- Spec: [pty-overlay](../architecture/pty-overlay.md),
+  [status-rows](../architecture/status-rows.md)
 
 ## Milestone 1 — session sensing
 Poll/track `tcgetpgrp()` to classify PROMPT / COMMAND /
@@ -27,25 +31,39 @@ invariant.
   [opaque-blocks](../architecture/opaque-blocks.md)
 
 ## Milestone 3 — the `#` aside
-Intercept `#`-prefixed lines at PROMPT, assemble context from block
-history, answer inline. First LLM integration; renders the aside/answer
-as blocks.
-- Spec: [interaction model](../interaction/model.md)
+Intercept `#`-prefixed lines at PROMPT, assemble context from recent
+block history (flat recency window is fine here — the full
+[memory hierarchy](../architecture/memory-hierarchy.md) comes later),
+answer inline. First LLM integration, provider-pluggable from the start.
+- Spec: [interaction model](../interaction/model.md),
+  [llm-engine](../architecture/llm-engine.md)
 
-## Milestone 4 — Down-arrow suggestion
-ZLE widget `goulash-down-or-suggest` for zsh; `bind -x` prototype for
-bash; Alt-Down fallback elsewhere. Record accept/edit/ignore.
-- Spec: [down-arrow-protocol](../interaction/down-arrow-protocol.md)
+## Milestone 4 — suggestion list + down-arrow
+Async suggestion vending into the status rows; freeze-on-focus,
+ID-bound acceptance, staleness invalidation. ZLE widget for zsh,
+`bind -x` prototype for bash, bracketed-paste injection as the generic
+path. Record accept/edit/ignore.
+- Spec: [suggestion-list](../interaction/suggestion-list.md),
+  [down-arrow-protocol](../interaction/down-arrow-protocol.md)
 
-## Milestone 5 — delegated agents
-`# go …` forks a background task with its own thread, pulse-block status,
-and a report block on completion.
-- Spec: [delegated-agents](../interaction/delegated-agents.md)
+## Milestone 5 — memory hierarchy + watcher tier
+Rolling cleanup loop (local model if available) setting region markers;
+logarithmic ramp-off retrieval; epoch-based prefix caching for API calls.
+- Spec: [memory-hierarchy](../architecture/memory-hierarchy.md),
+  [llm-engine](../architecture/llm-engine.md)
+
+## Milestone 6 — `##` chat mode + delegated agents
+The chat pane (top third stays shell), exploration tools over the memory
+tree, `go find this shit for me` delegation into per-task PTYs with pulse
+status. Suggest-only autonomy first; `accept-each` behind a flag.
+- Spec: [chat-mode](../interaction/chat-mode.md),
+  [delegated-agents](../interaction/delegated-agents.md)
 
 ## Later
-fish adapter, tmux per-pane story, remote markers over ssh
+fish adapter, remote markers over ssh
 ([remote-and-multiplexers](../architecture/remote-and-multiplexers.md)),
-permission scopes for stewards, final name call.
+`auto-evaluated` steward scopes, bundled llama.cpp option, final name
+call.
 
 ## Guiding order
 Each milestone is independently usable; trust properties

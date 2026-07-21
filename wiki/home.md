@@ -27,10 +27,15 @@ mindmap
       Session state machine
       Shell integration
       Block history
+      Memory hierarchy
+      LLM engine
+      Status rows
       Opaque blocks
       ssh / tmux
     Interaction
-      "#" directive
+      "#" aside
+      "##" chat mode
+      Suggestion list
       Down-arrow protocol
       Delegated agents
     Product
@@ -54,12 +59,17 @@ mindmap
 - [architecture/session-state-machine.md](architecture/session-state-machine.md) — PROMPT / COMMAND / INTERACTIVE_CHILD
 - [architecture/shell-integration.md](architecture/shell-integration.md) — zsh ZLE, bash Readline, fish, generic fallback
 - [architecture/block-history.md](architecture/block-history.md) — the block-oriented transcript model
+- [architecture/memory-hierarchy.md](architecture/memory-hierarchy.md) — raw leaves, LLM-set region markers, logarithmic ramp-off retrieval
+- [architecture/llm-engine.md](architecture/llm-engine.md) — providers, caching reality (epochs), local llama.cpp watcher tier
+- [architecture/status-rows.md](architecture/status-rows.md) — reserved bottom rows via shrunken inner PTY
 - [architecture/opaque-blocks.md](architecture/opaque-blocks.md) — TUIs as opaque blocks; echo-off secret hygiene
 - [architecture/remote-and-multiplexers.md](architecture/remote-and-multiplexers.md) — ssh and tmux boundaries
 
 ### Interaction
-- [interaction/model.md](interaction/model.md) — the `#` aside, suggestions, and the user's control
+- [interaction/model.md](interaction/model.md) — the `#`/`##` escalation ladder and the prompt as interaction point
+- [interaction/suggestion-list.md](interaction/suggestion-list.md) — async vended, insert-at-top, freeze-on-focus, staleness
 - [interaction/down-arrow-protocol.md](interaction/down-arrow-protocol.md) — `goulash-down-or-suggest`
+- [interaction/chat-mode.md](interaction/chat-mode.md) — `##`: chat with tools, top third stays shell, autonomy dial
 - [interaction/delegated-agents.md](interaction/delegated-agents.md) — `# go recon this folder`, sub-tabs, scouts and stewards
 
 ### Product
