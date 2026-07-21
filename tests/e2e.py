@@ -309,9 +309,17 @@ def test_engine_ollama():
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
+            if "prompt" not in req:
+                # prewarm/load request: model + keep_alive only
+                assert req.get("keep_alive"), "keep_alive missing from warm"
+                self._send({"done": True})
+                return
             assert req.get("keep_alive"), "keep_alive missing from request"
             assert "Session log" in req.get("prompt", ""), "stable preamble missing"
-            ans = f"ANS-{req.get('model')}"
+            opts = req.get("options", {})
+            assert opts.get("num_predict"), "token cap missing"
+            assert opts.get("num_ctx"), "num_ctx missing"
+            ans = f"ANS-{req.get('model')}\nCMD: echo from-{req.get('model')}"
             if req.get("stream"):
                 body = (json.dumps({"response": ans, "done": False}) + "\n"
                         + json.dumps({"response": "", "done": True}) + "\n").encode()
@@ -357,6 +365,9 @@ def test_engine_ollama():
           any(e["ev"] == "engine" and e["model"] == "bigmodel" for e in events))
     check("answer recorded",
           any(e["ev"] == "answer" and e["ok"] and "ANS-" in e["text"] for e in events))
+    check("candidate command vended as suggestion",
+          any(e["ev"] == "suggest" and e["vendor"] == "engine"
+              and e["cmd"].startswith("echo from-") for e in events))
 
 
 def test_non_tty():

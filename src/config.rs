@@ -34,6 +34,15 @@ pub struct EngineConfig {
     pub context_max_chars: usize,
     /// Per-block output-tail chars kept in the session log.
     pub tail_chars: usize,
+    /// Hard cap on generated tokens per answer (the one-line contract is
+    /// otherwise unenforced and small models will ramble on your GPU).
+    pub max_tokens: usize,
+    /// Context window requested from the provider; bounds KV memory
+    /// (ollama may otherwise load models at huge default contexts).
+    pub num_ctx: usize,
+    /// Load the model in the background at bind/switch time so the first
+    /// ask doesn't pay the cold start.
+    pub prewarm: bool,
 }
 
 impl Default for EngineConfig {
@@ -47,6 +56,9 @@ impl Default for EngineConfig {
             stream: true,
             context_max_chars: 12_000,
             tail_chars: 800,
+            max_tokens: 96,
+            num_ctx: 8192,
+            prewarm: true,
         }
     }
 }

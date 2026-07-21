@@ -14,7 +14,12 @@ pub enum Event {
     },
     /// Streaming partial: accumulated answer text so far.
     Partial(String),
-    Answer(String),
+    /// Final answer: prose plus an optional candidate command, which the
+    /// session vends into the suggestion list (pullable with Down).
+    Answer {
+        text: String,
+        command: Option<String>,
+    },
     Error(String),
     Models(Vec<String>),
 }
@@ -83,29 +88,64 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
         model: model.clone(),
     });
     notify(&wr);
+    if cfg.prewarm {
+        warm(&agent, &cfg, &model);
+    }
 
-    while let Ok(job) = jobs.recv() {
-        match job {
-            Job::Ask { question, context } => {
-                let result = generate(&agent, &cfg, &model, &question, &context, &ev, &wr);
-                let _ = match result {
-                    Ok(ans) => ev.send(Event::Answer(ans)),
-                    Err(e) => ev.send(Event::Error(e)),
-                };
+    while let Ok(first) = jobs.recv() {
+        // Drain the queue before working: control jobs apply immediately,
+        // and only the NEWEST ask survives — answering stale questions
+        // serially just burns GPU on answers nobody is waiting for.
+        let mut latest_ask = None;
+        let mut job = first;
+        loop {
+            match job {
+                Job::Ask { .. } => latest_ask = Some(job),
+                Job::SetModel(m) => {
+                    model = m;
+                    let _ = ev.send(Event::Ready {
+                        provider: "ollama".to_string(),
+                        model: model.clone(),
+                    });
+                    notify(&wr);
+                    if cfg.prewarm {
+                        warm(&agent, &cfg, &model);
+                    }
+                }
+                Job::ListModels => {
+                    let _ = ev.send(Event::Models(installed.clone()));
+                    notify(&wr);
+                }
             }
-            Job::SetModel(m) => {
-                model = m;
-                let _ = ev.send(Event::Ready {
-                    provider: "ollama".to_string(),
-                    model: model.clone(),
-                });
-            }
-            Job::ListModels => {
-                let _ = ev.send(Event::Models(installed.clone()));
+            match jobs.try_recv() {
+                Ok(next) => job = next,
+                Err(_) => break,
             }
         }
-        notify(&wr);
+        if let Some(Job::Ask { question, context }) = latest_ask {
+            let result = generate(&agent, &cfg, &model, &question, &context, &ev, &wr);
+            let _ = match result {
+                Ok(ans) => {
+                    let (text, command) = split_answer(&ans);
+                    ev.send(Event::Answer { text, command })
+                }
+                Err(e) => ev.send(Event::Error(e)),
+            };
+            notify(&wr);
+        }
     }
+}
+
+/// Ask the server to load the model (empty generate) so the first real
+/// ask doesn't pay the cold start. Best-effort; blocks only the worker.
+fn warm(agent: &ureq::Agent, cfg: &EngineConfig, model: &str) {
+    let mut body = serde_json::json!({"model": model});
+    if !cfg.keep_alive.is_empty() {
+        body["keep_alive"] = serde_json::json!(cfg.keep_alive);
+    }
+    let _ = agent
+        .post(&format!("{}/api/generate", cfg.host))
+        .send_string(&body.to_string());
 }
 
 fn probe_ollama(agent: &ureq::Agent, cfg: &EngineConfig) -> Option<(String, Vec<String>)> {
@@ -167,7 +207,8 @@ fn pick_model(
 const PREAMBLE: &str = "You are goulash, an assistant living in the user's \
 terminal status bar. Answer tersely in ONE short line of plain text, no \
 markdown. Each command carries the local time it ran; treat old output as \
-stale.\n\nSession log (oldest first):\n";
+stale. If a shell command would help, add ONE extra line starting exactly \
+with 'CMD: ' followed by the command.\n\nSession log (oldest first):\n";
 
 fn generate(
     agent: &ureq::Agent,
@@ -188,7 +229,12 @@ fn generate(
         "model": model,
         "prompt": prompt,
         "stream": cfg.stream,
-        "options": {"temperature": 0.2},
+        "options": {
+            "temperature": 0.2,
+            "num_predict": cfg.max_tokens as i64,
+            "num_ctx": cfg.num_ctx as i64,
+            "stop": ["\n\n"],
+        },
     });
     if !cfg.keep_alive.is_empty() {
         body["keep_alive"] = serde_json::json!(cfg.keep_alive);
@@ -231,6 +277,28 @@ fn generate(
         }
     }
     Ok(acc.trim().to_string())
+}
+
+/// Split a raw answer into (prose, candidate command): the first
+/// non-empty non-CMD line is the prose (one-line contract enforced
+/// here), and the first `CMD: ...` line is the command.
+fn split_answer(raw: &str) -> (String, Option<String>) {
+    let mut text = String::new();
+    let mut command = None;
+    for line in raw.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        if let Some(c) = l.strip_prefix("CMD:") {
+            if command.is_none() && !c.trim().is_empty() {
+                command = Some(c.trim().to_string());
+            }
+        } else if text.is_empty() {
+            text = l.to_string();
+        }
+    }
+    (text, command)
 }
 
 fn tm_now() -> libc::tm {
@@ -317,5 +385,32 @@ mod tests {
             pick_model(&tags, None, &no_favs()).as_deref(),
             Some("mystery")
         );
+    }
+}
+
+#[cfg(test)]
+mod answer_tests {
+    use super::split_answer;
+
+    #[test]
+    fn text_only() {
+        assert_eq!(
+            split_answer("It is Tuesday.\n"),
+            ("It is Tuesday.".into(), None)
+        );
+    }
+
+    #[test]
+    fn text_and_command() {
+        let (t, c) = split_answer("Disk is mostly node_modules.\nCMD: du -sh * | sort -h\n");
+        assert_eq!(t, "Disk is mostly node_modules.");
+        assert_eq!(c.as_deref(), Some("du -sh * | sort -h"));
+    }
+
+    #[test]
+    fn command_first_and_rambling() {
+        let (t, c) = split_answer("\nCMD: git pull\nRun this to update.\nExtra ramble.");
+        assert_eq!(t, "Run this to update.");
+        assert_eq!(c.as_deref(), Some("git pull"));
     }
 }

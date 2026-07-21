@@ -33,9 +33,16 @@ favorites = []             # e.g. ["gemma4:e2b", "llama3.2:1b"] — first
                            # installed favorite wins; else smallest model
 keep_alive = "30m"         # keep the model resident ("" = server default)
 stream = true              # tokens flow into the bar as they arrive
+prewarm = true             # load the model in the background at bind/switch
+max_tokens = 96            # hard cap per answer (no more GPU rambling)
+num_ctx = 8192             # requested context window (bounds KV memory)
 context_max_chars = 12000  # prompt budget; log epoch-trims to half
 tail_chars = 800           # per-command output kept in context
 ```
+
+Answers are two-part: prose lands in the bar; if the model proposes a
+command (`CMD:` line), it drops into the suggestion list — press
+**Down** to pull it into your prompt.
 
 At the prompt: `#/model` lists installed models, `#/model <name>`
 switches live, `#/status`, `#/help`.

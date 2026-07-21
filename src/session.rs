@@ -636,10 +636,19 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
                         notice = Some(format!("{one_line} \u{2026}"));
                     }
-                    engine::Event::Answer(text) => {
+                    engine::Event::Answer { text, command } => {
                         let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
                         rec.aside_answer(&one_line, true);
-                        notice = Some(one_line);
+                        if let Some(cmd) = command {
+                            let id = next_sid;
+                            next_sid += 1;
+                            rec.suggest(id, &cmd, "from # ask", "engine");
+                            suggestions.insert(0, (id, cmd.clone(), "from # ask".to_string()));
+                            suggestions.truncate(8);
+                            notice = Some(format!("{one_line} \u{2502} \u{2193} {cmd}"));
+                        } else {
+                            notice = Some(one_line);
+                        }
                     }
                     engine::Event::Error(msg) => {
                         rec.aside_answer(&msg, false);

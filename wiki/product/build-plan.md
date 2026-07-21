@@ -123,6 +123,14 @@ start, probe chain live.
   fix: block headers carry run-time timestamps and the volatile
   current-time line sits after the stable prefix, so "what day is it"
   stops answering from four-minute-old `date` output.
+  **GPU sanity + warm starts**: `max_tokens` (96) and a blank-line stop
+  hold generations to the one-line contract instead of rambling on the
+  GPU; `num_ctx` (8192) stops huge default context windows from eating
+  KV memory; `prewarm` loads the model in the background at bind and on
+  `#/model` switch; queued asks coalesce so only the newest question
+  spends GPU. **Two-part answers**: prose + optional `CMD:` line — the
+  command vends into the suggestion list (vendor "engine"), pullable
+  with Down like any other suggestion.
 - **Remaining**: selector *widgets* for `#/` (today: text notices, no
   arrow-driven pickers), config write-back for `#/model`, richer answer
   surface (heckle band — one bar row truncates real answers), streaming
