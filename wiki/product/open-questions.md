@@ -73,6 +73,16 @@ should turn into edits on the linked pages.
 - Feed the *visible screen region* as ask-context (vt100 mirror already
   has it) vs. recent blocks — when does each win?
 
+## Agent memory (backlog — [agent-memory](../architecture/agent-memory.md))
+- Auto-remember policy: when may commentary store a note without being
+  asked, and how loudly is that surfaced?
+- Prime-store curation: promotion/demotion/eviction for the most
+  expensive prompt real estate in the system.
+- Bank retrieval ranking (keyword/BM25 → embeddings) and injection
+  budget per ask.
+- Scope: per-project (cwd-keyed) vs. global memories; cross-machine
+  sync.
+
 ## Engine
 - Which local model for the watcher tier, and minimum viable hardware —
   [llm-engine](../architecture/llm-engine.md).

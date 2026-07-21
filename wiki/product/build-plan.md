@@ -174,7 +174,10 @@ status. Suggest-only autonomy first; `accept-each` behind a flag.
   [delegated-agents](../interaction/delegated-agents.md)
 
 ## Later
-fish adapter, remote markers over ssh
+**agent memory** (remember-as-a-tool: prime store in the stable prefix +
+searchable bank + memory vendor —
+[agent-memory](../architecture/agent-memory.md)), fish adapter, remote
+markers over ssh
 ([remote-and-multiplexers](../architecture/remote-and-multiplexers.md)),
 `auto-evaluated` steward scopes, bundled llama.cpp option, final name
 call.

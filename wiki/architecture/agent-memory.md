@@ -1,0 +1,56 @@
+# Agent Memory: Remember-as-a-Tool
+
+**Status: backlog, design captured.** Give goulash the ability to
+*decide to remember things* — the first durable, cross-session memory,
+distinct from the [session log](memory-hierarchy.md) (which dies with
+the session) and curated by the agent rather than recorded
+automatically.
+
+## Two stores, both useful
+
+| Store | Size | Read path | Write discipline |
+|---|---|---|---|
+| **Prime memory** | tiny (hard cap — it taxes every prompt) | always in context, inside the **stable prefix** — changes are epoch events, so it stays [prefix-cache friendly](llm-engine.md) | only things worth paying for on every single ask |
+| **Memory bank** | large | searched on demand; keyword/BM25 first, embeddings later; top-k injected when relevant to the question | cheap to add, ranked at retrieval |
+
+## The write path: a tool the model invokes
+
+Extend the line protocol that already works for small models (`CMD:`):
+
+```
+REMEMBER: the deploy needs `make release TARGET=prod` — plain make breaks signing
+```
+
+A `REMEMBER:` line in any answer (asked or [commentary](../interaction/heckle-mode.md))
+gets stored — bank by default, prime only via explicit promotion. User
+paths too: `#/remember <note>`, `#/memory` (list), `#/forget <n>`, and
+natural-language asides ("# remember that…") the model turns into a
+`REMEMBER:` line itself.
+
+## The killer use case
+
+Hard-to-remember commands. Once remembered, they power a **memory
+vendor** in the [suggestion pipeline](suggestion-vendors.md): when the
+current context matches a remembered command's situation, it vends into
+the suggestion list — one Down-press away, same accept path as
+everything else. Remembering a command once means never composing it
+again.
+
+## Storage & trust
+
+- Plain files under `~/.goulash/memory/` (`prime.md`, `bank.jsonl`) —
+  user-readable, user-editable, greppable; no opaque database.
+- Every note carries a timestamp and provenance (what block/ask it was
+  derived from), per the
+  [anti-poisoning invariants](memory-hierarchy.md).
+- The prime store is the highest-leverage prompt real estate in the
+  system: curation (promotion/demotion/expiry) matters more than
+  capacity. Open questions below.
+
+## Open questions
+
+Tracked in [open-questions](../product/open-questions.md): auto-remember
+policy for the watcher (when does commentary decide something is
+memorable without being told?), bank retrieval ranking, prime-store
+eviction, cross-machine sync, and whether memories are per-project
+(cwd-scoped) or global.

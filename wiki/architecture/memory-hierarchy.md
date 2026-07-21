@@ -65,6 +65,13 @@ more raw verbatim when the engine is fast, harder lean on summaries
 when it's slow. Depth/correctness vs. latency is a tunable closed loop
 per machine and per model.
 
+## Durable memory (backlog)
+
+The session log dies with the session. Agent-curated, cross-session
+memory — a prime always-in-context store plus a searchable bank, written
+via a REMEMBER: tool line — is designed in
+[agent-memory.md](agent-memory.md).
+
 ## Anti-poisoning invariants
 
 Summaries are the retrieval index, so a hallucinated summary can *hide*

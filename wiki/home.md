@@ -62,6 +62,7 @@ mindmap
 - [architecture/memory-hierarchy.md](architecture/memory-hierarchy.md) — raw leaves, LLM-set region markers, logarithmic ramp-off retrieval
 - [architecture/llm-engine.md](architecture/llm-engine.md) — provider probe chain, local-first caching, watcher/thinker tiers
 - [architecture/suggestion-vendors.md](architecture/suggestion-vendors.md) — rules (thefuck-style), history/n-gram, LLM vendors behind one interface
+- [architecture/agent-memory.md](architecture/agent-memory.md) — remember-as-a-tool: prime store + searchable bank (backlog)
 - [architecture/status-rows.md](architecture/status-rows.md) — reserved bottom rows via shrunken inner PTY
 - [architecture/implementation.md](architecture/implementation.md) — Rust, crate landscape, `~/.goulash/` config
 - [architecture/opaque-blocks.md](architecture/opaque-blocks.md) — TUIs as opaque blocks; echo-off secret hygiene
