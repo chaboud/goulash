@@ -189,6 +189,39 @@ def test_state_log():
     check("goulash exited 0", code == 0, f"got {code}")
 
 
+def test_shell_hooks():
+    print("bash integration emits command blocks:")
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    rc = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "shell", "goulash.bash"))
+    proc, mfd = spawn(["bash", "--rcfile", rc, "-i"], home=home)
+    read_until(mfd, rb"\$")
+    os.write(mfd, b"echo hook-$((6*7))\r")
+    read_until(mfd, rb"hook-42")
+    os.write(mfd, b"false\r")
+    time.sleep(0.6)
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+
+    logs = glob.glob(os.path.join(home, "history", "session-*.jsonl"))
+    check("transcript created", len(logs) == 1, f"found {logs}")
+    if not logs:
+        return
+    events = [json.loads(line) for line in open(logs[0])]
+    cmds = [e for e in events if e["ev"] == "cmd"]
+    ends = [e for e in events if e["ev"] == "cmd_end"]
+    prompts = [e for e in events if e["ev"] == "prompt"]
+    cwds = [e for e in events if e["ev"] == "cwd"]
+    check("cmd block with command text", any("echo hook-" in c["text"] for c in cmds),
+          f"cmds: {cmds}")
+    check("failing exit code recorded", any(e["code"] == 1 for e in ends),
+          f"ends: {ends}")
+    check("prompt marks recorded", len(prompts) >= 2, f"{len(prompts)} prompts")
+    check("cwd recorded", any(c["path"].startswith("/") for c in cwds), f"cwds: {cwds}")
+    import base64 as b64mod
+    raw_out = b"".join(b64mod.b64decode(e["b64"]) for e in events if e["ev"] == "out")
+    check("marks stripped from recorded output", b"\x1b]7770;" not in raw_out)
+
+
 def test_non_tty():
     print("refuses to run without a tty:")
     r = subprocess.run([BIN, "true"], capture_output=True)
@@ -203,6 +236,7 @@ def main():
         test_fullscreen_clear,
         test_erase_below,
         test_state_log,
+        test_shell_hooks,
         test_non_tty,
     ):
         try:

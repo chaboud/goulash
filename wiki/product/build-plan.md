@@ -41,13 +41,23 @@ vim, less, fzf, ssh, sudo, pipelines, builtins.
 - **Remaining**: PROMPT vs COMMAND needs the M2 shell hooks (today both
   read as `shell`); real-world validation against vim/fzf/ssh/sudo.
 
-## Milestone 2 — shell hooks + block history
+## Milestone 2 — shell hooks + block history 🚧 in progress
 zsh adapter first (`precmd`/`preexec`), then bash (`PROMPT_COMMAND`).
 Commit command blocks and opaque blocks; enforce the echo-off privacy
 invariant.
 - Spec: [shell-integration](../architecture/shell-integration.md),
   [block-history](../architecture/block-history.md),
   [opaque-blocks](../architecture/opaque-blocks.md)
+- **Done**: OSC 7770 wire protocol (prompt / cmd+text / exit code / cwd),
+  zsh and bash adapter scripts (`shell/goulash.*`, one source line,
+  inert outside goulash), streaming OSC filter with split-sequence
+  handling, marks stripped before the terminal and recorded as
+  block-boundary events in the transcript, hook-aware status label
+  (true `prompt`/`cmd` vs sensed fallback), e2e coverage via
+  `bash --rcfile`.
+- **Remaining**: assemble events into explicit block structures with
+  IDs (currently a flat event stream that implies blocks), opaque-block
+  lifecycle summaries for TUI children, zsh adapter field-testing.
 
 ## Milestone 3 — suggestion list + deterministic vendors (no LLM yet)
 Async vending into the status rows; freeze-on-focus, ID-bound

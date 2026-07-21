@@ -1,7 +1,8 @@
 use crate::config::Config;
+use crate::osc::{Mark, OscFilter};
 use crate::pty;
 use crate::record::Recorder;
-use crate::sense::{Sensor, State};
+use crate::sense::{self, HookPhase, Sensor, State};
 use crate::status;
 use crate::term::{self, RawGuard, Size};
 use nix::poll::{PollFd, PollFlags, PollTimeout};
@@ -220,7 +221,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut cur_state: State = sensor.read(false);
     rec.state(cur_state);
 
-    let mut last_bar = status::render(layout.real, inner_rows, &shell_name, cur_state.label());
+    let mut oscf = OscFilter::new();
+    let mut hook: Option<HookPhase> = None;
+    let mut last_bar = status::render(
+        layout.real,
+        inner_rows,
+        &shell_name,
+        sense::label(&cur_state, hook),
+    );
     write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_bar))?;
     if !typed_ahead.is_empty() {
         let _ = write_all(master, &typed_ahead);
@@ -266,12 +274,29 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
             match read_some(master, &mut buf) {
                 Ok(0) => break 'session,
                 Ok(len) => {
-                    rec.output(&buf[..len]);
+                    // Extract shell-integration marks; the terminal (and
+                    // the transcript) only ever see the cleaned stream.
+                    let (clean, marks) = oscf.feed(&buf[..len]);
+                    rec.output(&clean);
+                    for m in marks {
+                        match m {
+                            Mark::Prompt => {
+                                hook = Some(HookPhase::Prompt);
+                                rec.prompt();
+                            }
+                            Mark::CmdStart(cmd) => {
+                                hook = Some(HookPhase::Command);
+                                rec.cmd_start(&cmd);
+                            }
+                            Mark::CmdEnd(code) => rec.cmd_end(code),
+                            Mark::Cwd(p) => rec.cwd(&p),
+                        }
+                    }
                     // Forward the chunk, but re-pin the scroll region at
                     // each trigger boundary so scrolling output later in
                     // the same chunk can't drag the status row up into
                     // the inner region.
-                    let mut rest = &buf[..len];
+                    let mut rest: &[u8] = &clean;
                     let mut trigger_seen = false;
                     while let Some(end) = find_trigger_end(rest) {
                         let (pre, post) = rest.split_at(end);
@@ -292,7 +317,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             layout.real,
                             layout.inner().rows,
                             &shell_name,
-                            cur_state.label(),
+                            sense::label(&cur_state, hook),
                         );
                         write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_bar))?;
                         dirty = false;
@@ -314,7 +339,12 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 parser.screen_mut().set_size(inner.rows, inner.cols);
                 let _ = term::set_size(master, inner);
                 rec.resize(real.rows, real.cols);
-                last_bar = status::render(layout.real, inner.rows, &shell_name, cur_state.label());
+                last_bar = status::render(
+                    layout.real,
+                    inner.rows,
+                    &shell_name,
+                    sense::label(&cur_state, hook),
+                );
                 write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_bar))?;
                 dirty = false;
             }
@@ -350,7 +380,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     layout.real,
                     layout.inner().rows,
                     &shell_name,
-                    cur_state.label(),
+                    sense::label(&cur_state, hook),
                 );
                 if bar != last_bar {
                     write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &bar))?;

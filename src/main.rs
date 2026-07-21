@@ -1,4 +1,5 @@
 mod config;
+mod osc;
 mod pty;
 mod record;
 mod sense;

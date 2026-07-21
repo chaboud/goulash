@@ -90,6 +90,28 @@ impl Recorder {
         }
     }
 
+    // Block-boundary events from the shell integration (osc::Mark).
+
+    pub fn prompt(&mut self) {
+        self.write(json!({"t": now_ms() as u64, "ev": "prompt"}));
+        self.flush();
+    }
+
+    pub fn cmd_start(&mut self, text: &str) {
+        self.write(json!({"t": now_ms() as u64, "ev": "cmd", "text": text}));
+        self.flush();
+    }
+
+    pub fn cmd_end(&mut self, code: i32) {
+        self.write(json!({"t": now_ms() as u64, "ev": "cmd_end", "code": code}));
+        self.flush();
+    }
+
+    pub fn cwd(&mut self, path: &str) {
+        self.write(json!({"t": now_ms() as u64, "ev": "cwd", "path": path}));
+        self.flush();
+    }
+
     pub fn end(&mut self, code: i32) {
         self.write(json!({"t": now_ms() as u64, "ev": "end", "code": code}));
         self.flush();

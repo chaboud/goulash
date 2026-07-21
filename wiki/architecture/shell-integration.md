@@ -5,6 +5,25 @@ integrations make it *smart*. They provide gate 2 and gate 3 of
 [input ownership](input-ownership.md) and the transition signals for the
 [state machine](session-state-machine.md).
 
+## The wire protocol (implemented)
+
+Adapters talk to goulash over a **private OSC channel** embedded in the
+shell's own output — no sockets, no files, survives ssh by construction:
+
+```
+ESC ] 7770 ; A                BEL    prompt displayed        (precmd)
+ESC ] 7770 ; B ; <b64 cmd>    BEL    command about to run    (preexec)
+ESC ] 7770 ; D ; <exit code>  BEL    command finished
+ESC ] 7770 ; P ; <b64 cwd>    BEL    cwd report
+```
+
+Goulash strips these from the stream before it reaches the real terminal
+(a bare terminal would ignore them anyway) and records them as
+prompt/cmd/cmd_end/cwd events in [block history](block-history.md).
+Payloads are base64 so command text can contain anything. The scripts
+live in `shell/goulash.zsh` and `shell/goulash.bash`, are one `source`
+line to install, and are inert (`return 0`) outside a goulash session.
+
 ## Per-shell plan
 
 ### zsh — first-class

@@ -25,6 +25,16 @@ cargo build
 ./target/debug/goulash zsh        # or name a shell
 ```
 
+Shell integration (recommended — gives goulash real command blocks:
+command text, exit codes, cwd):
+
+```sh
+# ~/.zshrc
+[[ -n "$GOULASH" ]] && source /path/to/goulash/shell/goulash.zsh
+# ~/.bashrc
+[[ -n "$GOULASH" ]] && source /path/to/goulash/shell/goulash.bash
+```
+
 Config (optional): `~/.goulash/config.toml`
 
 ```toml

@@ -37,6 +37,30 @@ impl State {
     }
 }
 
+/// Where the shell integration says we are, when hooks are active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookPhase {
+    Prompt,
+    Command,
+}
+
+/// Status-row label combining job-control/termios sensing with the
+/// shell-hook phase (authoritative when present, since hooks distinguish
+/// prompt from a builtin-running state that termios alone cannot).
+pub fn label(st: &State, hook: Option<HookPhase>) -> &'static str {
+    if !st.fg_shell {
+        return if st.alt_screen { "tui" } else { "run" };
+    }
+    if st.icanon && !st.echo {
+        return "secret";
+    }
+    match hook {
+        Some(HookPhase::Prompt) => "prompt",
+        Some(HookPhase::Command) => "cmd",
+        None => st.label(),
+    }
+}
+
 pub struct Sensor {
     master: RawFd,
     shell_pgid: libc::pid_t,
