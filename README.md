@@ -41,7 +41,9 @@ context_max_chars = 12000  # prompt budget; log epoch-trims to half
 tail_chars = 800           # per-command output kept in context
 ```
 
-Answers are two-part: prose lands in the bar; if the model proposes a
+Answers open the **band**: the bottom of the terminal grows to show
+your question and 1-2 lines of explanation (knobs: `[status] band`,
+`band_rows`), collapsing on your next command. If the model proposes a
 command (`CMD:` line), it drops into the suggestion list — press
 **Down** to pull it into your prompt. Reasoning-model "thinking" is
 disabled (it burned the whole token budget invisibly). `#` asides are

@@ -106,6 +106,11 @@ impl Default for RecordConfig {
 pub struct StatusConfig {
     pub enabled: bool,
     pub rows: u16,
+    /// The heckle band: extra reserved rows above the status row for the
+    /// asked question and the answer/explanation text.
+    pub band: bool,
+    /// Max explanation rows in the band (question row is extra).
+    pub band_rows: u16,
 }
 
 impl Default for StatusConfig {
@@ -113,6 +118,8 @@ impl Default for StatusConfig {
         Self {
             enabled: true,
             rows: 1,
+            band: true,
+            band_rows: 2,
         }
     }
 }

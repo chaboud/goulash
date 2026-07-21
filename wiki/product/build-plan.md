@@ -131,6 +131,12 @@ start, probe chain live.
   spends GPU. **Two-part answers**: prose + optional `CMD:` line — the
   command vends into the suggestion list (vendor "engine"), pullable
   with Down like any other suggestion.
+  **Heckle band v1 (the 3-4 row layout)**: reserved area grows to
+  status + question + explanation rows on a `#` ask and collapses on
+  the next command — dynamic winsize, no compositing; engine binding
+  is now *late*: an unbound worker re-probes when work arrives (ollama
+  started after goulash just works), and unreachable engines error
+  visibly instead of parking silently.
 - **Remaining**: selector *widgets* for `#/` (today: text notices, no
   arrow-driven pickers), config write-back for `#/model`, richer answer
   surface (heckle band — one bar row truncates real answers), streaming

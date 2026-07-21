@@ -1,5 +1,12 @@
 # Heckle Mode
 
+> **Status: v1 implemented.** Layout (top to bottom of the reserved
+> area): status row with state + pullable suggestion; question row when
+> the answer was user-prompted (collapsed otherwise); up to
+> `band_rows` explanation rows. Opens on `#` asks, collapses on the
+> next command — pure winsize arithmetic, as designed. Knobs:
+> `[status] band`, `band_rows`.
+
 MST3K energy: alongside vended commands, the agent gets a small band of
 **visible commentary space** — because sometimes the explanation is more
 valuable than the command.

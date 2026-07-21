@@ -28,3 +28,11 @@ pub fn render(
     // Inverse video bar; SGR is restored by the caller from tracked state.
     format!("\x1b[0;7m{line}\x1b[0m")
 }
+
+/// One full-width styled band row (padded/truncated to cols).
+pub fn pad_row(text: &str, cols: usize, sgr: &str) -> String {
+    let mut line: String = text.chars().take(cols).collect();
+    let used = line.chars().count();
+    line.push_str(&" ".repeat(cols.saturating_sub(used)));
+    format!("{sgr}{line}\x1b[0m")
+}

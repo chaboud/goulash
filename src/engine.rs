@@ -77,24 +77,26 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
 
     // Probe chain, v1: ollama (explicit or auto-detected). "none" was
     // filtered by the caller. (wiki: llm-engine.md probe chain)
-    let Some((mut model, installed)) = probe_ollama(&agent, &cfg) else {
-        // Nothing found: park, holding the wake pipe's write end open —
-        // dropping it would storm the session's poll() with POLLHUP.
-        // recv() errors out when the session drops the Engine.
-        while jobs.recv().is_ok() {}
-        drop(wr);
-        return;
-    };
-    let _ = ev.send(Event::Ready {
-        provider: "ollama".to_string(),
-        model: model.clone(),
-    });
-    notify(&wr);
-    if cfg.prewarm {
-        warm(&agent, &cfg, &model);
+    let mut state = probe_ollama(&agent, &cfg);
+    if let Some((model, _)) = &state {
+        announce(&ev, &wr, model);
+        if cfg.prewarm {
+            warm(&agent, &cfg, model);
+        }
     }
 
     while let Ok(first) = jobs.recv() {
+        // Late binding: ollama may have started after goulash did, so an
+        // unbound engine re-probes whenever work arrives.
+        if state.is_none() {
+            state = probe_ollama(&agent, &cfg);
+            if let Some((model, _)) = &state {
+                announce(&ev, &wr, model);
+                if cfg.prewarm {
+                    warm(&agent, &cfg, model);
+                }
+            }
+        }
         // Drain the queue before working: control jobs apply immediately,
         // and only the NEWEST ask survives — answering stale questions
         // serially just burns GPU on answers nobody is waiting for.
@@ -103,21 +105,23 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
         loop {
             match job {
                 Job::Ask { .. } => latest_ask = Some(job),
-                Job::SetModel(m) => {
-                    model = m;
-                    let _ = ev.send(Event::Ready {
-                        provider: "ollama".to_string(),
-                        model: model.clone(),
-                    });
-                    notify(&wr);
-                    if cfg.prewarm {
-                        warm(&agent, &cfg, &model);
+                Job::SetModel(m) => match state.as_mut() {
+                    Some((model, _)) => {
+                        *model = m;
+                        announce(&ev, &wr, model);
+                        if cfg.prewarm {
+                            warm(&agent, &cfg, model);
+                        }
                     }
-                }
-                Job::ListModels => {
-                    let _ = ev.send(Event::Models(installed.clone()));
-                    notify(&wr);
-                }
+                    None => unreachable_engine(&ev, &wr, &cfg),
+                },
+                Job::ListModels => match &state {
+                    Some((_, installed)) => {
+                        let _ = ev.send(Event::Models(installed.clone()));
+                        notify(&wr);
+                    }
+                    None => unreachable_engine(&ev, &wr, &cfg),
+                },
             }
             match jobs.try_recv() {
                 Ok(next) => job = next,
@@ -125,7 +129,11 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
             }
         }
         if let Some(Job::Ask { question, context }) = latest_ask {
-            let result = generate(&agent, &cfg, &model, &question, &context, &ev, &wr);
+            let Some((model, _)) = &state else {
+                unreachable_engine(&ev, &wr, &cfg);
+                continue;
+            };
+            let result = generate(&agent, &cfg, model, &question, &context, &ev, &wr);
             let _ = match result {
                 Ok(ans) => {
                     if cfg.debug {
@@ -146,6 +154,20 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
             notify(&wr);
         }
     }
+    drop(wr);
+}
+
+fn announce(ev: &mpsc::Sender<Event>, wr: &OwnedFd, model: &str) {
+    let _ = ev.send(Event::Ready {
+        provider: "ollama".to_string(),
+        model: model.to_string(),
+    });
+    notify(wr);
+}
+
+fn unreachable_engine(ev: &mpsc::Sender<Event>, wr: &OwnedFd, cfg: &EngineConfig) {
+    let _ = ev.send(Event::Error(format!("no engine reachable at {}", cfg.host)));
+    notify(wr);
 }
 
 /// Ask the server to load the model (empty generate) so the first real

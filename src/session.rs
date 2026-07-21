@@ -154,41 +154,117 @@ impl Layout {
     }
 }
 
-/// Scroll-region assertion + status redraw + cursor/attribute restore,
-/// derived from the tracked inner-screen state.
-fn fixup_bytes(layout: &Layout, screen: &vt100::Screen, bar: &str) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::with_capacity(256);
-    let inner = layout.inner();
-    out.extend_from_slice(b"\x1b[?25l"); // hide cursor while we work
-    out.extend_from_slice(format!("\x1b[1;{}r", inner.rows).as_bytes());
-    out.extend_from_slice(format!("\x1b[{};1H", layout.status_row()).as_bytes());
-    out.extend_from_slice(bar.as_bytes());
-    out.extend_from_slice(&screen.attributes_formatted());
-    out.extend_from_slice(&screen.cursor_state_formatted());
-    out
+/// The heckle band's content: the asked question (collapsed when the
+/// answer wasn't user-prompted) and the answer/explanation text.
+struct Band {
+    question: Option<String>,
+    text: String,
 }
 
-#[allow(clippy::type_complexity)]
-fn render_bar(
+/// Whitespace-collapse then hard-wrap into at most `max_rows` rows.
+fn wrap_chars(s: &str, width: usize, max_rows: usize) -> Vec<String> {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut rows = Vec::new();
+    let mut cur = String::new();
+    for ch in flat.chars() {
+        cur.push(ch);
+        if cur.chars().count() >= width.max(8) {
+            rows.push(std::mem::take(&mut cur));
+            if rows.len() >= max_rows {
+                return rows;
+            }
+        }
+    }
+    if !cur.trim().is_empty() {
+        rows.push(cur);
+    }
+    rows
+}
+
+/// Compose all reserved rows, top to bottom: status row (state + pullable
+/// suggestion), then question row, then explanation rows.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn compose_rows(
+    cfg: &Config,
     layout: &Layout,
     shell_name: &str,
     st: &State,
     hook: Option<HookPhase>,
     suggestions: &[(u64, String, String)],
     notice: &Option<String>,
-) -> String {
-    // A notice (e.g. an acknowledged aside) displays verbatim; a pending
-    // suggestion gets the pull-arrow affordance.
+    band: &Option<Band>,
+) -> Vec<String> {
+    let cols = layout.real.cols as usize;
+    let mut band_rows: Vec<String> = Vec::new();
+    if cfg.status.band
+        && let Some(b) = band
+    {
+        if let Some(q) = &b.question {
+            band_rows.push(status::pad_row(&format!(" {q}"), cols, "\x1b[0;2;7m"));
+        }
+        for line in wrap_chars(
+            &b.text,
+            cols.saturating_sub(2),
+            cfg.status.band_rows as usize,
+        ) {
+            band_rows.push(status::pad_row(&format!(" {line}"), cols, "\x1b[0m"));
+        }
+    }
+    let reserved = 1 + band_rows.len() as u16;
+    let inner_rows = layout.real.rows.saturating_sub(reserved).max(1);
     let extra = notice
         .clone()
         .or_else(|| suggestions.first().map(|s| format!("\u{2193} {}", s.1)));
-    status::render(
+    let mut rows = vec![status::render(
         layout.real,
-        layout.inner().rows,
+        inner_rows,
         shell_name,
         sense::label(st, hook),
         extra.as_deref(),
-    )
+    )];
+    rows.extend(band_rows);
+    rows
+}
+
+/// Apply a reserved-row-count change: shrink/grow the inner PTY (the
+/// band opening and closing is just more winsize arithmetic) and return
+/// clear-bytes for any rows handed back to the inner world.
+fn sync_reserved(
+    layout: &mut Layout,
+    parser: &mut vt100::Parser,
+    master: RawFd,
+    new_reserved: u16,
+) -> Vec<u8> {
+    let mut pre = Vec::new();
+    if new_reserved == layout.reserved {
+        return pre;
+    }
+    let old_inner = layout.inner().rows;
+    layout.reserved = new_reserved;
+    let inner = layout.inner();
+    parser.screen_mut().set_size(inner.rows, inner.cols);
+    let _ = term::set_size(master, inner);
+    for r in (old_inner + 1)..=inner.rows {
+        // Rows reclaimed from the band back to the shell: clear leftovers.
+        pre.extend_from_slice(format!("\x1b[{r};1H\x1b[K").as_bytes());
+    }
+    pre
+}
+
+/// Scroll-region assertion + reserved-row redraw + cursor/attribute
+/// restore, derived from the tracked inner-screen state.
+fn fixup_bytes(layout: &Layout, screen: &vt100::Screen, rows: &[String]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(512);
+    let inner = layout.inner();
+    out.extend_from_slice(b"\x1b[?25l"); // hide cursor while we work
+    out.extend_from_slice(format!("\x1b[1;{}r", inner.rows).as_bytes());
+    for (i, row) in rows.iter().enumerate() {
+        out.extend_from_slice(format!("\x1b[{};1H", inner.rows + 1 + i as u16).as_bytes());
+        out.extend_from_slice(row.as_bytes());
+    }
+    out.extend_from_slice(&screen.attributes_formatted());
+    out.extend_from_slice(&screen.cursor_state_formatted());
+    out
 }
 
 /// `#/` command dispatch. Returns the bar notice to show.
@@ -303,15 +379,30 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         None
     };
     let mut engine_model: Option<String> = None;
-    let mut last_bar = render_bar(
-        &layout,
-        &shell_name,
-        &cur_state,
-        hook,
-        &suggestions,
-        &notice,
-    );
-    write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_bar))?;
+    let mut band: Option<Band> = None;
+    #[allow(unused_assignments)] // initialized by the first redraw! below
+    let mut last_rows: Vec<String> = Vec::new();
+    macro_rules! redraw {
+        () => {{
+            let rows = compose_rows(
+                cfg,
+                &layout,
+                &shell_name,
+                &cur_state,
+                hook,
+                &suggestions,
+                &notice,
+                &band,
+            );
+            let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);
+            if !pre.is_empty() {
+                write_all(STDOUT, &pre)?;
+            }
+            write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &rows))?;
+            last_rows = rows;
+        }};
+    }
+    redraw!();
     if !typed_ahead.is_empty() {
         let _ = write_all(master, &typed_ahead);
     }
@@ -419,6 +510,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     cur_cmd = Some(cmd);
                                     block_tail.clear();
                                     notice = None;
+                                    band = None;
                                 }
                                 Mark::CmdEnd(code) => {
                                     rec.cmd_end(code);
@@ -499,11 +591,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             &engine_model,
                                             blocks_seen,
                                         );
-                                    } else if let Some(eng) = engine.as_ref()
-                                        && engine_model.is_some()
-                                    {
+                                    } else if let Some(eng) = engine.as_ref() {
                                         eng.ask(body.to_string(), ctx_log.clone());
-                                        notice = Some(format!("{q} \u{2026}"));
+                                        notice = None;
+                                        band = Some(Band {
+                                            question: Some(q.clone()),
+                                            text: "\u{2026}".to_string(),
+                                        });
                                     } else {
                                         notice =
                                             Some(format!("{q} \u{2014} no engine configured yet"));
@@ -542,15 +636,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         }
                     }
                     if trigger_seen {
-                        last_bar = render_bar(
-                            &layout,
-                            &shell_name,
-                            &cur_state,
-                            hook,
-                            &suggestions,
-                            &notice,
-                        );
-                        write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_bar))?;
+                        redraw!();
                         dirty = false;
                     } else {
                         dirty = true;
@@ -570,15 +656,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 parser.screen_mut().set_size(inner.rows, inner.cols);
                 let _ = term::set_size(master, inner);
                 rec.resize(real.rows, real.cols);
-                last_bar = render_bar(
-                    &layout,
-                    &shell_name,
-                    &cur_state,
-                    hook,
-                    &suggestions,
-                    &notice,
-                );
-                write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_bar))?;
+                redraw!();
                 dirty = false;
             }
         }
@@ -632,10 +710,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         notice = Some(format!("engine: {provider} \u{b7} {model}"));
                         engine_model = Some(model);
                     }
-                    engine::Event::Partial(text) => {
-                        let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                        notice = Some(format!("{one_line} \u{2026}"));
-                    }
+                    engine::Event::Partial(text) => match band.as_mut() {
+                        Some(b) => b.text = format!("{text} \u{2026}"),
+                        None => {
+                            let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                            notice = Some(format!("{one_line} \u{2026}"));
+                        }
+                    },
                     engine::Event::Answer { text, command } => {
                         let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
                         rec.aside_answer(&one_line, true);
@@ -645,14 +726,19 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             rec.suggest(id, &cmd, "from # ask", "engine");
                             suggestions.insert(0, (id, cmd.clone(), "from # ask".to_string()));
                             suggestions.truncate(8);
-                            notice = Some(format!("{one_line} \u{2502} \u{2193} {cmd}"));
-                        } else {
-                            notice = Some(one_line);
+                        }
+                        match band.as_mut() {
+                            Some(b) => b.text = text,
+                            None => notice = Some(one_line),
                         }
                     }
                     engine::Event::Error(msg) => {
                         rec.aside_answer(&msg, false);
-                        notice = Some(format!("engine error: {msg}"));
+                        let m = format!("engine error: {msg}");
+                        match band.as_mut() {
+                            Some(b) => b.text = m,
+                            None => notice = Some(m),
+                        }
                     }
                     engine::Event::Debug(raw) => rec.engine_debug(&raw),
                     engine::Event::Models(names) => {
@@ -692,17 +778,23 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         // invisible, so this costs nothing visually.
         if n == 0 {
             if dirty {
-                let bar = render_bar(
+                let rows = compose_rows(
+                    cfg,
                     &layout,
                     &shell_name,
                     &cur_state,
                     hook,
                     &suggestions,
                     &notice,
+                    &band,
                 );
-                if bar != last_bar {
-                    write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &bar))?;
-                    last_bar = bar;
+                if rows != last_rows {
+                    let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);
+                    if !pre.is_empty() {
+                        write_all(STDOUT, &pre)?;
+                    }
+                    write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &rows))?;
+                    last_rows = rows;
                 }
                 dirty = false;
                 idle_ticks = 0;
@@ -710,7 +802,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 idle_ticks += 1;
                 if idle_ticks >= 4 {
                     idle_ticks = 0;
-                    write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_bar))?;
+                    write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_rows))?;
                 }
             }
         }

@@ -269,8 +269,8 @@ def test_zsh_auto_integration():
     out = read_until(mfd, rb"Cargo\.toml")
     check("Down pull executed", b"Cargo.toml" in out, out[-300:])
     os.write(mfd, b"# hello goulash\r")
-    out = read_until(mfd, rb"no engine configured", 5.0)
-    check("aside acknowledged in bar", b"no engine configured" in out, out[-300:])
+    out = read_until(mfd, rb"no engine", 5.0)
+    check("aside acknowledged (no engine reachable)", b"no engine" in out, out[-300:])
     time.sleep(0.5)
     os.write(mfd, b"\x1b[A")  # Up: native history recall of the aside
     out = read_until(mfd, rb"# hello goulash", 4.0)
@@ -351,7 +351,10 @@ def test_engine_ollama():
     time.sleep(1.5)
     os.write(mfd, b"# what is the answer\r")
     out = read_until(mfd, rb"ANS-fakemodel", 8.0)
-    check("smallest model auto-picked, answer in bar", b"ANS-fakemodel" in out, out[-300:])
+    check("smallest model auto-picked, answer shown", b"ANS-fakemodel" in out, out[-300:])
+    # Band opens: status(22) + question(23) + text(24) on a 24-row term.
+    out += read_until(mfd, rb"\x1b\[23;1H", 3.0)
+    check("heckle band opened (question row drawn)", b"\x1b[23;1H" in out)
     os.write(mfd, b"#/model bigmodel\r")
     time.sleep(0.8)
     os.write(mfd, b"# again please\r")
