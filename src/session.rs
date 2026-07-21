@@ -197,7 +197,7 @@ fn slash_command(
     arg: Option<&str>,
     engine: Option<&Engine>,
     engine_model: &Option<String>,
-    blocks: usize,
+    blocks: u64,
 ) -> Option<String> {
     match (cmd, arg) {
         ("model", Some(name)) => match engine {
@@ -292,7 +292,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut block_tail: Vec<u8> = Vec::new();
     let mut last_cwd = String::new();
     let mut notice: Option<String> = None;
-    let mut recent_blocks: Vec<(String, i32, String)> = Vec::new();
+    // Append-only session log for engine context: byte-stable prefix so
+    // the provider's KV cache re-uses everything but the appended tail.
+    // Epoch-trims at a block boundary when over budget (one cache miss).
+    let mut ctx_log = String::new();
+    let mut blocks_seen: u64 = 0;
     let mut engine: Option<Engine> = if cfg.engine.provider != "none" {
         Engine::start(cfg.engine.clone()).ok()
     } else {
@@ -431,13 +435,33 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             output_tail: String::from_utf8_lossy(&block_tail)
                                                 .into_owned(),
                                         };
-                                        recent_blocks.push((
-                                            block.cmd.clone(),
+                                        blocks_seen += 1;
+                                        ctx_log.push_str(&format!(
+                                            "$ {} [exit {}, {}]\n",
+                                            block.cmd,
                                             block.exit_code,
-                                            block.output_tail.chars().take(1200).collect(),
+                                            engine::hms()
                                         ));
-                                        if recent_blocks.len() > 8 {
-                                            recent_blocks.remove(0);
+                                        let tail: String = block
+                                            .output_tail
+                                            .chars()
+                                            .take(cfg.engine.tail_chars)
+                                            .collect();
+                                        if !tail.trim().is_empty() {
+                                            ctx_log.push_str(tail.trim());
+                                            ctx_log.push('\n');
+                                        }
+                                        if ctx_log.len() > cfg.engine.context_max_chars {
+                                            let keep = cfg.engine.context_max_chars / 2;
+                                            let mut start = ctx_log.len().saturating_sub(keep);
+                                            while !ctx_log.is_char_boundary(start) {
+                                                start += 1;
+                                            }
+                                            let cut = ctx_log[start..]
+                                                .find("\n$ ")
+                                                .map(|p| start + p + 1)
+                                                .unwrap_or(start);
+                                            ctx_log.drain(..cut);
                                         }
                                         for v in rules.suggest(&block) {
                                             let id = next_sid;
@@ -453,6 +477,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         // cwd changed: context moved, old
                                         // suggestions are stale.
                                         suggestions.clear();
+                                        ctx_log.push_str(&format!("[cwd: {p}]\n"));
                                     }
                                     rec.cwd(&p);
                                     last_cwd = p;
@@ -472,13 +497,12 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             arg,
                                             engine.as_ref(),
                                             &engine_model,
-                                            recent_blocks.len(),
+                                            blocks_seen,
                                         );
                                     } else if let Some(eng) = engine.as_ref()
                                         && engine_model.is_some()
                                     {
-                                        let ctx = engine::build_context(&recent_blocks, &last_cwd);
-                                        eng.ask(body.to_string(), ctx);
+                                        eng.ask(body.to_string(), ctx_log.clone());
                                         notice = Some(format!("{q} \u{2026}"));
                                     } else {
                                         notice =
@@ -607,6 +631,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         rec.engine_ready(&provider, &model);
                         notice = Some(format!("engine: {provider} \u{b7} {model}"));
                         engine_model = Some(model);
+                    }
+                    engine::Event::Partial(text) => {
+                        let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        notice = Some(format!("{one_line} \u{2026}"));
                     }
                     engine::Event::Answer(text) => {
                         let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");

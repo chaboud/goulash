@@ -114,6 +114,15 @@ start, probe chain live.
   `#/help`; `[engine] favorites` is a preference-ordered list — the
   first installed favorite wins auto-pick (before smallest-installed;
   explicit `model` beats both; favorites match through the `:tag`).
+  **Latency mechanics (knobs on by default)**: `keep_alive` holds the
+  model resident; streaming partials fill the bar as tokens arrive
+  (150ms throttle); context is an append-only session log with a
+  byte-stable preamble — ollama's KV prefix cache re-uses everything
+  but the appended tail — epoch-trimming at a block boundary when over
+  `context_max_chars`; `tail_chars` bounds per-block output. Staleness
+  fix: block headers carry run-time timestamps and the volatile
+  current-time line sits after the stable prefix, so "what day is it"
+  stops answering from four-minute-old `date` output.
 - **Remaining**: selector *widgets* for `#/` (today: text notices, no
   arrow-driven pickers), config write-back for `#/model`, richer answer
   surface (heckle band — one bar row truncates real answers), streaming

@@ -309,7 +309,18 @@ def test_engine_ollama():
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
-            self._send({"response": f"ANS-{req.get('model')}"})
+            assert req.get("keep_alive"), "keep_alive missing from request"
+            assert "Session log" in req.get("prompt", ""), "stable preamble missing"
+            ans = f"ANS-{req.get('model')}"
+            if req.get("stream"):
+                body = (json.dumps({"response": ans, "done": False}) + "\n"
+                        + json.dumps({"response": "", "done": True}) + "\n").encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self._send({"response": ans})
 
         def log_message(self, *a):
             pass

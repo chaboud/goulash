@@ -1,13 +1,19 @@
 use crate::config::EngineConfig;
+use std::io::BufRead;
 use std::os::fd::OwnedFd;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The LLM engine: a worker thread so inference latency never touches the
 /// PTY loop. Events come back over an mpsc channel; a self-pipe byte wakes
 /// the session's poll(). (wiki: architecture/llm-engine.md)
 pub enum Event {
-    Ready { provider: String, model: String },
+    Ready {
+        provider: String,
+        model: String,
+    },
+    /// Streaming partial: accumulated answer text so far.
+    Partial(String),
     Answer(String),
     Error(String),
     Models(Vec<String>),
@@ -81,7 +87,7 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
     while let Ok(job) = jobs.recv() {
         match job {
             Job::Ask { question, context } => {
-                let result = generate(&agent, &cfg.host, &model, &question, &context);
+                let result = generate(&agent, &cfg, &model, &question, &context, &ev, &wr);
                 let _ = match result {
                     Ok(ans) => ev.send(Event::Answer(ans)),
                     Err(e) => ev.send(Event::Error(e)),
@@ -154,52 +160,109 @@ fn pick_model(
         .map(|(_, name)| name.to_string())
 }
 
+/// Byte-stable preamble: identical across asks so the provider's KV
+/// prefix cache (ollama caches against the previous request) re-uses the
+/// preamble + unchanged session-log prefix; only the appended tail and
+/// the question get re-evaluated.
+const PREAMBLE: &str = "You are goulash, an assistant living in the user's \
+terminal status bar. Answer tersely in ONE short line of plain text, no \
+markdown. Each command carries the local time it ran; treat old output as \
+stale.\n\nSession log (oldest first):\n";
+
 fn generate(
     agent: &ureq::Agent,
-    host: &str,
+    cfg: &EngineConfig,
     model: &str,
     question: &str,
     context: &str,
+    ev: &mpsc::Sender<Event>,
+    wr: &OwnedFd,
 ) -> Result<String, String> {
-    let prompt = format!("{context}\nQuestion: {question}\nAnswer (one short line, plain text):");
-    let body = serde_json::json!({
+    // Volatile parts (current time, question) go AFTER the stable prefix.
+    let prompt = format!(
+        "{PREAMBLE}{context}\nCurrent local time: {}\nQuestion: {question}\n\
+         Answer (one short line, plain text):",
+        local_now()
+    );
+    let mut body = serde_json::json!({
         "model": model,
         "prompt": prompt,
-        "stream": false,
+        "stream": cfg.stream,
         "options": {"temperature": 0.2},
     });
+    if !cfg.keep_alive.is_empty() {
+        body["keep_alive"] = serde_json::json!(cfg.keep_alive);
+    }
     let resp = agent
-        .post(&format!("{host}/api/generate"))
+        .post(&format!("{}/api/generate", cfg.host))
         .send_string(&body.to_string())
         .map_err(|e| e.to_string())?;
-    let text = resp.into_string().map_err(|e| e.to_string())?;
-    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    v["response"]
-        .as_str()
-        .map(|s| s.trim().to_string())
-        .ok_or_else(|| "malformed engine response".to_string())
-}
 
-/// Session context assembled from recent command blocks; the terse-answer
-/// instruction lives here so every provider gets the same contract.
-pub fn build_context(blocks: &[(String, i32, String)], cwd: &str) -> String {
-    let mut s = String::from(
-        "You are goulash, an assistant living in the user's terminal status \
-         bar. Answer tersely in ONE short line of plain text, no markdown.\n\n\
-         Recent terminal activity (oldest first):\n",
-    );
-    for (cmd, code, tail) in blocks {
-        s.push_str(&format!("$ {cmd}   [exit {code}]\n"));
-        let t = tail.trim();
-        if !t.is_empty() {
-            s.push_str(t);
-            s.push('\n');
+    if !cfg.stream {
+        let text = resp.into_string().map_err(|e| e.to_string())?;
+        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        return v["response"]
+            .as_str()
+            .map(|s| s.trim().to_string())
+            .ok_or_else(|| "malformed engine response".to_string());
+    }
+
+    // Streaming: one JSON object per line; forward throttled partials so
+    // the bar fills in as tokens arrive.
+    let reader = std::io::BufReader::new(resp.into_reader());
+    let mut acc = String::new();
+    let mut last_emit = Instant::now();
+    for line in reader.lines() {
+        let line = line.map_err(|e| e.to_string())?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
+        if let Some(tok) = v["response"].as_str() {
+            acc.push_str(tok);
+        }
+        if v["done"].as_bool() == Some(true) {
+            break;
+        }
+        if !acc.is_empty() && last_emit.elapsed() >= Duration::from_millis(150) {
+            let _ = ev.send(Event::Partial(acc.clone()));
+            notify(wr);
+            last_emit = Instant::now();
         }
     }
-    if !cwd.is_empty() {
-        s.push_str(&format!("cwd: {cwd}\n"));
-    }
-    s
+    Ok(acc.trim().to_string())
+}
+
+fn tm_now() -> libc::tm {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as libc::time_t;
+    // SAFETY: localtime_r fills the tm struct; zeroed is a valid init.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    tm
+}
+
+/// "2026-07-21 01:10:53" — volatile, kept out of the stable prefix.
+fn local_now() -> String {
+    let tm = tm_now();
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
+}
+
+/// "01:10:53" — stamped onto session-log block headers (stable once
+/// written, so it doesn't break the prefix cache).
+pub fn hms() -> String {
+    let tm = tm_now();
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
 #[cfg(test)]

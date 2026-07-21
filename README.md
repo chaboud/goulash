@@ -31,6 +31,10 @@ host = "http://127.0.0.1:11434"
 # model = "gemma4:e2b"     # pin exactly; beats favorites and auto-pick
 favorites = []             # e.g. ["gemma4:e2b", "llama3.2:1b"] — first
                            # installed favorite wins; else smallest model
+keep_alive = "30m"         # keep the model resident ("" = server default)
+stream = true              # tokens flow into the bar as they arrive
+context_max_chars = 12000  # prompt budget; log epoch-trims to half
+tail_chars = 800           # per-command output kept in context
 ```
 
 At the prompt: `#/model` lists installed models, `#/model <name>`

@@ -24,6 +24,16 @@ pub struct EngineConfig {
     /// Preference-ordered favorites: the first one installed wins during
     /// auto-pick (before falling back to smallest-installed).
     pub favorites: Vec<String>,
+    /// Keep the model resident between asks (ollama keep_alive; "" to
+    /// let the server unload on its own schedule).
+    pub keep_alive: String,
+    /// Stream tokens into the bar as they arrive.
+    pub stream: bool,
+    /// Prompt budget: max chars of session-log context sent per ask;
+    /// the log epoch-trims to half this at a block boundary.
+    pub context_max_chars: usize,
+    /// Per-block output-tail chars kept in the session log.
+    pub tail_chars: usize,
 }
 
 impl Default for EngineConfig {
@@ -33,6 +43,10 @@ impl Default for EngineConfig {
             host: "http://127.0.0.1:11434".to_string(),
             model: None,
             favorites: Vec::new(),
+            keep_alive: "30m".to_string(),
+            stream: true,
+            context_max_chars: 12_000,
+            tail_chars: 800,
         }
     }
 }
