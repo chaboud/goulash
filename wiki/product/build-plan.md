@@ -5,7 +5,9 @@ runs under the working name `goulash`; a rename before 1.0 is cheap.
 **The priority now is building it.**
 
 ## Milestone 0 — transparent PTY wrapper
-The null overlay: `goulash "$SHELL"` allocates a PTY, spawns the shell,
+**In Rust** ([implementation](../architecture/implementation.md)), with
+`~/.goulash/config.toml` loading from day one. The null overlay:
+`goulash "$SHELL"` allocates a PTY, spawns the shell,
 forwards all bytes both ways, handles window resize (SIGWINCH) and exit
 codes. Include the **shrunken-winsize reserved rows** from day one (even
 if they just show a static status line) — it's foundational geometry and

@@ -3,8 +3,50 @@
 ## Selectable providers
 
 Provider choice is a plugin boundary: Anthropic / OpenAI / others / local
-(llama.cpp). Different roles can bind to different providers — see the
-two-tier split below.
+(llama.cpp, ollama, platform engines). Different roles can bind to
+different providers — see the two-tier split below.
+
+## Functional out of the box: the probe chain
+
+Goulash must operate with **zero config editing** on first run. At
+startup (with consent, and cached thereafter), probe in order and bind
+the best available engine to the watcher role:
+
+```
+1. ollama detected (localhost:11434)          → use it, no setup at all
+2. macOS + Apple Silicon + Apple Intelligence → Apple Foundation Models
+                                                 (watcher tier only)
+3. offer: goulash bootstrap local             → fetch/build llama.cpp +
+                                                 vetted small model
+4. API key present (env or providers.toml)    → cloud provider
+5. none of the above                          → run dumb: overlay,
+                                                 history, and status rows
+                                                 all work; LLM features
+                                                 politely absent
+```
+
+Level 5 matters: the [PTY overlay](pty-overlay.md) and
+[block history](block-history.md) must never require an LLM to be
+useful.
+
+### Platform engines (mac-first notes)
+
+- **Apple Foundation Models** ("it's fucking there"): zero download,
+  free, on-device, private — ideal watcher-tier economics. Caveats: the
+  framework API is Swift-only (needs a small shim called from
+  [Rust](implementation.md)), requires a recent macOS on Apple Silicon,
+  the model is small (~3B-class) with a modest context window, and its
+  content-safety layer can refuse benign-but-scary-looking shell content.
+  All fine for turn summarization and region labeling; never the thinker.
+- **MLX**: fast on Apple Silicon but Python-centric tooling and immature
+  Rust bindings — skip for now; revisit if mlx-rs matures.
+- **ONNX Runtime**: cross-platform, but the LLM model/quantization
+  ecosystem is far weaker than GGUF/llama.cpp — skip.
+- **llama.cpp** remains the only engine exposing KV save/restore, so it
+  stays the *preferred* watcher when the user runs bootstrap; ollama and
+  Apple FM plugins declare `kv_save_restore: no` and the context
+  assembler adapts (per-turn watcher jobs barely need persistent KV
+  anyway).
 
 ## Caching stance: local-first
 

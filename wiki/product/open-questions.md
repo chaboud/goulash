@@ -41,8 +41,14 @@ should turn into edits on the linked pages.
 - ~~`##` pane rendering approach~~ **Resolved: push the splitter** —
   shrink the inner PTY (plain winsize change), no compositing, modal
   toggle — [chat-mode](../interaction/chat-mode.md). Remaining detail:
-  splitter ratio configurability, and whether chat scrollback persists
-  across toggles.
+  whether chat scrollback persists across toggles. (Splitter ratio is
+  now a live-adjustable setting —
+  [settings-and-nav](../interaction/settings-and-nav.md).)
+- Left-edge gesture: chord alternative for overloaded-arrow setups; how
+  much of the settings tree gets in-UI exposure vs. file-only —
+  [settings-and-nav](../interaction/settings-and-nav.md).
+- `~/.goulash` vs. `$XDG_CONFIG_HOME` —
+  [implementation](../architecture/implementation.md).
 
 ## TUIs & boundaries
 - Opt-in protocol for TUIs that *want* to integrate rather than be
@@ -61,6 +67,10 @@ should turn into edits on the linked pages.
   [llm-engine](../architecture/llm-engine.md).
 - `goulash bootstrap local` shape: build llama.cpp vs. fetch binaries vs.
   wire an existing server (ollama etc.); which vetted starter model.
+- Apple Foundation Models shim: package the Swift bridge as a separate
+  optional binary, or link it into the mac build?
+- Probe-chain consent UX: how loudly does first-run announce which
+  engine it found and what data flows where?
 - Latency budget for suggestions; when does the engine *proactively*
   prepare one vs. only on demand (cost/privacy trade-off)?
 - Autonomy dial: scope-grant language and UI for `accept-each` /

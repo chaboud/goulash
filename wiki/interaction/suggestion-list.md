@@ -29,6 +29,10 @@ or expired outright. A stale `rm`-flavored suggestion silently pointing
 at a path whose meaning changed is the failure mode this exists to
 prevent.
 
+While focused, the list is also the entry point to goulash's wider
+surface: **Left off the left edge** slides into settings/control —
+[settings-and-nav.md](settings-and-nav.md).
+
 ## Delivery into the command line
 
 Two mechanisms, complementary:

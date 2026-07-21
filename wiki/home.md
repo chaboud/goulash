@@ -62,6 +62,7 @@ mindmap
 - [architecture/memory-hierarchy.md](architecture/memory-hierarchy.md) — raw leaves, LLM-set region markers, logarithmic ramp-off retrieval
 - [architecture/llm-engine.md](architecture/llm-engine.md) — providers, caching reality (epochs), local llama.cpp watcher tier
 - [architecture/status-rows.md](architecture/status-rows.md) — reserved bottom rows via shrunken inner PTY
+- [architecture/implementation.md](architecture/implementation.md) — Rust, crate landscape, `~/.goulash/` config
 - [architecture/opaque-blocks.md](architecture/opaque-blocks.md) — TUIs as opaque blocks; echo-off secret hygiene
 - [architecture/remote-and-multiplexers.md](architecture/remote-and-multiplexers.md) — ssh and tmux boundaries
 
@@ -71,6 +72,7 @@ mindmap
 - [interaction/down-arrow-protocol.md](interaction/down-arrow-protocol.md) — `goulash-down-or-suggest`
 - [interaction/chat-mode.md](interaction/chat-mode.md) — `##`: chat with tools, top third stays shell, autonomy dial
 - [interaction/delegated-agents.md](interaction/delegated-agents.md) — `# go recon this folder`, sub-tabs, scouts and stewards
+- [interaction/settings-and-nav.md](interaction/settings-and-nav.md) — TV-remote spatial nav, menus, config write-back
 
 ### Product
 - [product/positioning.md](product/positioning.md) — coach, not agent overlord
