@@ -7,6 +7,7 @@ assertion, resize propagation, and exit-code propagation.
 """
 import fcntl
 import glob
+import shutil
 import json
 import os
 import pty
@@ -33,7 +34,7 @@ def spawn(argv, rows=ROWS, cols=COLS, home=None):
     mfd, sfd = pty.openpty()
     set_winsize(mfd, rows, cols)
     home = home or tempfile.mkdtemp(prefix="goulash-test-")
-    env = dict(os.environ, GOULASH_HOME=home, TERM="xterm-256color")
+    env = dict(os.environ, GOULASH_HOME=home, HOME=home, TERM="xterm-256color")
     proc = subprocess.Popen(
         [BIN] + argv, stdin=sfd, stdout=sfd, stderr=sfd,
         start_new_session=True, env=env, close_fds=True,
@@ -251,6 +252,34 @@ def test_suggestions():
         check("accept event recorded", any(e["ev"] == "accept" for e in events))
 
 
+def test_zsh_auto_integration():
+    print("zsh auto-integration, zero setup (# aside + plain Down pull):")
+    if not shutil.which("zsh"):
+        print("  [SKIP] zsh not installed")
+        return
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    proc, mfd = spawn(["zsh"], home=home)
+    time.sleep(1.5)
+    os.write(mfd, b"lls\r")
+    out = read_until(mfd, "↓ ls".encode())
+    check("suggestion vended under zsh", "↓ ls".encode() in out, out[-300:])
+    os.write(mfd, b"\x1b[B")  # plain Down, past end of history
+    time.sleep(0.6)
+    os.write(mfd, b"\r")
+    out = read_until(mfd, rb"Cargo\.toml")
+    check("Down pull executed", b"Cargo.toml" in out, out[-300:])
+    os.write(mfd, b"# hello goulash\r")
+    out = read_until(mfd, rb"no engine configured", 5.0)
+    check("aside acknowledged in bar", b"no engine configured" in out, out[-300:])
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+    logs = glob.glob(os.path.join(home, "history", "session-*.jsonl"))
+    events = [json.loads(line) for line in open(logs[0])] if logs else []
+    check("aside recorded",
+          any(e["ev"] == "aside" and "hello goulash" in e["text"] for e in events))
+    check("accept recorded", any(e["ev"] == "accept" for e in events))
+
+
 def test_non_tty():
     print("refuses to run without a tty:")
     r = subprocess.run([BIN, "true"], capture_output=True)
@@ -267,6 +296,7 @@ def main():
         test_state_log,
         test_shell_hooks,
         test_suggestions,
+        test_zsh_auto_integration,
         test_non_tty,
     ):
         try:

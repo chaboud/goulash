@@ -8,6 +8,23 @@ use std::path::PathBuf;
 pub struct Config {
     pub status: StatusConfig,
     pub record: RecordConfig,
+    pub shell: ShellConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ShellConfig {
+    /// Auto-inject shell integration (ZDOTDIR trick for zsh, --rcfile
+    /// wrapper for bash) when launching a known shell with plain flags.
+    pub auto_integrate: bool,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            auto_integrate: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

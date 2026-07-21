@@ -21,8 +21,24 @@ Goulash strips these from the stream before it reaches the real terminal
 (a bare terminal would ignore them anyway) and records them as
 prompt/cmd/cmd_end/cwd events in [block history](block-history.md).
 Payloads are base64 so command text can contain anything. The scripts
-live in `shell/goulash.zsh` and `shell/goulash.bash`, are one `source`
-line to install, and are inert (`return 0`) outside a goulash session.
+live in `shell/goulash.zsh` and `shell/goulash.bash` and are inert
+(`return 0`) outside a goulash session.
+
+## Auto-injection (implemented)
+
+Requiring an rc-file edit before `#` and Down work was an onboarding
+failure (field-tested). The adapter scripts are **embedded in the
+binary** and injected automatically when goulash launches `zsh` or
+`bash` with plain flags (`-i`/`-l` only):
+
+- **zsh**: the ZDOTDIR trick — a generated dotdir whose
+  `.zshenv`/`.zprofile`/`.zshrc` stubs source the user's real files
+  first, restore `ZDOTDIR`, then source the adapter.
+- **bash**: `--rcfile` pointing at a generated wrapper that sources
+  `~/.bashrc` then the adapter.
+
+Custom args, unknown shells, or `[shell] auto_integrate = false` fall
+back to untouched passthrough plus the manual one-line source.
 
 ## Per-shell plan
 

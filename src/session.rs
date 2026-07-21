@@ -204,7 +204,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| argv[0].clone());
 
-    let mut p = pty::spawn(&argv, layout.inner())?;
+    let integ = crate::integrate::prepare(argv.clone(), cfg.shell.auto_integrate);
+    let mut p = pty::spawn(&integ.argv, &integ.envs, layout.inner())?;
     let master = p.master.as_raw_fd();
 
     let raw = RawGuard::new(unsafe { BorrowedFd::borrow_raw(STDIN) })

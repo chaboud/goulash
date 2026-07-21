@@ -11,7 +11,7 @@ pub struct Pty {
 
 /// Allocate a PTY sized `size` (already shrunk by the reserved rows) and
 /// spawn `argv` on the slave side as a controlling-terminal session leader.
-pub fn spawn(argv: &[String], size: Size) -> io::Result<Pty> {
+pub fn spawn(argv: &[String], envs: &[(String, String)], size: Size) -> io::Result<Pty> {
     let ws = libc::winsize {
         ws_row: size.rows,
         ws_col: size.cols,
@@ -31,6 +31,9 @@ pub fn spawn(argv: &[String], size: Size) -> io::Result<Pty> {
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..]);
     cmd.env("GOULASH", env!("CARGO_PKG_VERSION"));
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
 
     let slave_fd = slave.as_raw_fd();
     // SAFETY: only async-signal-safe calls between fork and exec.

@@ -29,8 +29,12 @@ cargo build
 ./target/debug/goulash zsh        # or name a shell
 ```
 
-Shell integration (recommended — gives goulash real command blocks:
-command text, exit codes, cwd):
+**Shell integration is automatic** for zsh and bash launched with plain
+flags — goulash injects its hooks (ZDOTDIR trick / `--rcfile` wrapper)
+on top of your normal rc files, no editing required. That's what powers
+command blocks, `#` asides, and the plain-Down suggestion pull.
+
+Manual fallback (custom shells or `auto_integrate = false`):
 
 ```sh
 # ~/.zshrc
