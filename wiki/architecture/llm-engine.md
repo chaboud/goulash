@@ -6,35 +6,36 @@ Provider choice is a plugin boundary: Anthropic / OpenAI / others / local
 (llama.cpp). Different roles can bind to different providers — see the
 two-tier split below.
 
-## The caching reality check
+## Caching stance: local-first
 
-The wish: "cached state for the LLM up to a particular context, saved and
-restored." What's actually available differs sharply by tier:
+**Decision:** cache-efficiency matters for the **local case**; portable
+cached state across cloud providers is a pipe dream and we don't chase
+it. But the provider plug-in model is shaped so we *could* get there if
+the landscape changes.
 
-- **API providers (Anthropic, OpenAI, …):** prompt caching is
-  **prefix-based, server-side, TTL-bounded, and opaque**. You cannot
-  export or restore it; you can only *exploit* it by keeping a
-  byte-stable prefix across calls. There is no portable KV-cache today.
-- **llama.cpp:** KV-cache save/restore is **real**
-  (`llama_state_*` / session files). A resident local model can hold a
+- **llama.cpp (the case we optimize):** KV-cache save/restore is **real**
+  (`llama_state_*` / session files). A resident local model holds a
   persistent session over the whole terminal lifetime, cheaply appending
-  new blocks as they happen.
+  new blocks as they happen — and can snapshot/restore state across
+  goulash restarts.
+- **API providers (Anthropic, OpenAI, …):** prompt caching is
+  prefix-based, server-side, TTL-bounded, and opaque. A provider plugin
+  *may* exploit it by keeping an append-mostly context — stable
+  `[system + epoch summary]` prefix, append-only tail, compaction only at
+  epoch boundaries (one deliberate cache miss each). That's an
+  optimization inside the plugin, not an architectural commitment.
 
-### Consequence: append-mostly context with epochs
+### Provider plug-in contract (sketch)
 
-The [log-ramp-off](memory-hierarchy.md) rewrites old context, which is
-cache-hostile. So structure every API call's context as:
+Each provider plugin declares its caching capabilities so the context
+assembler can adapt:
 
 ```
-[ system + epoch summary ]   ← stable prefix; changes only at epoch boundaries
-[ event log tail ]           ← append-only between epochs
+capabilities:
+  kv_save_restore:   yes | no      (llama.cpp: yes)
+  prefix_cache:      yes | no      (cloud: yes, opaque)
+  preferred_shape:   append-mostly | free-form
 ```
-
-Compaction (re-summarizing, re-ramping) happens only at **epoch
-boundaries**, where one deliberate cache miss is paid and a new stable
-prefix is minted. Between epochs, every call is a cache hit on the
-prefix. The rolling-cleanup pass writes summaries *into the tree*
-continuously, but the *serving prefix* only advances at epochs.
 
 ## Two-tier engine
 
@@ -45,9 +46,10 @@ continuously, but the *serving prefix* only advances at epochs.
 
 This keeps the always-on observation loop free (no per-token API cost, no
 privacy egress for raw observation) while heavy reasoning gets a frontier
-model. The local tier is **optional and pluggable** — bundling llama.cpp
-is an ops/maintenance commitment, so it must never be a hard dependency
-of the core overlay.
+model. The local tier is **optional but bootstrappable**: never a hard
+dependency of the core overlay, but goulash should be able to help set it
+up (`goulash bootstrap local` — fetch/build llama.cpp or point at an
+existing server, download a vetted small model, wire the watcher role).
 
 ## Privacy note
 

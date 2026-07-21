@@ -28,9 +28,15 @@ Goulash must track enough VT state (cursor position, alternate screen,
 scroll regions) to draw its rows without corruption — i.e., a **partial
 terminal emulator** is unavoidable. This was already implicitly required
 for observation ([opaque-blocks](opaque-blocks.md) detection); drawing
-makes it explicit. Keep it minimal: track state, don't re-render the
-inner screen (that full-compositor step is only needed if/when the
-[`##` chat pane](../interaction/chat-mode.md) demands it).
+makes it explicit. Keep it minimal: track state, never re-render the
+inner screen. There is **no compositor anywhere in the design** — the
+[`##` chat pane](../interaction/chat-mode.md) reuses this exact
+mechanism, just with a bigger number: push the splitter by shrinking the
+inner PTY further and own the reclaimed rows.
+
+**Window-size management is the load-bearing wall of the whole product**:
+status rows, the `##` splitter, and tmux nesting all reduce to doing
+winsize/SIGWINCH/scroll-region bookkeeping exactly right.
 
 ## Nesting: byobu/tmux both ways
 

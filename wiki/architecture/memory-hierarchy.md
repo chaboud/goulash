@@ -27,11 +27,19 @@ leaves:   raw blocks (pure history: bytes, exit codes, timings)
 ```
 
 - **Commands and user interactions are natural timeline markers** — they
-  already delimit blocks.
+  already delimit blocks. **Turn-based summarization is the baseline**:
+  the zsh/bash command boundary (command vs. output) is the simple,
+  honest fencepost, and summarization can operate purely on those turns
+  with no LLM-invented structure at all.
 - **A rolling cleanup LLM may set markers and signify regions**: an async
   background pass (cheap [local model](llm-engine.md) territory) that
   groups spans into labeled regions — "did cleanup here, built source
-  over there, dealt with an issue there" — and writes region summaries.
+  over there, dealt with an issue there."
+- **Markers are summarizer *hints*, not restrictions.** A later
+  summarization pass may honor, ignore, or redraw them. Binding
+  retrieval hard to LLM-drawn boundaries could turn toxic (a bad region
+  boundary would distort everything summarized within it); the
+  turn-based fenceposts are always there to fall back on.
 - Regions can nest; the hierarchy is prompt/block-based, not
   time-sliced.
 

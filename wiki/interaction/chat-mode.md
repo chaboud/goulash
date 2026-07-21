@@ -9,13 +9,41 @@ suggest (eventually run) commands. The escalation ladder:
 ##  chat      conversational mode, LLM gets tools
 ```
 
-## Layout
+## Layout: push the splitter, no compositing
 
-Chat takes over most of the terminal, **but the top third stays the live
-shell**. The shell is never fully hidden — it remains the primary
-artifact, and the user can watch commands land while chatting. Exiting
-`##` returns the full screen to the shell. Rendering builds on the same
-compositing machinery as the [status rows](../architecture/status-rows.md).
+**Decision: no compositing, no faking it.** The chat pane is created the
+same way the [status rows](../architecture/status-rows.md) are — by
+shrinking the inner PTY's winsize. Entering `##` is, from the shell's
+point of view, **just a window size change**:
+
+```
+normal:   inner PTY rows = N - status_rows
+## mode:  inner PTY rows = N / 3          ← SIGWINCH; shell reflows itself
+          chat pane owns the reclaimed rows
+exit ##:  resize back; shell reflows again
+```
+
+The top third stays the live shell — never hidden, still running, still
+streaming output. The shell and any TUI in it reflow exactly as they
+would in a real terminal resize (same churn you accept when splitting a
+tmux pane). Goulash renders only its own pane; it never repaints the
+shell's content. If we can't get there immediately, `##` waits — we don't
+ship a fake.
+
+## Modality: `##` is a toggle, not a focus fight
+
+We are in **one mode or another** — like tmux with an unfocused split:
+
+- In shell mode, all keys go to the shell (per the
+  [three gates](../architecture/input-ownership.md)).
+- After `##` + Enter, **all keys go to chat**. The shell keeps running
+  and rendering in its third, but receives no input — you can't touch
+  the command window (not even Ctrl-C to its foreground job) until you
+  toggle back with `##` + Enter from the chat side.
+- There is never a moment where two consumers contend for the keyboard.
+
+This makes input routing trivial and unambiguous: modal focus, not
+arbitration.
 
 ## What the LLM can do in chat mode
 
@@ -51,9 +79,10 @@ subtree, no network, dry-run first, …) defined in
 [delegated-agents](delegated-agents.md). Scope grants should be explicit,
 visible, and revocable.
 
-## Note on `##` as syntax
+## Note on `#`/`##` as syntax
 
 `#`/`##` are valid shell comments, so a line that leaks to a bare shell
-is harmless. Genuine interactive comments are rare; still, keep a
-configurable escape (e.g. `#!` or a leading space) for users who really
-do type comments at the prompt.
+is harmless. For users who genuinely want a comment at the prompt, the
+escape is **`\#`** — goulash strips the backslash and passes a literal
+`#…` line through to the shell untouched
+([interaction model](model.md)).

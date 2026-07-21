@@ -38,9 +38,11 @@ should turn into edits on the linked pages.
   popover above them; how much of the list is visible unfocused?
 - Bracketed-paste injection edge cases (readline < 8.1 defaults, shells
   with paste hooks) — [suggestion-list](../interaction/suggestion-list.md).
-- `##` chat pane rendering: scroll-region tricks vs. full inner-screen
-  compositing vs. an interim tmux-split implementation —
-  [chat-mode](../interaction/chat-mode.md).
+- ~~`##` pane rendering approach~~ **Resolved: push the splitter** —
+  shrink the inner PTY (plain winsize change), no compositing, modal
+  toggle — [chat-mode](../interaction/chat-mode.md). Remaining detail:
+  splitter ratio configurability, and whether chat scrollback persists
+  across toggles.
 
 ## TUIs & boundaries
 - Opt-in protocol for TUIs that *want* to integrate rather than be
@@ -57,8 +59,8 @@ should turn into edits on the linked pages.
 ## Engine
 - Which local model for the watcher tier, and minimum viable hardware —
   [llm-engine](../architecture/llm-engine.md).
-- Bundle llama.cpp vs. talk to an external server (ollama etc.)? Bundling
-  is an ops commitment; either way it must stay optional.
+- `goulash bootstrap local` shape: build llama.cpp vs. fetch binaries vs.
+  wire an existing server (ollama etc.); which vetted starter model.
 - Latency budget for suggestions; when does the engine *proactively*
   prepare one vs. only on demand (cost/privacy trade-off)?
 - Autonomy dial: scope-grant language and UI for `accept-each` /

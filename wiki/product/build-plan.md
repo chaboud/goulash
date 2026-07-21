@@ -53,8 +53,10 @@ logarithmic ramp-off retrieval; epoch-based prefix caching for API calls.
   [llm-engine](../architecture/llm-engine.md)
 
 ## Milestone 6 — `##` chat mode + delegated agents
-The chat pane (top third stays shell), exploration tools over the memory
-tree, `go find this shit for me` delegation into per-task PTYs with pulse
+The chat pane by **pushing the splitter** — shrink the inner PTY to the
+top third (no compositing; the M0 winsize machinery, bigger number) —
+with modal `##` toggle. Exploration tools over the memory tree,
+`go find this shit for me` delegation into per-task PTYs with pulse
 status. Suggest-only autonomy first; `accept-each` behind a flag.
 - Spec: [chat-mode](../interaction/chat-mode.md),
   [delegated-agents](../interaction/delegated-agents.md)

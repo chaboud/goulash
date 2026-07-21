@@ -25,6 +25,15 @@ stray aside reaching a plain shell is harmless.
 $ # I want to see all of the files created in february
 ```
 
+When an answer contains command candidates, **selecting one puts the
+command in the terminal** — into the prompt as editable text (same
+insertion mechanics as the [suggestion list](suggestion-list.md)), so
+when something is *nearly* right the user tweaks it and hits Enter.
+Nothing runs on selection.
+
+To pass a literal comment through to the shell, escape it: **`\#`** —
+goulash strips the backslash and forwards the `#…` line untouched.
+
 Asides and answers are recorded as aside blocks in
 [block history](../architecture/block-history.md). Context comes from the
 [memory hierarchy](../architecture/memory-hierarchy.md): recent raw
@@ -33,8 +42,10 @@ verbatim, logarithmic ramp-off beyond, drill-down tools for the rest.
 ## 2. `##` chat mode
 
 `##` flips the script into a chat session — the LLM gets exploration and
-command tooling, the terminal splits (top third stays the live shell).
-Full page: [chat-mode.md](chat-mode.md).
+command tooling, and the splitter pushes: the inner PTY shrinks to the
+top third (a plain window-size change to the shell), chat owns the rest.
+**Modal, not contended**: all keys go to chat until `##` + Enter toggles
+back — like an unfocused tmux split. Full page: [chat-mode.md](chat-mode.md).
 
 ## 3. Async suggestions
 
