@@ -137,6 +137,12 @@ start, probe chain live.
   is now *late*: an unbound worker re-probes when work arrives (ollama
   started after goulash just works), and unreachable engines error
   visibly instead of parking silently.
+  **Bar redesign + chat continuity**: agent content (suggestions,
+  notices, band) renders in a contrasting colored block with the static
+  chrome right-justified in its own shading; the band holds fixed
+  height while open. Asks and answers append to the session log, so
+  follow-up questions ("recursively") resolve against the running
+  conversation — CI asserts the chat history reaches the prompt.
 - **Remaining**: selector *widgets* for `#/` (today: text notices, no
   arrow-driven pickers), config write-back for `#/model`, richer answer
   surface (heckle band — one bar row truncates real answers), streaming

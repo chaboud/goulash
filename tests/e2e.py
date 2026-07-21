@@ -326,7 +326,10 @@ def test_engine_ollama():
             assert opts.get("num_predict"), "token cap missing"
             assert opts.get("num_ctx"), "num_ctx missing"
             assert req.get("think") is False, "think:false missing"
-            ans = f"ANS-{req.get('model')}\nCMD: echo from-{req.get('model')}"
+            ans = f"ANS-{req.get('model')}"
+            if "goulash answered" in req.get("prompt", ""):
+                ans += "-CTX"  # proof the chat history reached the prompt
+            ans += f"\nCMD: echo from-{req.get('model')}"
             if req.get("stream"):
                 body = (json.dumps({"response": ans, "done": False}) + "\n"
                         + json.dumps({"response": "", "done": True}) + "\n").encode()
@@ -358,8 +361,9 @@ def test_engine_ollama():
     os.write(mfd, b"#/model bigmodel\r")
     time.sleep(0.8)
     os.write(mfd, b"# again please\r")
-    out = read_until(mfd, rb"ANS-bigmodel", 8.0)
+    out = read_until(mfd, rb"ANS-bigmodel-CTX", 8.0)
     check("#/model switch took effect", b"ANS-bigmodel" in out, out[-300:])
+    check("follow-up ask carries chat history", b"ANS-bigmodel-CTX" in out, out[-300:])
     os.write(mfd, b"#/status\r")
     out = read_until(mfd, rb"blocks this session", 5.0)
     check("#/status shows engine", b"bigmodel" in out, out[-300:])

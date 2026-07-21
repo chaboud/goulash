@@ -199,15 +199,24 @@ fn compose_rows(
     if cfg.status.band
         && let Some(b) = band
     {
-        if let Some(q) = &b.question {
-            band_rows.push(status::pad_row(&format!(" {q}"), cols, "\x1b[0;2;7m"));
-        }
-        for line in wrap_chars(
+        // Fixed height while open: question row + band_rows, padded —
+        // the band only changes size at open/close, never mid-answer.
+        let q = b.question.as_deref().unwrap_or("");
+        band_rows.push(status::pad_row(&format!(" {q}"), cols, status::QUERY_SGR));
+        let mut lines = wrap_chars(
             &b.text,
             cols.saturating_sub(2),
             cfg.status.band_rows as usize,
-        ) {
-            band_rows.push(status::pad_row(&format!(" {line}"), cols, "\x1b[0m"));
+        );
+        while (lines.len() as u16) < cfg.status.band_rows.max(1) {
+            lines.push(String::new());
+        }
+        for line in lines {
+            band_rows.push(status::pad_row(
+                &format!(" {line}"),
+                cols,
+                status::AGENT_SGR,
+            ));
         }
     }
     let reserved = 1 + band_rows.len() as u16;
@@ -218,6 +227,7 @@ fn compose_rows(
     let mut rows = vec![status::render(
         layout.real,
         inner_rows,
+        reserved,
         shell_name,
         sense::label(st, hook),
         extra.as_deref(),
@@ -593,6 +603,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         );
                                     } else if let Some(eng) = engine.as_ref() {
                                         eng.ask(body.to_string(), ctx_log.clone());
+                                        ctx_log.push_str(&format!(
+                                            "# {} [asked {}]\n",
+                                            body,
+                                            engine::hms()
+                                        ));
                                         notice = None;
                                         band = Some(Band {
                                             question: Some(q.clone()),
@@ -720,12 +735,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     engine::Event::Answer { text, command } => {
                         let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
                         rec.aside_answer(&one_line, true);
+                        ctx_log.push_str(&format!("goulash answered: {one_line}\n"));
                         if let Some(cmd) = command {
                             let id = next_sid;
                             next_sid += 1;
                             rec.suggest(id, &cmd, "from # ask", "engine");
                             suggestions.insert(0, (id, cmd.clone(), "from # ask".to_string()));
                             suggestions.truncate(8);
+                            ctx_log.push_str(&format!("goulash suggested: {cmd}\n"));
                         }
                         match band.as_mut() {
                             Some(b) => b.text = text,

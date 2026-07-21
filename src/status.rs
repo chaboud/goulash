@@ -1,32 +1,39 @@
 use crate::term::Size;
 
-/// Render the status row content for the given real-terminal size.
-/// Returns the styled bytes to print at the status row; exactly one
-/// terminal row wide, no trailing newline.
+/// SGR palette for the reserved area: the agent's content block and the
+/// static chrome read as visually distinct surfaces.
+pub const AGENT_SGR: &str = "\x1b[0;97;44m"; // white on blue: agent content
+pub const QUERY_SGR: &str = "\x1b[0;93;44m"; // yellow on blue: user question
+pub const CHROME_SGR: &str = "\x1b[0;97;100m"; // white on gray: static chrome
+
+/// The status row: agent content (suggestion/notice) fills the left in
+/// the agent block color; the static chrome — identity, shell, state,
+/// and geometry — sits right-justified in its own shading so it visibly
+/// does not ride along with the agent party.
 pub fn render(
     real: Size,
     inner_rows: u16,
+    reserved: u16,
     shell_name: &str,
     state: &str,
     extra: Option<&str>,
 ) -> String {
-    let left = match extra {
-        Some(e) => format!(" goulash \u{2502} {shell_name} \u{2502} {state} \u{2502} {e} "),
-        None => format!(" goulash \u{2502} {shell_name} \u{2502} {state} "),
-    };
-    let right = format!(" {}x{}+{} ", real.cols, inner_rows, real.rows - inner_rows);
     let cols = real.cols as usize;
-    let used = left.chars().count() + right.chars().count();
-    let line = if used <= cols {
-        format!("{left}{}{right}", " ".repeat(cols - used))
-    } else {
-        left.chars()
-            .chain(" ".repeat(cols).chars())
-            .take(cols)
-            .collect()
-    };
-    // Inverse video bar; SGR is restored by the caller from tracked state.
-    format!("\x1b[0;7m{line}\x1b[0m")
+    let chrome = format!(
+        " goulash \u{2502} {shell_name} \u{2502} {state} # {}x{inner_rows}+{reserved} ",
+        real.cols
+    );
+    let chrome_len = chrome.chars().count();
+    if chrome_len >= cols {
+        let clipped: String = chrome.chars().take(cols).collect();
+        return format!("{CHROME_SGR}{clipped}\x1b[0m");
+    }
+    let content_width = cols - chrome_len;
+    let content = extra.map(|e| format!(" {e} ")).unwrap_or_default();
+    let mut left: String = content.chars().take(content_width).collect();
+    let used = left.chars().count();
+    left.push_str(&" ".repeat(content_width - used));
+    format!("{AGENT_SGR}{left}{CHROME_SGR}{chrome}\x1b[0m")
 }
 
 /// One full-width styled band row (padded/truncated to cols).
