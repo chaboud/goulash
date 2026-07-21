@@ -191,6 +191,42 @@ fn render_bar(
     )
 }
 
+/// `#/` command dispatch. Returns the bar notice to show.
+fn slash_command(
+    cmd: &str,
+    arg: Option<&str>,
+    engine: Option<&Engine>,
+    engine_model: &Option<String>,
+    blocks: usize,
+) -> Option<String> {
+    match (cmd, arg) {
+        ("model", Some(name)) => match engine {
+            Some(eng) => {
+                eng.set_model(name.to_string());
+                Some(format!("switching model to {name} \u{2026}"))
+            }
+            None => Some("no engine running".to_string()),
+        },
+        ("model", None) => match engine {
+            Some(eng) => {
+                eng.list_models();
+                Some("listing models \u{2026}".to_string())
+            }
+            None => Some("no engine running".to_string()),
+        },
+        ("status", _) => Some(format!(
+            "goulash {} \u{b7} engine: {} \u{b7} {} blocks this session",
+            env!("CARGO_PKG_VERSION"),
+            engine_model.as_deref().unwrap_or("none"),
+            blocks,
+        )),
+        ("help", _) => {
+            Some("#/model [name] \u{b7} #/status \u{b7} #/help \u{b7} # <question>".to_string())
+        }
+        _ => Some(format!("unknown command /{cmd} \u{2014} try #/help")),
+    }
+}
+
 pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let real = term::get_size(STDOUT)?;
     if real.rows < 4 || real.cols < 10 {
@@ -423,12 +459,26 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 }
                                 Mark::Ask(q) => {
                                     rec.aside(&q);
-                                    if let Some(eng) = engine.as_ref()
+                                    let body = q.trim_start_matches('#').trim();
+                                    if let Some(cmdline) = body.strip_prefix('/') {
+                                        // #/ commands: goulash controls, not
+                                        // LLM asides. One arg max — the
+                                        // single most obvious swivel.
+                                        let mut it = cmdline.split_whitespace();
+                                        let cmd = it.next().unwrap_or("");
+                                        let arg = it.next();
+                                        notice = slash_command(
+                                            cmd,
+                                            arg,
+                                            engine.as_ref(),
+                                            &engine_model,
+                                            recent_blocks.len(),
+                                        );
+                                    } else if let Some(eng) = engine.as_ref()
                                         && engine_model.is_some()
                                     {
                                         let ctx = engine::build_context(&recent_blocks, &last_cwd);
-                                        let question = q.trim_start_matches('#').trim().to_string();
-                                        eng.ask(question, ctx);
+                                        eng.ask(body.to_string(), ctx);
                                         notice = Some(format!("{q} \u{2026}"));
                                     } else {
                                         notice =
@@ -566,6 +616,20 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     engine::Event::Error(msg) => {
                         rec.aside_answer(&msg, false);
                         notice = Some(format!("engine error: {msg}"));
+                    }
+                    engine::Event::Models(names) => {
+                        let list = names
+                            .iter()
+                            .map(|n| {
+                                if Some(n) == engine_model.as_ref() {
+                                    format!("{n}*")
+                                } else {
+                                    n.clone()
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" \u{b7} ");
+                        notice = Some(format!("models: {list}"));
                     }
                 }
                 dirty = true;

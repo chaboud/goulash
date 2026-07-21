@@ -10,11 +10,13 @@ pub enum Event {
     Ready { provider: String, model: String },
     Answer(String),
     Error(String),
+    Models(Vec<String>),
 }
 
-pub struct Job {
-    pub question: String,
-    pub context: String,
+pub enum Job {
+    Ask { question: String, context: String },
+    SetModel(String),
+    ListModels,
 }
 
 pub struct Engine {
@@ -38,7 +40,15 @@ impl Engine {
     }
 
     pub fn ask(&self, question: String, context: String) {
-        let _ = self.job_tx.send(Job { question, context });
+        let _ = self.job_tx.send(Job::Ask { question, context });
+    }
+
+    pub fn set_model(&self, model: String) {
+        let _ = self.job_tx.send(Job::SetModel(model));
+    }
+
+    pub fn list_models(&self) {
+        let _ = self.job_tx.send(Job::ListModels);
     }
 }
 
@@ -54,7 +64,7 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
 
     // Probe chain, v1: ollama (explicit or auto-detected). "none" was
     // filtered by the caller. (wiki: llm-engine.md probe chain)
-    let Some(model) = probe_ollama(&agent, &cfg) else {
+    let Some((mut model, installed)) = probe_ollama(&agent, &cfg) else {
         // Nothing found: park, holding the wake pipe's write end open —
         // dropping it would storm the session's poll() with POLLHUP.
         // recv() errors out when the session drops the Engine.
@@ -69,33 +79,70 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
     notify(&wr);
 
     while let Ok(job) = jobs.recv() {
-        let result = generate(&agent, &cfg.host, &model, &job);
-        let _ = match result {
-            Ok(ans) => ev.send(Event::Answer(ans)),
-            Err(e) => ev.send(Event::Error(e)),
-        };
+        match job {
+            Job::Ask { question, context } => {
+                let result = generate(&agent, &cfg.host, &model, &question, &context);
+                let _ = match result {
+                    Ok(ans) => ev.send(Event::Answer(ans)),
+                    Err(e) => ev.send(Event::Error(e)),
+                };
+            }
+            Job::SetModel(m) => {
+                model = m;
+                let _ = ev.send(Event::Ready {
+                    provider: "ollama".to_string(),
+                    model: model.clone(),
+                });
+            }
+            Job::ListModels => {
+                let _ = ev.send(Event::Models(installed.clone()));
+            }
+        }
         notify(&wr);
     }
 }
 
-fn probe_ollama(agent: &ureq::Agent, cfg: &EngineConfig) -> Option<String> {
+fn probe_ollama(agent: &ureq::Agent, cfg: &EngineConfig) -> Option<(String, Vec<String>)> {
     let resp = agent
         .get(&format!("{}/api/tags", cfg.host))
         .timeout(Duration::from_secs(1))
         .call()
         .ok()?;
     let v: serde_json::Value = serde_json::from_str(&resp.into_string().ok()?).ok()?;
-    pick_model(&v, cfg.model.as_deref())
+    let installed: Vec<String> = v["models"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| m["name"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let model = pick_model(&v, cfg.model.as_deref(), &cfg.favorites)?;
+    Some((model, installed))
 }
 
-/// Configured model wins; otherwise pick the SMALLEST installed model.
-/// One-line status-bar answers want the watcher-tier default — cheap and
-/// fast; users pin a heavyweight explicitly via `[engine] model`.
-fn pick_model(tags: &serde_json::Value, configured: Option<&str>) -> Option<String> {
+/// Selection order: configured model, then the first favorite that is
+/// installed (a favorite matches exactly or up to the ':tag'), then the
+/// SMALLEST installed model — one-line status-bar answers want the
+/// watcher-tier default; heavyweights are opt-in.
+fn pick_model(
+    tags: &serde_json::Value,
+    configured: Option<&str>,
+    favorites: &[String],
+) -> Option<String> {
     if let Some(m) = configured {
         return Some(m.to_string());
     }
     let models = tags["models"].as_array()?;
+    let names: Vec<&str> = models.iter().filter_map(|m| m["name"].as_str()).collect();
+    for fav in favorites {
+        if let Some(hit) = names
+            .iter()
+            .find(|n| **n == fav.as_str() || n.split(':').next() == Some(fav.as_str()))
+        {
+            return Some(hit.to_string());
+        }
+    }
     models
         .iter()
         .filter_map(|m| {
@@ -107,11 +154,14 @@ fn pick_model(tags: &serde_json::Value, configured: Option<&str>) -> Option<Stri
         .map(|(_, name)| name.to_string())
 }
 
-fn generate(agent: &ureq::Agent, host: &str, model: &str, job: &Job) -> Result<String, String> {
-    let prompt = format!(
-        "{}\nQuestion: {}\nAnswer (one short line, plain text):",
-        job.context, job.question
-    );
+fn generate(
+    agent: &ureq::Agent,
+    host: &str,
+    model: &str,
+    question: &str,
+    context: &str,
+) -> Result<String, String> {
+    let prompt = format!("{context}\nQuestion: {question}\nAnswer (one short line, plain text):");
     let body = serde_json::json!({
         "model": model,
         "prompt": prompt,
@@ -157,6 +207,10 @@ mod tests {
     use super::pick_model;
     use serde_json::json;
 
+    fn no_favs() -> Vec<String> {
+        Vec::new()
+    }
+
     #[test]
     fn picks_smallest_model_by_default() {
         let tags = json!({"models": [
@@ -164,21 +218,41 @@ mod tests {
             {"name": "llama3.2:1b", "size": 1_300_000_000u64},
             {"name": "qwen2.5:7b", "size": 4_700_000_000u64},
         ]});
-        assert_eq!(pick_model(&tags, None).as_deref(), Some("llama3.2:1b"));
+        assert_eq!(
+            pick_model(&tags, None, &no_favs()).as_deref(),
+            Some("llama3.2:1b")
+        );
     }
 
     #[test]
     fn configured_model_wins() {
         let tags = json!({"models": [{"name": "llama3.2:1b", "size": 1u64}]});
         assert_eq!(
-            pick_model(&tags, Some("gemma3:12b")).as_deref(),
+            pick_model(&tags, Some("gemma3:12b"), &["llama3.2:1b".to_string()]).as_deref(),
             Some("gemma3:12b")
+        );
+    }
+
+    #[test]
+    fn first_installed_favorite_wins() {
+        let tags = json!({"models": [
+            {"name": "gemma3:12b", "size": 8_100_000_000u64},
+            {"name": "qwen2.5:7b", "size": 4_700_000_000u64},
+        ]});
+        let favs = vec!["notinstalled:1b".to_string(), "qwen2.5".to_string()];
+        assert_eq!(
+            pick_model(&tags, None, &favs).as_deref(),
+            Some("qwen2.5:7b"),
+            "favorite matches through the :tag"
         );
     }
 
     #[test]
     fn missing_sizes_still_pick_something() {
         let tags = json!({"models": [{"name": "mystery"}]});
-        assert_eq!(pick_model(&tags, None).as_deref(), Some("mystery"));
+        assert_eq!(
+            pick_model(&tags, None, &no_favs()).as_deref(),
+            Some("mystery")
+        );
     }
 }

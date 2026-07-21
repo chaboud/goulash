@@ -109,9 +109,15 @@ start, probe chain live.
   pulls the top suggestion and Down on an injected suggestion cycles to
   the next (kill-line + repaste, wrapping); the user's own typed text is
   never clobbered. Successful commands clear stale suggestions.
-- **Remaining**: `#/` selector commands, richer answer surface (heckle
-  band — one bar row truncates real answers), streaming responses,
-  Apple FM / cloud providers, `##` chat mode (M6).
+  **`#/` commands v1**: `#/model <name>` switches the engine model
+  live, `#/model` lists installed models (current starred), `#/status`,
+  `#/help`; `[engine] favorites` is a preference-ordered list — the
+  first installed favorite wins auto-pick (before smallest-installed;
+  explicit `model` beats both; favorites match through the `:tag`).
+- **Remaining**: selector *widgets* for `#/` (today: text notices, no
+  arrow-driven pickers), config write-back for `#/model`, richer answer
+  surface (heckle band — one bar row truncates real answers), streaming
+  responses, Apple FM / cloud providers, `##` chat mode (M6).
 
 ## Milestone 5 — memory hierarchy + watcher tier
 Rolling cleanup loop (local model if available) setting region markers;

@@ -19,8 +19,11 @@ pub struct EngineConfig {
     /// it; "none" disables LLM features entirely.
     pub provider: String,
     pub host: String,
-    /// Model name; None = first model the provider reports.
+    /// Model name; overrides favorites and auto-pick.
     pub model: Option<String>,
+    /// Preference-ordered favorites: the first one installed wins during
+    /// auto-pick (before falling back to smallest-installed).
+    pub favorites: Vec<String>,
 }
 
 impl Default for EngineConfig {
@@ -29,6 +32,7 @@ impl Default for EngineConfig {
             provider: "auto".to_string(),
             host: "http://127.0.0.1:11434".to_string(),
             model: None,
+            favorites: Vec::new(),
         }
     }
 }

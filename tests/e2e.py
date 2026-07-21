@@ -298,7 +298,10 @@ def test_engine_ollama():
 
         def do_GET(self):
             if self.path == "/api/tags":
-                self._send({"models": [{"name": "fakemodel"}]})
+                self._send({"models": [
+                    {"name": "bigmodel", "size": 9_000_000_000},
+                    {"name": "fakemodel", "size": 1_000_000_000},
+                ]})
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -306,8 +309,7 @@ def test_engine_ollama():
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
-            assert req.get("model") == "fakemodel"
-            self._send({"response": "FAKE-ANSWER-42"})
+            self._send({"response": f"ANS-{req.get('model')}"})
 
         def log_message(self, *a):
             pass
@@ -322,8 +324,16 @@ def test_engine_ollama():
     proc, mfd = spawn(["zsh"], home=home)
     time.sleep(1.5)
     os.write(mfd, b"# what is the answer\r")
-    out = read_until(mfd, rb"FAKE-ANSWER-42", 8.0)
-    check("engine answer shown in bar", b"FAKE-ANSWER-42" in out, out[-300:])
+    out = read_until(mfd, rb"ANS-fakemodel", 8.0)
+    check("smallest model auto-picked, answer in bar", b"ANS-fakemodel" in out, out[-300:])
+    os.write(mfd, b"#/model bigmodel\r")
+    time.sleep(0.8)
+    os.write(mfd, b"# again please\r")
+    out = read_until(mfd, rb"ANS-bigmodel", 8.0)
+    check("#/model switch took effect", b"ANS-bigmodel" in out, out[-300:])
+    os.write(mfd, b"#/status\r")
+    out = read_until(mfd, rb"blocks this session", 5.0)
+    check("#/status shows engine", b"bigmodel" in out, out[-300:])
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
     srv.shutdown()
@@ -332,9 +342,10 @@ def test_engine_ollama():
     events = [json.loads(line) for line in open(logs[0])] if logs else []
     check("engine ready recorded",
           any(e["ev"] == "engine" and e["model"] == "fakemodel" for e in events))
+    check("model switch recorded",
+          any(e["ev"] == "engine" and e["model"] == "bigmodel" for e in events))
     check("answer recorded",
-          any(e["ev"] == "answer" and e["ok"] and "FAKE-ANSWER-42" in e["text"]
-              for e in events))
+          any(e["ev"] == "answer" and e["ok"] and "ANS-" in e["text"] for e in events))
 
 
 def test_non_tty():

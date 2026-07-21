@@ -26,10 +26,15 @@ gracefully. Generic shells: **Alt-Down**.
 ```toml
 # ~/.goulash/config.toml (all optional)
 [engine]
-provider = "auto"    # auto | ollama | none
+provider = "auto"          # auto | ollama | none
 host = "http://127.0.0.1:11434"
-# model = "llama3.2" # default: first model ollama reports
+# model = "gemma4:e2b"     # pin exactly; beats favorites and auto-pick
+favorites = []             # e.g. ["gemma4:e2b", "llama3.2:1b"] — first
+                           # installed favorite wins; else smallest model
 ```
+
+At the prompt: `#/model` lists installed models, `#/model <name>`
+switches live, `#/status`, `#/help`.
 
 ## Build & run
 
