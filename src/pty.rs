@@ -39,7 +39,9 @@ pub fn spawn(argv: &[String], size: Size) -> io::Result<Pty> {
             if libc::setsid() < 0 {
                 return Err(io::Error::last_os_error());
             }
-            if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) < 0 {
+            // TIOCSCTTY is c_uint on Apple targets, c_ulong on Linux.
+            #[allow(clippy::unnecessary_cast)]
+            if libc::ioctl(slave_fd, libc::TIOCSCTTY as libc::c_ulong, 0) < 0 {
                 return Err(io::Error::last_os_error());
             }
             for fd in 0..3 {
