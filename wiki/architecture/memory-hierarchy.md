@@ -57,6 +57,14 @@ Roughly: full raw for the recent window, then increasingly coarse
 summaries at logarithmically growing spans. Keeps context bounded no
 matter how long the session runs.
 
+## Adaptive retrieval depth
+
+The ramp-off need not be a fixed curve: answer latency is measured on
+every ask (transcript timestamps), so the context budget can adapt —
+more raw verbatim when the engine is fast, harder lean on summaries
+when it's slow. Depth/correctness vs. latency is a tunable closed loop
+per machine and per model.
+
 ## Anti-poisoning invariants
 
 Summaries are the retrieval index, so a hallucinated summary can *hide*

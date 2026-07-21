@@ -35,6 +35,24 @@ and summaries used for context retrieval —
 - **Branching**: each delegated task is a branch from the main terminal
   timeline with its own sub-history, merged back as a report block.
 
+## The seen-model: displayed ≠ seen
+
+Every byte the terminal ever displayed transits goulash, and the vt100
+mirror knows the *current* screen cell-for-cell. That supports three
+tiers of knowledge:
+
+1. **On screen now** — known exactly (unexploited so far; "what's this
+   error?" should mean the visible one, not the last N blocks).
+2. **Ever displayed** — known exactly (it's the transcript). The
+   emulator's scrollback *contents* are no mystery; only the viewport
+   position during scroll-back is unknowable (accepted limitation).
+3. **Plausibly seen by the human** — modelable: dwell time (content
+   present across quiescent frames) plus terminal focus reporting
+   (CSI ?1004h focus in/out events). A block can carry a seen-exposure
+   annotation — "user watched this error for 8s" vs. "scrolled past
+   unseen" — which is real signal for answer quality and for the
+   summarizer's notion of what mattered.
+
 ## Privacy invariant
 
 Input typed while the PTY has ECHO off is **never** recorded into any

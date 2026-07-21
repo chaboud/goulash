@@ -81,6 +81,27 @@ capabilities:
   preferred_shape:   append-mostly | free-form
 ```
 
+## Latency mechanics (field-driven)
+
+First real answers worked but were slow. The fix ladder, cheapest first:
+
+1. **Model residency**: ollama unloads idle models (~5 min); a cold ask
+   pays full load before any token. Pass `keep_alive` (configurable) so
+   the watcher-tier model stays resident.
+2. **Streaming** into the bar/band: perceived latency beats total.
+3. **Stable-prefix prompting**: ollama prefix-caches KV against the
+   previous request per model — the append-mostly epoch shape gets
+   cache hits *locally today*, exactly as the caching stance predicted.
+   A rebuilt-each-time sliding window defeats it. Plus a hard prompt
+   budget (raw 8×1200-char tails is heavy eval for a 2B).
+4. **Background compaction** (M5): the rolling watcher continuously
+   shrinks old chunks; retrieval serves summary chunks as the norm,
+   raw on drill-down.
+5. **Adaptive depth**: every ask/answer is timestamped in the
+   transcript, so measured answer latency can tune the context budget —
+   deep raw context when fast, lean on summaries when sluggish.
+   Depth/correctness vs. latency becomes a closed loop, not a constant.
+
 ## Two-tier engine
 
 | Tier | Model | Runs | Jobs |

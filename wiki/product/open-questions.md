@@ -62,6 +62,17 @@ should turn into edits on the linked pages.
 - Sub-tab UX: inside the terminal (alternate screen? tabs?) or a
   companion view?
 
+## Visibility & seen-model
+- Scroll-back pinning/awareness: **accepted as impossible natively**;
+  optional futures = OSC 133 mirroring (native prompt-jumping in
+  emulator scrollback), per-emulator APIs, or opt-in captive scroll
+  rendered from block history.
+- Seen-exposure annotations: dwell threshold, focus-reporting
+  (CSI ?1004h) plumbing, and how the summarizer weighs "seen" blocks —
+  [block-history](../architecture/block-history.md).
+- Feed the *visible screen region* as ask-context (vt100 mirror already
+  has it) vs. recent blocks — when does each win?
+
 ## Engine
 - Which local model for the watcher tier, and minimum viable hardware —
   [llm-engine](../architecture/llm-engine.md).
