@@ -139,6 +139,20 @@ def test_fullscreen_clear():
     drain_exit(proc, mfd)
 
 
+def test_erase_below():
+    print("erase-below (ESC[J) repaints the bar in the same batch:")
+    proc, mfd = spawn(["bash", "--norc"])
+    read_until(mfd, rb"\$")
+    os.write(mfd, b"printf 'X\\033[J'; echo EJ-$((5*9))\r")
+    out = read_until(mfd, rb"EJ-45")
+    idx = out.rfind(b"X\x1b[J")
+    check("ESC[J seen in stream", idx != -1)
+    tail = out[idx:] + read_until(mfd, rb"goulash", 3.0)
+    check("bar repainted after ESC[J", b"goulash" in tail)
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+
+
 def test_state_log():
     print("session transcript records state transitions:")
     home = tempfile.mkdtemp(prefix="goulash-test-")
@@ -183,7 +197,14 @@ def test_non_tty():
 
 
 def main():
-    for t in (test_basic, test_exit_code, test_fullscreen_clear, test_state_log, test_non_tty):
+    for t in (
+        test_basic,
+        test_exit_code,
+        test_fullscreen_clear,
+        test_erase_below,
+        test_state_log,
+        test_non_tty,
+    ):
         try:
             t()
         except Exception as e:  # noqa: BLE001

@@ -30,6 +30,15 @@ subtract and propagate.
 
 ## What this costs
 
+Two hazards learned in the field: **ED (erase-below, `ESC[J`) is not
+bounded by scroll regions** — line editors emit it on every refresh and
+it wipes straight through the reserved rows, so the repaint must ride in
+the *same write batch* as the erase (a repaint in a later frame renders
+as flicker; no repaint renders as a vanished bar). And a scroll-region
+reset followed by scrolling output *within one chunk* can drag the
+reserved rows into the inner region — chunks must be split and the
+region re-pinned at the trigger boundary.
+
 Goulash must track enough VT state (cursor position, alternate screen,
 scroll regions) to draw its rows without corruption — i.e., a **partial
 terminal emulator** is unavoidable. This was already implicitly required

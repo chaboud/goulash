@@ -109,13 +109,19 @@ fn query_cursor_row(real: Size) -> (u16, u16, Vec<u8>) {
 }
 
 /// Sequences in the child's output that can blow away our scroll region or
-/// status row: DECSTBM reset, RIS, DECSTR soft reset, full clears.
+/// status row: DECSTBM reset, RIS, DECSTR soft reset, full clears — and
+/// erase-below (ESC[J / ESC[0J), which line editors emit on every refresh
+/// and which erases to the end of the *real* screen, straight through the
+/// reserved rows (ED is not bounded by scroll regions). The caller repaints
+/// in the same write batch as the trigger, so the wiped bar never renders.
 /// Returns the end index of the earliest trigger in `chunk`, so the caller
 /// can re-pin the scroll region at exactly that boundary — before any
 /// scrolling output that follows it in the same chunk can drag the status
 /// row up into the inner region.
 fn find_trigger_end(chunk: &[u8]) -> Option<usize> {
-    const TRIGGERS: [&[u8]; 5] = [b"\x1b[r", b"\x1bc", b"[!p", b"[2J", b"[3J"];
+    const TRIGGERS: [&[u8]; 7] = [
+        b"\x1b[r", b"\x1bc", b"[!p", b"[2J", b"[3J", b"\x1b[J", b"\x1b[0J",
+    ];
     TRIGGERS
         .iter()
         .filter_map(|t| {
@@ -223,6 +229,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut buf = [0u8; 65536];
     let mut stdin_open = true;
     let mut dirty = false;
+    let mut idle_ticks: u8 = 0;
 
     'session: loop {
         let stdin_fd = unsafe { BorrowedFd::borrow_raw(STDIN) };
@@ -331,21 +338,33 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
 
         // Quiescent and dirty: redraw the status row — but only if its
         // content actually changed. Ordinary output can't touch the bar
-        // (the inner world is winsize-fenced; region-threatening
-        // sequences are handled as triggers above), so skipping
-        // no-op redraws eliminates per-keystroke flicker.
-        if n == 0 && dirty {
-            let bar = status::render(
-                layout.real,
-                layout.inner().rows,
-                &shell_name,
-                cur_state.label(),
-            );
-            if bar != last_bar {
-                write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &bar))?;
-                last_bar = bar;
+        // (the inner world is winsize-fenced; bar-threatening sequences
+        // are handled as same-batch triggers above), so skipping no-op
+        // redraws avoids needless writes. As insurance against trigger
+        // sequences we don't know about, an idle repaint runs about once
+        // a second — overwriting an intact bar with identical content is
+        // invisible, so this costs nothing visually.
+        if n == 0 {
+            if dirty {
+                let bar = status::render(
+                    layout.real,
+                    layout.inner().rows,
+                    &shell_name,
+                    cur_state.label(),
+                );
+                if bar != last_bar {
+                    write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &bar))?;
+                    last_bar = bar;
+                }
+                dirty = false;
+                idle_ticks = 0;
+            } else {
+                idle_ticks += 1;
+                if idle_ticks >= 4 {
+                    idle_ticks = 0;
+                    write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_bar))?;
+                }
             }
-            dirty = false;
         }
     }
 
