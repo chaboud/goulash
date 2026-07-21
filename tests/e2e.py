@@ -6,6 +6,8 @@ checks: shrunken winsize, byte passthrough, status row, scroll-region
 assertion, resize propagation, and exit-code propagation.
 """
 import fcntl
+import glob
+import json
 import os
 import pty
 import re
@@ -14,6 +16,7 @@ import signal
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
 import time
 
@@ -26,10 +29,11 @@ def set_winsize(fd, rows, cols):
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
-def spawn(argv, rows=ROWS, cols=COLS):
+def spawn(argv, rows=ROWS, cols=COLS, home=None):
     mfd, sfd = pty.openpty()
     set_winsize(mfd, rows, cols)
-    env = dict(os.environ, GOULASH_HOME="/nonexistent", TERM="xterm-256color")
+    home = home or tempfile.mkdtemp(prefix="goulash-test-")
+    env = dict(os.environ, GOULASH_HOME=home, TERM="xterm-256color")
     proc = subprocess.Popen(
         [BIN] + argv, stdin=sfd, stdout=sfd, stderr=sfd,
         start_new_session=True, env=env, close_fds=True,
@@ -135,6 +139,42 @@ def test_fullscreen_clear():
     drain_exit(proc, mfd)
 
 
+def test_state_log():
+    print("session transcript records state transitions:")
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    proc, mfd = spawn(["bash", "--norc"], home=home)
+    read_until(mfd, rb"\$")
+    os.write(mfd, b"sleep 0.6\r")
+    time.sleep(1.0)
+    read_until(mfd, rb"\$")
+    os.write(mfd, b"read -s x\r")
+    time.sleep(0.6)
+    os.write(mfd, b"topsecret\r")
+    time.sleep(0.4)
+    os.write(mfd, b"exit\r")
+    code = drain_exit(proc, mfd)
+
+    logs = glob.glob(os.path.join(home, "history", "session-*.jsonl"))
+    check("transcript file created", len(logs) == 1, f"found {logs}")
+    if not logs:
+        return
+    events = [json.loads(line) for line in open(logs[0])]
+    evs = [e["ev"] for e in events]
+    check("start event", "start" in evs)
+    check("end event with code", any(e["ev"] == "end" and e["code"] == 0 for e in events),
+          f"end events: {[e for e in events if e['ev'] == 'end']}")
+    check("output recorded", "out" in evs)
+    states = [e for e in events if e["ev"] == "state"]
+    check("child fg seen (sleep)", any(s["fg"] == "child" for s in states),
+          f"states: {states}")
+    check("returned to shell fg", states and states[-1]["fg"] == "shell")
+    check("echo-off seen (read -s)", any(not s["echo"] and s["fg"] == "shell" for s in states),
+          f"states: {states}")
+    raw = open(logs[0], "rb").read()
+    check("secret input NOT recorded", b"topsecret" not in raw)
+    check("goulash exited 0", code == 0, f"got {code}")
+
+
 def test_non_tty():
     print("refuses to run without a tty:")
     r = subprocess.run([BIN, "true"], capture_output=True)
@@ -143,7 +183,7 @@ def test_non_tty():
 
 
 def main():
-    for t in (test_basic, test_exit_code, test_fullscreen_clear, test_non_tty):
+    for t in (test_basic, test_exit_code, test_fullscreen_clear, test_state_log, test_non_tty):
         try:
             t()
         except Exception as e:  # noqa: BLE001

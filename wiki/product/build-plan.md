@@ -24,13 +24,22 @@ all day (including inside and around tmux) and forget it's there.
 - **Remaining**: daily-driving validation (TUIs, inner/outer tmux,
   ssh), then call it done.
 
-## Milestone 1 — session sensing
+## Milestone 1 — session sensing 🚧 in progress
 Poll/track `tcgetpgrp()` to classify PROMPT / COMMAND /
 INTERACTIVE_CHILD; track ECHO state; log a raw transcript with state
 annotations. No LLM yet. Success = the state log matches reality across
 vim, less, fzf, ssh, sudo, pipelines, builtins.
 - Spec: [input-ownership](../architecture/input-ownership.md),
   [session-state-machine](../architecture/session-state-machine.md)
+- **Done**: gate-1 sensing (`tcgetpgrp` vs shell pgid, 250ms idle tick),
+  ECHO/ICANON tracking, alt-screen detection from the vt100 tracker,
+  live state label in the status row (`shell`/`run`/`tui`/`secret`),
+  JSONL session transcript (`~/.goulash/history/session-*.jsonl`) with
+  start/state/resize/out/end events — raw output base64-preserved,
+  typed input never recorded (echo-off invariant by omission). CI on
+  ubuntu + macos (fmt, clippy -D warnings, build, PTY e2e).
+- **Remaining**: PROMPT vs COMMAND needs the M2 shell hooks (today both
+  read as `shell`); real-world validation against vim/fzf/ssh/sudo.
 
 ## Milestone 2 — shell hooks + block history
 zsh adapter first (`precmd`/`preexec`), then bash (`PROMPT_COMMAND`).

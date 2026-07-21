@@ -1,5 +1,7 @@
 mod config;
 mod pty;
+mod record;
+mod sense;
 mod session;
 mod status;
 mod term;

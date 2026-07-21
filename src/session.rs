@@ -1,5 +1,7 @@
 use crate::config::Config;
 use crate::pty;
+use crate::record::Recorder;
+use crate::sense::{Sensor, State};
 use crate::status;
 use crate::term::{self, RawGuard, Size};
 use nix::poll::{PollFd, PollFlags, PollTimeout};
@@ -136,13 +138,13 @@ impl Layout {
 
 /// Scroll-region assertion + status redraw + cursor/attribute restore,
 /// derived from the tracked inner-screen state.
-fn fixup_bytes(layout: &Layout, screen: &vt100::Screen, shell_name: &str) -> Vec<u8> {
+fn fixup_bytes(layout: &Layout, screen: &vt100::Screen, shell_name: &str, state: &str) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(256);
     let inner = layout.inner();
     out.extend_from_slice(b"\x1b[?25l"); // hide cursor while we work
     out.extend_from_slice(format!("\x1b[1;{}r", inner.rows).as_bytes());
     out.extend_from_slice(format!("\x1b[{};1H", layout.status_row()).as_bytes());
-    out.extend_from_slice(status::render(layout.real, inner.rows, shell_name).as_bytes());
+    out.extend_from_slice(status::render(layout.real, inner.rows, shell_name, state).as_bytes());
     out.extend_from_slice(&screen.attributes_formatted());
     out.extend_from_slice(&screen.cursor_state_formatted());
     out
@@ -197,7 +199,16 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     write_all(STDOUT, &init)?;
 
     let mut parser = vt100::Parser::new(inner_rows, layout.real.cols, 0);
-    write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &shell_name))?;
+    let sensor = Sensor::new(master, p.child.id());
+    let mut rec = Recorder::new(cfg);
+    rec.start(&argv, layout.real.rows, layout.real.cols);
+    let mut cur_state: State = sensor.read(false);
+    rec.state(cur_state);
+
+    write_all(
+        STDOUT,
+        &fixup_bytes(&layout, parser.screen(), &shell_name, cur_state.label()),
+    )?;
     if !typed_ahead.is_empty() {
         let _ = write_all(master, &typed_ahead);
     }
@@ -215,31 +226,23 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         if stdin_open {
             fds.push(PollFd::new(stdin_fd, PollFlags::POLLIN));
         }
-        let timeout = if dirty {
-            PollTimeout::try_from(30).unwrap()
-        } else {
-            PollTimeout::NONE
-        };
+        // Tick at 250ms even when idle so job-control transitions with no
+        // accompanying I/O (e.g. `sleep 5` starting) are still sensed;
+        // 30ms while dirty for quiescence-debounced redraws.
+        let timeout = PollTimeout::try_from(if dirty { 30 } else { 250 }).unwrap();
         let n = match nix::poll::poll(&mut fds, timeout) {
             Ok(n) => n,
             Err(nix::errno::Errno::EINTR) => continue,
             Err(e) => return Err(io::Error::other(format!("poll: {e}"))),
         };
 
-        if n == 0 {
-            // Quiescent and dirty: redraw the status row.
-            if dirty {
-                write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &shell_name))?;
-                dirty = false;
-            }
-            continue;
-        }
-
-        let master_ready = fds[0].revents().is_some_and(|r| !r.is_empty());
-        let winch_ready = fds[1]
-            .revents()
-            .is_some_and(|r| r.contains(PollFlags::POLLIN));
-        let stdin_ready = stdin_open
+        let master_ready = n > 0 && fds[0].revents().is_some_and(|r| !r.is_empty());
+        let winch_ready = n > 0
+            && fds[1]
+                .revents()
+                .is_some_and(|r| r.contains(PollFlags::POLLIN));
+        let stdin_ready = n > 0
+            && stdin_open
             && fds
                 .get(2)
                 .and_then(|f| f.revents())
@@ -251,9 +254,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 Ok(len) => {
                     let chunk = &buf[..len];
                     parser.process(chunk);
+                    rec.output(chunk);
                     write_all(STDOUT, chunk)?;
                     if needs_immediate_fixup(chunk) {
-                        write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &shell_name))?;
+                        write_all(
+                            STDOUT,
+                            &fixup_bytes(&layout, parser.screen(), &shell_name, cur_state.label()),
+                        )?;
                         dirty = false;
                     } else {
                         dirty = true;
@@ -272,7 +279,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 let inner = layout.inner();
                 parser.screen_mut().set_size(inner.rows, inner.cols);
                 let _ = term::set_size(master, inner);
-                write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &shell_name))?;
+                rec.resize(real.rows, real.cols);
+                write_all(
+                    STDOUT,
+                    &fixup_bytes(&layout, parser.screen(), &shell_name, cur_state.label()),
+                )?;
                 dirty = false;
             }
         }
@@ -283,6 +294,23 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 Ok(len) => write_all(master, &buf[..len])?,
                 Err(_) => stdin_open = false,
             }
+        }
+
+        // Sense job-control / termios / alt-screen transitions.
+        let st = sensor.read(parser.screen().alternate_screen());
+        if st != cur_state {
+            cur_state = st;
+            rec.state(st);
+            dirty = true;
+        }
+
+        // Quiescent and dirty: redraw the status row.
+        if n == 0 && dirty {
+            write_all(
+                STDOUT,
+                &fixup_bytes(&layout, parser.screen(), &shell_name, cur_state.label()),
+            )?;
+            dirty = false;
         }
     }
 
@@ -297,5 +325,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     WINCH_PIPE_WR.store(-1, Ordering::Relaxed);
 
     let st = p.child.wait()?;
-    Ok(st.code().unwrap_or_else(|| 128 + st.signal().unwrap_or(0)))
+    let code = st.code().unwrap_or_else(|| 128 + st.signal().unwrap_or(0));
+    rec.end(code);
+    Ok(code)
 }

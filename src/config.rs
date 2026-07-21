@@ -7,6 +7,25 @@ use std::path::PathBuf;
 #[serde(default)]
 pub struct Config {
     pub status: StatusConfig,
+    pub record: RecordConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RecordConfig {
+    pub enabled: bool,
+    /// Also record raw output bytes (base64) in the transcript, not just
+    /// state annotations.
+    pub output: bool,
+}
+
+impl Default for RecordConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            output: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
