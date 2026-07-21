@@ -17,16 +17,17 @@ pub fn rule_row(text: Option<&str>, orange: bool, cols: usize) -> String {
     };
     let clipped: String = t.chars().take(cols.saturating_sub(6)).collect();
     let tlen = clipped.chars().count();
-    let lead = cols.saturating_sub(tlen + 2);
+    let trail = cols.saturating_sub(tlen + 2);
     let mid = if orange {
         format!("{SUGGEST_SGR}{clipped}")
     } else {
         format!("\x1b[0m{clipped}")
     };
+    // Chip at the left edge: short lead-in, rule fills to the right.
     format!(
         "{RULE_SGR}{}{mid}{RULE_SGR}{}\x1b[0m",
-        "\u{2500}".repeat(lead),
-        "\u{2500}".repeat(2)
+        "\u{2500}".repeat(2),
+        "\u{2500}".repeat(trail)
     )
 }
 
