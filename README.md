@@ -1,9 +1,9 @@
 # goulash
 
-*Working name.* **Goulash — Generic Overlay for Universal LLM-Augmented
-SHells**: an LLM-aware veneer that wraps the shell you already use,
+**Goulash — Generic Overlay User-LLM-Augmented
+SHell**: an LLM-aware veneer that wraps the shell you already use,
 watches the session, and offers advice and executable suggestions while
-leaving control with the user.
+leaving control with you, the user.
 
 > Your shell, with a coach.
 
@@ -11,6 +11,55 @@ Design lives in the wiki: start at **[wiki/home.md](wiki/home.md)**, or
 jump straight to the [architecture overview](wiki/architecture/overview.md)
 and the [build plan](wiki/product/build-plan.md).
 
+
+## Install
+
+```sh
+cargo install goulash                                      # from crates.io
+brew tap chaboud/goulash https://github.com/chaboud/goulash
+brew install goulash                                       # via Homebrew
+curl -fsSL https://goulash.dev/install.sh | sh             # prebuilt binary
+```
+
+Releases are tag-driven (`v*` → `.github/workflows/release.yml`):
+binaries for mac (arm64/x86_64) and linux (x86_64/arm64), with the
+in-repo Homebrew formula refreshed automatically.
+
+## Build & run
+
+```
+cargo build
+./target/debug/goulash            # wraps $SHELL
+./target/debug/goulash zsh        # or name a shell
+```
+
+**Shell integration is automatic** for zsh and bash launched with plain
+flags — goulash injects its hooks (ZDOTDIR trick / `--rcfile` wrapper)
+on top of your normal rc files, no editing required. That's what powers
+command blocks, `#` asides, and the plain-Down suggestion pull.
+
+Manual fallback (custom shells or `auto_integrate = false`):
+
+```sh
+# ~/.zshrc
+[[ -n "$GOULASH" ]] && source /path/to/goulash/shell/goulash.zsh
+# ~/.bashrc
+[[ -n "$GOULASH" ]] && source /path/to/goulash/shell/goulash.bash
+```
+
+Config (optional): `~/.goulash/config.toml`
+
+```toml
+[status]
+enabled = true
+rows = 1
+```
+
+Tests (drives the binary under a real PTY):
+
+```
+cargo build && python3 tests/e2e.py
+```
 ## Status
 
 Working today: transparent PTY wrapper with reserved status row,
@@ -64,54 +113,7 @@ model saves with a `REMEMBER: <note>` line and drops with
 levers: `#/memory add|delete|modify|find|limit`, plus bare `#/memory`
 for status.
 
-## Install
 
-```sh
-cargo install goulash                                      # from crates.io
-brew tap chaboud/goulash https://github.com/chaboud/goulash
-brew install goulash                                       # via Homebrew
-curl -fsSL https://goulash.dev/install.sh | sh             # prebuilt binary
-```
-
-Releases are tag-driven (`v*` → `.github/workflows/release.yml`):
-binaries for mac (arm64/x86_64) and linux (x86_64/arm64), with the
-in-repo Homebrew formula refreshed automatically.
-
-## Build & run
-
-```
-cargo build
-./target/debug/goulash            # wraps $SHELL
-./target/debug/goulash zsh        # or name a shell
-```
-
-**Shell integration is automatic** for zsh and bash launched with plain
-flags — goulash injects its hooks (ZDOTDIR trick / `--rcfile` wrapper)
-on top of your normal rc files, no editing required. That's what powers
-command blocks, `#` asides, and the plain-Down suggestion pull.
-
-Manual fallback (custom shells or `auto_integrate = false`):
-
-```sh
-# ~/.zshrc
-[[ -n "$GOULASH" ]] && source /path/to/goulash/shell/goulash.zsh
-# ~/.bashrc
-[[ -n "$GOULASH" ]] && source /path/to/goulash/shell/goulash.bash
-```
-
-Config (optional): `~/.goulash/config.toml`
-
-```toml
-[status]
-enabled = true
-rows = 1
-```
-
-Tests (drives the binary under a real PTY):
-
-```
-cargo build && python3 tests/e2e.py
-```
 
 ## License
 
