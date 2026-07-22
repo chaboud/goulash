@@ -32,7 +32,7 @@ brew install goulash
 Run `goulash` and use your shell exactly as before. Goulash provides suggestions *below* your prompt, like a *future* history.  Just press the down arrow to scroll through suggested command history and explanations, pulling one into your prompt to modify and/or execute.
 
 
-### `#` - ask a question, get an answer + a pullable command
+### `#` ask a question, get an answer + a pullable command
 Type `#` and a question at your prompt (it's a shell comment recorded in history, never executed).
 
 The LLM can provide a *suggested* command. Press *down* (past the end of history) and it lands on your prompt for editing.  Enter runs it as your own command. Goulash also reviews each command turn unprompted and may leave a tip in the same spot.
@@ -49,10 +49,10 @@ Shell history lives above your prompt; goulash's suggestions live below. Up and 
 
 Down past the newest keeps going into the **history of suggested commands** with the position (`↑ 3/7 ↓`) shown at the right of the rule. Up retraces to your empty prompt, and past that it's plain zsh/bash history.
 
-### `##` — chat, without retyping `#`
+### `##` chat, without retyping `#`
 `##` (or `## question`) flips into a chat panel; follow-ups need no prefix. The shell keeps running above.  When you select a command to run, you're back in your shell.
 
-### `#/` — goulash's menu controls
+### `#/` goulash's menu controls
 ```text
 #/model            modal model picker: type to filter, ⏎ selects & saves
 #/model NAME       try a model for this session (add `save` to persist)
