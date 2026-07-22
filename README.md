@@ -23,6 +23,81 @@ Releases are tag-driven (`v*` → `.github/workflows/release.yml`):
 binaries for mac (arm64/x86_64) and linux (x86_64/arm64), with the
 in-repo Homebrew formula refreshed automatically.
 
+## Usage
+
+Run `goulash` and use your shell exactly as before. A small goulash
+area lives at the bottom; everything below is reachable with `#`, `##`,
+and the arrow keys.
+
+### `#` — ask a question, get an answer + a pullable command
+
+Type `#` and a question at your prompt (it's a shell comment — recorded
+in history, never executed):
+
+```text
+$ #how do I list files with human-readable sizes?
+$ ▊
+─ ↓ suggestion: ls -lh ─────────────── # message to chat · #/help for help ─
+ #how do I list files with human-readable sizes?
+ Use ls -lh; -h prints sizes like 1.2M instead of bytes.
+                                           goulash │ zsh │ prompt # 80x20+4
+```
+
+The orange chip on the rule is a **suggested command**. Press **Down**
+(past the end of history) and it lands on your prompt for editing —
+Enter runs it, as your own command. With `commentary` on (the default),
+goulash also reviews each command turn unprompted and may leave one tip
+in the same spot.
+
+### Arrows — one spatial axis
+
+Shell history lives above your prompt; goulash's suggestions live
+below. Up and Down just move along the line:
+
+```text
+   ↑  zsh history (as always)
+── your empty prompt ──────────────── neutral
+   ↓  newest suggested command       ( ↓ again: older · ↑: back up )
+```
+
+Down past the newest keeps going into the **history of suggested
+commands** — even ones whose moment has passed — with the position
+(`↑ 3/7 ↓`) shown at the right of the rule. Up retraces to your empty
+prompt, and past that it's plain zsh history. Editing the line at any
+point ends the browsing; your text is never touched.
+
+### `##` — chat, without retyping `#`
+
+`##` (or `## question`) flips into a chat panel; follow-ups need no
+prefix. The shell keeps running above.
+
+```text
+$ ##how could I find large files in /Volumes?
+─ ## chat ──────────────────────────── ⏎ send · ↓ command · ## or esc back ─
+ # how could I find large files in /Volumes?
+ goulash: use find with -size — the suggestion below does it.
+ ## can you skip directories I can't read?▊
+ ↓ suggestion: find /Volumes -size +100M 2>/dev/null
+                                           goulash │ zsh │ prompt # 80x16+8
+```
+
+The suggestion sits at the **bottom of the panel**: Down moves onto it
+(it turns orange — `↑ find /Volumes … · 1/7`), Down again browses
+older, and **Enter places the selected command on your real shell
+line** — where a second Enter executes it. Goulash never runs commands
+itself. `##`, Esc, or opening a fullscreen app returns you to the
+shell.
+
+### `#/` — goulash's own controls
+
+```text
+#/model            modal model picker: type to filter, ⏎ selects & saves
+#/model NAME       try a model for this session (add `save` to persist)
+#/memory on        give the model a small pinned memory (REMEMBER/FORGET)
+#/commentary off   quiet the per-turn heckling
+#/status · #/help
+```
+
 ## Build & run
 
 ```
