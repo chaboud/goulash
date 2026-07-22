@@ -176,6 +176,115 @@ struct SugTurn {
 
 const SUG_HIST_CAP: usize = 50;
 
+/// The shared menu primitive (wiki: interaction/settings-and-nav.md):
+/// modal, type-to-filter (no per-item hotkeys), the list scrolling under
+/// a fixed cursor inside the fixed goulash area — no winsize change.
+/// Only ever opened by the user, by name (bare `#/model`); Esc and
+/// Ctrl-C always close it.
+struct Menu {
+    title: String,
+    items: Vec<String>,
+    filter: String,
+    cursor: usize, // index into the filtered view
+    loaded: bool,
+}
+
+impl Menu {
+    fn open(title: &str) -> Menu {
+        Menu {
+            title: title.to_string(),
+            items: Vec::new(),
+            filter: String::new(),
+            cursor: 0,
+            loaded: false,
+        }
+    }
+
+    fn filtered(&self) -> Vec<&str> {
+        let f = self.filter.to_lowercase();
+        self.items
+            .iter()
+            .filter(|i| f.is_empty() || i.to_lowercase().contains(&f))
+            .map(|s| s.as_str())
+            .collect()
+    }
+
+    fn clamp(&mut self) {
+        let n = self.filtered().len();
+        self.cursor = self.cursor.min(n.saturating_sub(1));
+    }
+}
+
+/// One parsed keypress for goulash-owned surfaces (menus, chat line).
+enum Key {
+    Char(char),
+    Enter,
+    Backspace,
+    KillLine,
+    Up,
+    Down,
+    Esc,
+    CtrlC,
+}
+
+/// Parse a raw stdin chunk into keys. Arrow sequences arrive whole in a
+/// chunk; a lone ESC byte is treated as Esc (good enough at human typing
+/// speeds — the classic terminal ambiguity).
+fn parse_keys(chunk: &[u8]) -> Vec<Key> {
+    let mut keys = Vec::new();
+    let mut i = 0;
+    while i < chunk.len() {
+        match chunk[i] {
+            0x1b => {
+                if chunk.get(i + 1) == Some(&b'[') {
+                    // Consume the whole CSI so parameterized sequences
+                    // (e.g. 1;3B) never leak bytes into a filter.
+                    let mut j = i + 2;
+                    while j < chunk.len() && !(0x40..0x7f).contains(&chunk[j]) {
+                        j += 1;
+                    }
+                    if j < chunk.len() {
+                        let plain = j == i + 2;
+                        match chunk[j] {
+                            b'A' if plain => keys.push(Key::Up),
+                            b'B' if plain => keys.push(Key::Down),
+                            _ => {}
+                        }
+                        i = j + 1;
+                    } else {
+                        i = chunk.len(); // truncated CSI: drop
+                    }
+                } else {
+                    keys.push(Key::Esc);
+                    i += 1;
+                }
+            }
+            0x03 => {
+                keys.push(Key::CtrlC);
+                i += 1;
+            }
+            b'\r' | b'\n' => {
+                keys.push(Key::Enter);
+                i += 1;
+            }
+            0x7f | 0x08 => {
+                keys.push(Key::Backspace);
+                i += 1;
+            }
+            0x15 => {
+                keys.push(Key::KillLine);
+                i += 1;
+            }
+            c if (0x20..0x7f).contains(&c) => {
+                keys.push(Key::Char(c as char));
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    keys
+}
+
 fn hist_push(hist: &mut Vec<SugTurn>, turn: SugTurn) {
     if hist.first().map(|t| t.cmd == turn.cmd).unwrap_or(false) {
         return; // adjacent dedup: re-vending the same fix isn't a new turn
@@ -221,8 +330,61 @@ fn compose_rows(
     band: &Option<Band>,
     browse: Option<usize>,
     sug_hist: &[SugTurn],
+    menu: &Option<Menu>,
+    engine_model: &Option<String>,
 ) -> Vec<String> {
     let cols = layout.real.cols as usize;
+    let reserved_now = cfg.reserved_rows();
+    let inner_now = layout.real.rows.saturating_sub(reserved_now).max(1);
+    if cfg.status.band
+        && let Some(m) = menu
+    {
+        // Modal menu: the list scrolls under a fixed cursor inside the
+        // fixed area (TV-menu style — no winsize change, nothing
+        // reflows). Rows: rule (title/filter + keymap), items, chrome.
+        let n_items = (cfg.status.band_rows.clamp(1, 4) + 1) as usize;
+        let filtered = m.filtered();
+        let chip = format!(" {} \u{25b8} {}\u{258f} ", m.title, m.filter);
+        let tip = format!(
+            " \u{2191}\u{2193} \u{b7} \u{23ce} save \u{b7} esc \u{b7} {}/{} ",
+            (m.cursor + 1).min(filtered.len()),
+            filtered.len()
+        );
+        let mut rows = Vec::new();
+        rows.push(status::rule_row(Some(&chip), true, Some(&tip), cols));
+        // Cursor pinned near the bottom of the window; list slides.
+        let top = (m.cursor + 1).saturating_sub(n_items);
+        for row in 0..n_items {
+            let idx = top + row;
+            let line = match filtered.get(idx) {
+                Some(name) => {
+                    let star = if Some(*name) == engine_model.as_deref() {
+                        "*"
+                    } else {
+                        ""
+                    };
+                    format!(" {name}{star}")
+                }
+                None if idx == 0 && !m.loaded => " probing \u{2026}".to_string(),
+                None if idx == 0 => " (no matches)".to_string(),
+                None => String::new(),
+            };
+            let sgr = if idx == m.cursor && filtered.get(idx).is_some() {
+                status::SUGGEST_SGR
+            } else {
+                status::TEXT_SGR
+            };
+            rows.push(status::pad_row(&line, cols, sgr));
+        }
+        rows.push(status::chrome_row(
+            layout.real,
+            inner_now,
+            reserved_now,
+            shell_name,
+            sense::label(st, hook),
+        ));
+        return rows;
+    }
     // While browsing the slot history, the browsed turn owns the area:
     // its command in the chip, its chat text in the band, position on
     // the rule's right end. Everything else is frozen underneath.
@@ -352,6 +514,7 @@ fn fixup_bytes(layout: &Layout, screen: &vt100::Screen, rows: &[String]) -> Vec<
 
 /// `#/` command dispatch over the full command line (memory verbs take
 /// free text). Returns the bar notice to show.
+#[allow(clippy::too_many_arguments)]
 fn slash_command(
     cmdline: &str,
     engine: Option<&Engine>,
@@ -360,6 +523,7 @@ fn slash_command(
     commentary: &mut bool,
     memory: &mut MemoryStore,
     fuse: &mut StateFile,
+    menu: &mut Option<Menu>,
 ) -> Option<String> {
     let mut it = cmdline.splitn(2, char::is_whitespace);
     let cmd = it.next().unwrap_or("");
@@ -417,8 +581,11 @@ fn slash_command(
         }
         ("model", None) => match engine {
             Some(eng) => {
+                // Bare form opens the modal selector; the list fills in
+                // async when the probe answers (never block the shell).
                 eng.list_models();
-                Some("listing models \u{2026}".to_string())
+                *menu = Some(Menu::open("model"));
+                None
             }
             None => Some("no engine running".to_string()),
         },
@@ -588,6 +755,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut commentary = cfg.engine.commentary;
     let mut memory = MemoryStore::load(Config::dir());
     let mut band: Option<Band> = None;
+    let mut menu: Option<Menu> = None;
     #[allow(unused_assignments)] // initialized by the first redraw! below
     let mut last_rows: Vec<String> = Vec::new();
     macro_rules! redraw {
@@ -603,6 +771,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 &band,
                 browse,
                 &sug_hist,
+                &menu,
+                &engine_model,
             );
             let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);
             if !pre.is_empty() {
@@ -818,6 +988,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             &mut commentary,
                                             &mut memory,
                                             &mut fuse,
+                                            &mut menu,
                                         );
                                     } else if let Some(eng) = engine.as_ref() {
                                         eng.ask(
@@ -919,6 +1090,71 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         if stdin_ready {
             match read_some(STDIN, &mut buf) {
                 Ok(0) => stdin_open = false,
+                Ok(len) if menu.is_some() => {
+                    // Modal menu: goulash owns the keyboard — the one
+                    // exception to shell-owns-input, and only because the
+                    // user opened it by name. Typing filters (no hotkeys);
+                    // Enter commits AND persists; Esc/Ctrl-C always out.
+                    let mut committed: Option<String> = None;
+                    let mut close = false;
+                    if let Some(m) = menu.as_mut() {
+                        for key in parse_keys(&buf[..len]) {
+                            match key {
+                                Key::Esc | Key::CtrlC => close = true,
+                                Key::Enter => {
+                                    committed = m.filtered().get(m.cursor).map(|s| s.to_string());
+                                    close = true;
+                                }
+                                Key::Up => m.cursor = m.cursor.saturating_sub(1),
+                                Key::Down => {
+                                    m.cursor += 1;
+                                    m.clamp();
+                                }
+                                Key::Backspace => {
+                                    m.filter.pop();
+                                    m.clamp();
+                                }
+                                Key::KillLine => {
+                                    m.filter.clear();
+                                    m.cursor = 0;
+                                }
+                                Key::Char(c) => {
+                                    m.filter.push(c);
+                                    m.cursor = 0;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(name) = committed
+                        && let Some(eng) = engine.as_ref()
+                    {
+                        notice = Some(if name == "auto" {
+                            eng.rebind();
+                            match Config::persist_model(None) {
+                                Ok(()) => {
+                                    "auto \u{2192} default (probe order restored)".to_string()
+                                }
+                                Err(e) => format!("config write failed: {e}"),
+                            }
+                        } else {
+                            eng.set_model(name.clone());
+                            match Config::persist_model(Some(&name)) {
+                                Ok(()) => {
+                                    fuse.set_probation(&name);
+                                    format!(
+                                        "model {name} \u{2192} default \
+                                         (probation until first answer)"
+                                    )
+                                }
+                                Err(e) => format!("config write failed: {e}"),
+                            }
+                        });
+                    }
+                    if close {
+                        menu = None;
+                    }
+                    dirty = true;
+                }
                 Ok(len) => {
                     // Alt-Down: generic-shell suggestion pull. Only ever
                     // intercepted at a hook-confirmed prompt with a live
@@ -1057,20 +1293,30 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     engine::Event::Debug(raw) => rec.engine_debug(&raw),
                     engine::Event::Busy(model) => fuse.busy(&model),
                     engine::Event::Idle => fuse.idle(),
-                    engine::Event::Models(names) => {
-                        let list = names
-                            .iter()
-                            .map(|n| {
-                                if Some(n) == engine_model.as_ref() {
-                                    format!("{n}*")
-                                } else {
-                                    n.clone()
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                            .join(" \u{b7} ");
-                        notice = Some(format!("models: {list}"));
-                    }
+                    engine::Event::Models(names) => match menu.as_mut() {
+                        Some(m) if !m.loaded => {
+                            // "auto" is a first-class entry: it restores
+                            // the probe chain and clears the pin.
+                            m.items = std::iter::once("auto".to_string())
+                                .chain(names.iter().cloned())
+                                .collect();
+                            m.loaded = true;
+                        }
+                        _ => {
+                            let list = names
+                                .iter()
+                                .map(|n| {
+                                    if Some(n) == engine_model.as_ref() {
+                                        format!("{n}*")
+                                    } else {
+                                        n.clone()
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" \u{b7} ");
+                            notice = Some(format!("models: {list}"));
+                        }
+                    },
                 }
                 dirty = true;
             }
@@ -1105,6 +1351,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     &band,
                     browse,
                     &sug_hist,
+                    &menu,
+                    &engine_model,
                 );
                 if rows != last_rows {
                     let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);

@@ -404,6 +404,79 @@ def test_engine_ollama():
           any(e["ev"] == "suggest" and e.get("why") == "commentary" for e in events))
 
 
+def test_model_menu():
+    print("bare #/model opens the modal selector; Enter persists (fake ollama):")
+    if not shutil.which("zsh"):
+        print("  [SKIP] zsh not installed")
+        return
+    import http.server
+    import threading
+
+    class FakeOllama(http.server.BaseHTTPRequestHandler):
+        def _send(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/api/tags":
+                self._send({"models": [
+                    {"name": "gemma3:4b", "size": 3_000_000_000},
+                    {"name": "qwen3:1.7b", "size": 1_000_000_000},
+                ]})
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            req = json.loads(self.rfile.read(n) or b"{}")
+            if "prompt" not in req:
+                self._send({"done": True})
+                return
+            self._send({"response": "PASS"})
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), FakeOllama)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write("# keep me\n[engine]\nprovider = \"ollama\"\n"
+                f"host = \"http://127.0.0.1:{port}\"\nstream = false\n")
+    proc, mfd = spawn(["zsh"], home=home)
+    time.sleep(1.5)
+    os.write(mfd, b"#/model\r")
+    out = read_until(mfd, rb"model \xe2\x96\xb8", 6.0)  # title chip "model ▸"
+    check("menu opened", "model ▸".encode() in out, out[-300:])
+    out = read_until(mfd, rb"auto", 5.0)
+    check("auto is a first-class entry", b"auto" in out, out[-300:])
+    time.sleep(0.4)
+    os.write(mfd, b"gem")  # type-to-filter
+    out = read_until(mfd, rb"1/1", 5.0)
+    check("filter narrows to one", b"1/1" in out, out[-300:])
+    os.write(mfd, b"\r")  # Enter commits + persists; engine rebinds
+    out = read_until(mfd, "engine: ollama · gemma3:4b".encode(), 6.0)
+    check("commit rebinds the engine",
+          "engine: ollama · gemma3:4b".encode() in out, out[-300:])
+    time.sleep(0.5)
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+    srv.shutdown()
+
+    conf = open(os.path.join(home, "config.toml")).read()
+    check("config comment preserved", "# keep me" in conf, conf)
+    check("model persisted surgically", 'model = "gemma3:4b"' in conf, conf)
+    stat_path = os.path.join(home, "state.toml")
+    stat = open(stat_path).read() if os.path.exists(stat_path) else ""
+    check("probation recorded in state.toml", 'probation = "gemma3:4b"' in stat, stat)
+
+
 def test_memory():
     print("#/memory flat store + model REMEMBER line (fake ollama):")
     if not shutil.which("zsh"):
@@ -518,6 +591,7 @@ def main():
         test_suggestions,
         test_zsh_auto_integration,
         test_engine_ollama,
+        test_model_menu,
         test_memory,
         test_non_tty,
     ):
