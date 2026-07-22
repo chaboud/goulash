@@ -533,6 +533,9 @@ def test_chat_mode():
     check("chat expands the goulash area", b"\x1b[1;16r" in out, out[-300:])
     out = read_until(mfd, rb"goulash: ANS", 8.0)
     check("first answer in the transcript", b"goulash: ANS" in out, out[-300:])
+    out = read_until(mfd, "↑ echo from-chat".encode(), 4.0)
+    check("pullable command visible in the chat chip",
+          "↑ echo from-chat".encode() in out, out[-300:])
     time.sleep(0.3)
     os.write(mfd, b"and a follow-up\r")  # no '#' needed — chat has focus
     out = read_until(mfd, rb"ANS-CTX", 8.0)

@@ -363,8 +363,13 @@ fn compose_rows(
         let reserved = reserved_now + extra;
         let inner = layout.real.rows.saturating_sub(reserved).max(1);
         let mut rows = Vec::new();
-        let chip = " ## chat ".to_string();
-        let tip = " \u{23ce} send \u{b7} \u{2191} command \u{b7} ## or esc back ";
+        // The pullable command rides in the chip — Up hands exactly
+        // this to the shell line, so it must be visible.
+        let chip = match sug_hist.first() {
+            Some(t) => format!(" ## chat \u{2502} \u{2191} {} ", t.cmd),
+            None => " ## chat ".to_string(),
+        };
+        let tip = " \u{23ce} send \u{b7} ## or esc back ";
         rows.push(status::rule_row(Some(&chip), true, Some(tip), cols));
         let mut tail: Vec<&str> = c.lines.iter().map(|s| s.as_str()).collect();
         let stream_line = c.stream.as_ref().map(|s| format!("goulash: {s} \u{2026}"));
