@@ -103,12 +103,17 @@ Resolved rules, in priority order:
 3. **Edges visible** (rule 2 above): the bottom row of the menu shows
    the live keymap — `↑↓ move · type to filter · ⏎ select · esc back` —
    plus `n/M` match count and scroll arrows when the list overflows.
-4. **The band grows for the menu, then gives the rows back.** A fixed
-   4-row area can't browse 14 models; the menu temporarily deepens the
-   reserved area (more [winsize arithmetic](../architecture/status-rows.md),
-   ~10 rows) and restores on close. This is a *user-initiated* resize —
-   the "never resize mid-session" rule guards against goulash surprising
-   the user, not against the user asking for room.
+4. **v1: the list scrolls under a fixed cursor, inside the fixed
+   area.** TV-menu style — the window stays the existing reserved rows,
+   the cursor row holds still, and the list moves beneath it with
+   `▲ n/M ▼` indicators. No winsize change at all: the menu opens
+   instantly, nothing reflows, and the hard-won fixed-height stability
+   is untouched. Type-to-filter makes a 2-3 row window genuinely
+   workable (fzf is usable at `--height=4`). Growing the band for a
+   deeper view stays on the table as an opt-in knob
+   (`[status] menu_rows`) — it's a *user-initiated* resize so the
+   no-resize rule permits it — but it costs a SIGWINCH + shell reflow
+   on every open/close, so it must earn its way in.
 5. **Never block the shell.** Menus that need a probe (`/api/tags`)
    open instantly with a `probing…` row and fill in async.
 6. **Multi-level = a stack of the same primitive.** `#/service` is just
@@ -118,13 +123,46 @@ Resolved rules, in priority order:
 Commit semantics (see write-back rule): **Enter selects for now AND
 persists as the default** — TV-remote semantics; your TV doesn't forget
 its input on power-cycle. `auto` is a first-class list entry that
-restores the probe chain. The typed form `#/model <name>` stays
-**session-only** — that's the "try it once" path, and the asymmetry is
-deliberate: browsing is choosing a default, typing is an experiment.
+restores the probe chain. The typed forms split the same way:
+`#/model <name>` stays **session-only** (the "try it once" path) and
+`#/model <name> save` persists — browsing is choosing a default,
+typing is an experiment, `save` says you mean it.
 
 Write-back edits `config.toml` **surgically** (`toml_edit`-style,
 comments and formatting preserved) — never a full re-serialize, which
 would dump every default and nuke the user's comments.
+
+### The crash fuse: persistence must not brick the next boot
+
+A too-big model doesn't fail politely — it can OOM the machine while
+*loading*. If that model is the persisted default, every future session
+walks into the same wall: a crash loop with no keyboard time to fix it.
+So persistence is **two-phase**, tracked in a sidecar
+(`~/.goulash/state.toml` — goulash's scratch, never the user's config):
+
+```
+on persist:            probation = "<model>"
+on load/prewarm start: loading   = "<model>"     ← the dangerous window
+on load complete:      loading cleared
+on first completed
+  generation:          probation cleared, last_good = "<model>"
+```
+
+At startup, the marks tell the story of the last run:
+
+- `loading` still set → that model likely took the machine down
+  mid-load. **Refuse to auto-bind it**: boot on `last_good` (or auto)
+  with a notice — `gemma4:12b didn't survive its last load — on auto;
+  '#/model gemma4:12b save' to insist`.
+- `probation` set but the last session exited cleanly without ever
+  generating → not suspect, just unproven; bind normally and let the
+  fuse ride until a generation completes.
+- Clean marks → nothing to do.
+
+Same shape as fsck / a browser's "restore session?" after a crash: the
+default is only trusted once it has demonstrably survived, and an
+unclean death demotes it to explicit-retry. `last_good` gives the fuse
+somewhere safe to land.
 
 Spatial shortcuts cover the handful of live-tunable things (split
 height, reserved row count, list visibility). A conventional menu (Down

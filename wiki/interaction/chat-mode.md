@@ -60,10 +60,12 @@ The flow for firing a suggested command while chatting:
 - We do **not** re-implement an editable command line inside the chat
   pane. Emulating readline badly is a tarpit, and firing from inside
   goulash's pane would cross the input-ownership line below: paste
-  without execute is the invariant. The cost is one extra mode flip
-  (Up, Enter-to-shell instead of Enter-in-place); if that flip proves
-  annoying in practice, direct fire-from-chat is an explicit
-  `accept-each` rung on the autonomy dial, not a default.
+  without execute is the invariant. **Decided: keep it pure.** Chat is
+  for the multi-turn conversation (no retyping `#` every turn); when a
+  command comes up, you drop to the shell and hit Enter yourself.
+  There is no Claude-Code-style act-observe loop here — that lives on
+  the autonomy dial (`accept-each` and up), opted into explicitly,
+  never reached by drift.
 - Entering `##` expands the bottom space by a few rows when available —
   a *user-initiated* resize, consistent with the menu rule in
   [settings-and-nav](settings-and-nav.md). A foreground alt-screen app

@@ -75,11 +75,11 @@ Rules:
   the right end of the rule — the same real estate as the idle ingress
   tip, which they replace while browsing. Arrows only render for
   directions that can actually move.
-- The stack holds turns **that vended a command** (capped, ~50); their
-  chat text rides along in the band. Turns with prose but no command
-  are reachable through `##` chat scroll instead — cycling a slot whose
-  entry pastes nothing would feel broken. (Open: revisit if that split
-  feels wrong in practice.)
+- The stack holds turns **that vended a command** — decided, not open:
+  commands are the anchor. Their chat text rides along in the band;
+  prose-only turns are reachable through `##` chat scroll instead —
+  cycling a slot whose entry pastes nothing would feel broken. Capped
+  (~50).
 - In `##` chat mode, **Up from the chat line lands on this same slot**
   ([chat-mode](chat-mode.md)) — one mechanism, two doors.
 
