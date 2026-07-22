@@ -50,7 +50,7 @@ Type `#` and a question at your prompt (it's a shell comment recorded in history
 
 The LLM can provide a suggested command. Press down (past the end of shell history) and it lands on your prompt for editing.  Enter runs it as your own command. Goulash also reviews each command turn unprompted and may leave a tip in the same spot.
 
-### Arrows - one spatial axis
+### Style - Arrows: one spatial axis
 
 Shell history lives above your prompt; goulash's suggestions live below. Up and Down just move along the line:
 
