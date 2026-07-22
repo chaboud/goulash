@@ -3,7 +3,17 @@
 **Focus on the flow.**
 Think about the problem, not the syntax.
 
-Goulash is an LLM-aware overlay for the shell you already use. It watches the session and offers advice and executable suggestions, but every keystroke and every command is still yours.
+## Why?
+We don't always remember the syntax for all terminal commands.  So there's a familiar loop:
+
+Start typing command → forget esoteric syntax → go to Google/ChatGPT/Claude to ask → notice email/slack/Hacker-News → get lunch → come back to prompt confused about what was happening → re-understand the situation → start typing command → ...
+
+Context switching has a cost.
+Cognitive load is bad.
+But Large Language Models are pretty good at esoteric syntax.
+
+## What?
+Goulash is an LLM-aware overlay for the shell you already use. It watches the session and offers advice and executable suggestions *in your terminal*, but every keystroke and every command is still yours.
 
 <p align="center">
   <img src="docs/GoulashHashes.gif" alt="goulash demo: asking a question at the prompt, then pulling the suggested command down onto the shell line" width="760">
@@ -29,7 +39,7 @@ brew install goulash
 ```
 
 ## Usage
-Run `goulash` and use your shell exactly as before. Goulash provides suggestions *below* your prompt, like a *future* history.  Just press the down arrow to scroll through suggested command history and explanations, pulling one into your prompt to modify and/or execute.
+Run `goulash` and use your shell exactly as before. Goulash provides suggestions *below* your prompt, like a *future* history.  Just press the down arrow to scroll through older suggested commands and explanations, pulling one into your prompt to modify and/or execute.
 
 
 ### `#` ask a question, get an answer + a pullable command
