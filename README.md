@@ -186,11 +186,10 @@ is never auto-bound again until an explicit retry survives. Also
 
 **`##` chat mode**: `## <question>` (or bare `##`) flips focus to a
 chat pane — the goulash area grows a few rows, and follow-ups need no
-`#` prefix. When a command comes up, **Up** hands it to your real
-shell line (your editor, your Enter — goulash never runs commands);
-`##` or Esc returns to the shell. **Down** at the prompt cycles a
-history of past suggested commands (with their chat text) even after
-the live suggestion cleared.
+`#` prefix. The suggestion sits at the bottom of the panel: **Down**
+selects it (and browses older), **Enter** places it on your real shell
+line (your editor, your Enter — goulash never runs commands); `##` or
+Esc returns to the shell. See Usage above for the full arrow axis.
 
 **Memory** (off by default): `#/memory on` gives the model a flat,
 slot-limited pinned store (25 slots × ≤240 chars, durable in
