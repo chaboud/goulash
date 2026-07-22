@@ -27,7 +27,7 @@ Goulash doesn't pop up windows.
 
 Goulash doesn't take over.
 
-This is your terminal... just with a navigator.
+This is your terminal... with a navigator.
 
 
 
