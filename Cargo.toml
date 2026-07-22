@@ -1,8 +1,9 @@
 [package]
 name = "goulash"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
+authors = ["Matthew Chaboud"]
 description = "Your shell, with a coach — an LLM overlay that wraps zsh/bash, watches the session, and offers answers and pullable command suggestions"
 repository = "https://github.com/chaboud/goulash"
 homepage = "https://goulash.dev"
