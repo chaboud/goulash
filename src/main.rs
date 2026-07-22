@@ -7,6 +7,7 @@ mod pty;
 mod record;
 mod sense;
 mod session;
+mod state;
 mod status;
 mod term;
 mod vendor;

@@ -27,6 +27,11 @@ pub enum Event {
     Models(Vec<String>),
     /// Raw model output, emitted when [engine] debug = true.
     Debug(String),
+    /// A load/generation is starting on this model — the dangerous
+    /// window the crash fuse marks (state.rs).
+    Busy(String),
+    /// The in-flight work returned (however it went).
+    Idle,
 }
 
 pub enum Job {
@@ -37,6 +42,8 @@ pub enum Job {
         proactive: bool,
     },
     SetModel(String),
+    /// Forget any pinned model and re-run the probe chain (auto).
+    Rebind,
     ListModels,
 }
 
@@ -88,6 +95,10 @@ impl Engine {
         let _ = self.job_tx.send(Job::SetModel(model));
     }
 
+    pub fn rebind(&self) {
+        let _ = self.job_tx.send(Job::Rebind);
+    }
+
     pub fn list_models(&self) {
         let _ = self.job_tx.send(Job::ListModels);
     }
@@ -97,7 +108,7 @@ fn notify(wr: &OwnedFd) {
     let _ = nix::unistd::write(wr, b"e");
 }
 
-fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>, wr: OwnedFd) {
+fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>, wr: OwnedFd) {
     let path_set = crate::vendor::path_executable_set();
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(2))
@@ -110,7 +121,7 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
     if let Some((model, _)) = &state {
         announce(&ev, &wr, model);
         if cfg.prewarm {
-            warm(&agent, &cfg, model);
+            warm_marked(&agent, &cfg, model, &ev, &wr);
         }
     }
 
@@ -122,7 +133,7 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
             if let Some((model, _)) = &state {
                 announce(&ev, &wr, model);
                 if cfg.prewarm {
-                    warm(&agent, &cfg, model);
+                    warm_marked(&agent, &cfg, model, &ev, &wr);
                 }
             }
         }
@@ -136,14 +147,28 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
                 Job::Ask { .. } => latest_ask = Some(job),
                 Job::SetModel(m) => match state.as_mut() {
                     Some((model, _)) => {
-                        *model = m;
+                        *model = m.clone();
+                        cfg.model = Some(m);
                         announce(&ev, &wr, model);
                         if cfg.prewarm {
-                            warm(&agent, &cfg, model);
+                            warm_marked(&agent, &cfg, model, &ev, &wr);
                         }
                     }
                     None => unreachable_engine(&ev, &wr, &cfg),
                 },
+                Job::Rebind => {
+                    cfg.model = None;
+                    state = probe_ollama(&agent, &cfg);
+                    match &state {
+                        Some((model, _)) => {
+                            announce(&ev, &wr, model);
+                            if cfg.prewarm {
+                                warm_marked(&agent, &cfg, model, &ev, &wr);
+                            }
+                        }
+                        None => unreachable_engine(&ev, &wr, &cfg),
+                    }
+                }
                 Job::ListModels => match &state {
                     Some((_, installed)) => {
                         let _ = ev.send(Event::Models(installed.clone()));
@@ -168,9 +193,12 @@ fn worker(cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>,
                 unreachable_engine(&ev, &wr, &cfg);
                 continue;
             };
+            let _ = ev.send(Event::Busy(model.clone()));
+            notify(&wr);
             let result = generate(
                 &agent, &cfg, model, &question, &context, &memories, &ev, &wr, proactive,
             );
+            let _ = ev.send(Event::Idle);
             let _ = match result {
                 Ok(ans) => {
                     if cfg.debug {
@@ -230,7 +258,16 @@ fn unreachable_engine(ev: &mpsc::Sender<Event>, wr: &OwnedFd, cfg: &EngineConfig
 
 /// Ask the server to load the model (empty generate) so the first real
 /// ask doesn't pay the cold start. Best-effort; blocks only the worker.
-fn warm(agent: &ureq::Agent, cfg: &EngineConfig, model: &str) {
+/// Bracketed by Busy/Idle: the load is the crash fuse's dangerous window.
+fn warm_marked(
+    agent: &ureq::Agent,
+    cfg: &EngineConfig,
+    model: &str,
+    ev: &mpsc::Sender<Event>,
+    wr: &OwnedFd,
+) {
+    let _ = ev.send(Event::Busy(model.to_string()));
+    notify(wr);
     let mut body = serde_json::json!({"model": model});
     if !cfg.keep_alive.is_empty() {
         body["keep_alive"] = serde_json::json!(cfg.keep_alive);
@@ -238,6 +275,8 @@ fn warm(agent: &ureq::Agent, cfg: &EngineConfig, model: &str) {
     let _ = agent
         .post(&format!("{}/api/generate", cfg.host))
         .send_string(&body.to_string());
+    let _ = ev.send(Event::Idle);
+    notify(wr);
 }
 
 fn probe_ollama(agent: &ureq::Agent, cfg: &EngineConfig) -> Option<(String, Vec<String>)> {

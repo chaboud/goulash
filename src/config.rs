@@ -149,6 +149,19 @@ impl Config {
         }
     }
 
+    /// Surgically set (or clear, for auto) `[engine] model` in
+    /// config.toml, preserving the user's comments and formatting —
+    /// never a full re-serialize.
+    pub fn persist_model(name: Option<&str>) -> Result<(), String> {
+        let path = Self::dir().ok_or("no home dir")?.join("config.toml");
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let edited = edit_model(&text, name)?;
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        std::fs::write(&path, edited).map_err(|e| e.to_string())
+    }
+
     /// Rows kept out of the inner PTY's world. With the band enabled the
     /// goulash area holds a FIXED height (rule + question + text rows +
     /// chrome) so the terminal never resizes mid-session.
@@ -161,5 +174,48 @@ impl Config {
         } else {
             self.status.rows.clamp(1, 8)
         }
+    }
+}
+
+fn edit_model(text: &str, name: Option<&str>) -> Result<String, String> {
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("config parse: {e}"))?;
+    match name {
+        Some(n) => {
+            if doc.get("engine").is_none() {
+                doc["engine"] = toml_edit::table();
+            }
+            doc["engine"]["model"] = toml_edit::value(n);
+        }
+        None => {
+            if let Some(t) = doc.get_mut("engine").and_then(|e| e.as_table_mut()) {
+                t.remove("model");
+            }
+        }
+    }
+    Ok(doc.to_string())
+}
+
+#[cfg(test)]
+mod persist_tests {
+    use super::edit_model;
+
+    #[test]
+    fn surgical_edit_preserves_comments() {
+        let src = "# my precious comment\n[engine]\nhost = \"http://x\" # inline note\n";
+        let out = edit_model(src, Some("gemma3:4b")).unwrap();
+        assert!(out.contains("# my precious comment"));
+        assert!(out.contains("# inline note"));
+        assert!(out.contains("model = \"gemma3:4b\""));
+        // auto: the key is removed, comments still intact
+        let back = edit_model(&out, None).unwrap();
+        assert!(!back.contains("model ="));
+        assert!(back.contains("# my precious comment"));
+    }
+
+    #[test]
+    fn edit_works_on_empty_config() {
+        let out = edit_model("", Some("qwen3:1.7b")).unwrap();
+        assert!(out.contains("[engine]"));
+        assert!(out.contains("model = \"qwen3:1.7b\""));
     }
 }

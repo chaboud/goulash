@@ -270,6 +270,13 @@ def test_zsh_auto_integration():
     os.write(mfd, b"\r")
     out = read_until(mfd, rb"Cargo\.toml")
     check("Down pull executed", b"Cargo.toml" in out, out[-300:])
+    # Success cleared the live suggestion list, but the slot HISTORY
+    # survives: Down again re-enters it, with the position indicator.
+    os.write(mfd, b"\x1b[B")
+    out = read_until(mfd, rb"1/1", 4.0)
+    check("slot history survives the clear", b"1/1" in out, out[-300:])
+    os.write(mfd, b"\x15")  # ^U: abandon the browsed slot
+    time.sleep(0.3)
     os.write(mfd, b"# hello goulash\r")
     out = read_until(mfd, rb"no engine", 5.0)
     check("aside acknowledged (no engine reachable)", b"no engine" in out, out[-300:])

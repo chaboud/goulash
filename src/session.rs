@@ -5,6 +5,7 @@ use crate::osc::{Mark, OscFilter, Seg};
 use crate::pty;
 use crate::record::Recorder;
 use crate::sense::{self, HookPhase, Sensor, State};
+use crate::state::StateFile;
 use crate::status;
 use crate::term::{self, RawGuard, Size};
 use crate::vendor::{self, RulesVendor};
@@ -162,6 +163,27 @@ struct Band {
     text: String,
 }
 
+/// One vended (suggestion, chat) turn in the slot history — the
+/// single-slot scrollable stack Down cycles through
+/// (wiki: interaction/down-arrow-protocol.md). Commands are the anchor;
+/// the paired chat text rides along for the band.
+#[derive(Clone)]
+struct SugTurn {
+    id: u64,
+    cmd: String,
+    text: String,
+}
+
+const SUG_HIST_CAP: usize = 50;
+
+fn hist_push(hist: &mut Vec<SugTurn>, turn: SugTurn) {
+    if hist.first().map(|t| t.cmd == turn.cmd).unwrap_or(false) {
+        return; // adjacent dedup: re-vending the same fix isn't a new turn
+    }
+    hist.insert(0, turn);
+    hist.truncate(SUG_HIST_CAP);
+}
+
 /// Whitespace-collapse then hard-wrap into at most `max_rows` rows.
 fn wrap_chars(s: &str, width: usize, max_rows: usize) -> Vec<String> {
     let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -197,11 +219,20 @@ fn compose_rows(
     suggestions: &[(u64, String, String)],
     notice: &Option<String>,
     band: &Option<Band>,
+    browse: Option<usize>,
+    sug_hist: &[SugTurn],
 ) -> Vec<String> {
     let cols = layout.real.cols as usize;
-    let sug_chip = suggestions
-        .first()
-        .map(|s| format!(" \u{2193} suggestion: {} ", s.1));
+    // While browsing the slot history, the browsed turn owns the area:
+    // its command in the chip, its chat text in the band, position on
+    // the rule's right end. Everything else is frozen underneath.
+    let browsed = browse.and_then(|i| sug_hist.get(i).map(|t| (i, t)));
+    let sug_chip = match browsed {
+        Some((_, t)) => Some(format!(" \u{2193} suggestion: {} ", t.cmd)),
+        None => suggestions
+            .first()
+            .map(|s| format!(" \u{2193} suggestion: {} ", s.1)),
+    };
     let rule_text = sug_chip
         .clone()
         .or_else(|| notice.clone().map(|n| format!(" {n} ")));
@@ -222,28 +253,46 @@ fn compose_rows(
 
     let n_text = cfg.status.band_rows.clamp(1, 4);
     let mut rows = Vec::new();
-    // Ingress tip rides the right end of the rule until a pullable
-    // suggestion exists — the command is the more important thing.
-    let tip = if sug_chip.is_none() {
-        Some(" # message to chat \u{b7} #/help for help ")
-    } else {
-        None
+    // Right end of the rule: scroll position while browsing the slot
+    // history; otherwise the ingress tip — until a pullable suggestion
+    // exists (the command is the more important thing).
+    let tip = match browsed {
+        Some((i, _)) => Some(format!(
+            " {}/{}{} ",
+            i + 1,
+            sug_hist.len(),
+            if i + 1 < sug_hist.len() {
+                " \u{b7} \u{2193} older"
+            } else {
+                ""
+            }
+        )),
+        None if sug_chip.is_none() => {
+            Some(" # message to chat \u{b7} #/help for help ".to_string())
+        }
+        None => None,
     };
     rows.push(status::rule_row(
         rule_text.as_deref(),
         sug_chip.is_some(),
-        tip,
+        tip.as_deref(),
         cols,
     ));
-    let q = band
-        .as_ref()
-        .and_then(|b| b.question.as_deref())
-        .unwrap_or("");
+    let q = match browsed {
+        Some(_) => "suggestion history",
+        None => band
+            .as_ref()
+            .and_then(|b| b.question.as_deref())
+            .unwrap_or(""),
+    };
     rows.push(status::pad_row(&format!(" {q}"), cols, status::QUERY_SGR));
-    let mut lines = band
-        .as_ref()
-        .map(|b| wrap_chars(&b.text, cols.saturating_sub(2), n_text as usize))
-        .unwrap_or_default();
+    let mut lines = match browsed {
+        Some((_, t)) => wrap_chars(&t.text, cols.saturating_sub(2), n_text as usize),
+        None => band
+            .as_ref()
+            .map(|b| wrap_chars(&b.text, cols.saturating_sub(2), n_text as usize))
+            .unwrap_or_default(),
+    };
     while (lines.len() as u16) < n_text {
         lines.push(String::new());
     }
@@ -310,6 +359,7 @@ fn slash_command(
     blocks: u64,
     commentary: &mut bool,
     memory: &mut MemoryStore,
+    fuse: &mut StateFile,
 ) -> Option<String> {
     let mut it = cmdline.splitn(2, char::is_whitespace);
     let cmd = it.next().unwrap_or("");
@@ -329,14 +379,42 @@ fn slash_command(
                 if *commentary { "on" } else { "off" }
             ))
         }
-        ("model", Some(name)) => match engine {
-            Some(eng) => {
-                let name = name.split_whitespace().next().unwrap_or(name);
-                eng.set_model(name.to_string());
-                Some(format!("switching model to {name} \u{2026}"))
+        ("model", Some(rest)) => {
+            let mut t = rest.split_whitespace();
+            let name = t.next().unwrap_or(rest);
+            let save = t.next() == Some("save");
+            match engine {
+                Some(eng) if name == "auto" => {
+                    eng.rebind();
+                    Some(if save {
+                        match Config::persist_model(None) {
+                            Ok(()) => "auto \u{2192} default (probe order restored)".to_string(),
+                            Err(e) => format!("config write failed: {e}"),
+                        }
+                    } else {
+                        "re-probing (auto) \u{2026}".to_string()
+                    })
+                }
+                Some(eng) => {
+                    eng.set_model(name.to_string());
+                    Some(if save {
+                        match Config::persist_model(Some(name)) {
+                            Ok(()) => {
+                                fuse.set_probation(name);
+                                format!(
+                                    "model {name} \u{2192} default \
+                                     (probation until first answer)"
+                                )
+                            }
+                            Err(e) => format!("config write failed: {e}"),
+                        }
+                    } else {
+                        format!("switching model to {name} \u{2026}")
+                    })
+                }
+                None => Some("no engine running".to_string()),
             }
-            None => Some("no engine running".to_string()),
-        },
+        }
         ("model", None) => match engine {
             Some(eng) => {
                 eng.list_models();
@@ -351,7 +429,8 @@ fn slash_command(
             blocks,
         )),
         ("help", _) => Some(
-            "#/model [name] \u{b7} #/commentary [on|off] \u{b7} #/memory \u{2026} \u{b7} #/status"
+            "#/model [name [save]] \u{b7} #/commentary [on|off] \u{b7} #/memory \u{2026} \u{b7} \
+             #/status"
                 .to_string(),
         ),
         _ => Some(format!("unknown command /{cmd} \u{2014} try #/help")),
@@ -475,18 +554,33 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut hook: Option<HookPhase> = None;
     let mut rules = RulesVendor::new();
     let mut suggestions: Vec<(u64, String, String)> = Vec::new();
+    let mut sug_hist: Vec<SugTurn> = Vec::new();
+    let mut browse: Option<usize> = None;
     let mut next_sid: u64 = 1;
     let mut cur_cmd: Option<String> = None;
     let mut block_tail: Vec<u8> = Vec::new();
     let mut last_cwd = String::new();
+    // Crash fuse: refuse to auto-bind a model that took the last run
+    // down mid-load/mid-generation; land on last_good (or auto) instead.
+    let mut fuse = StateFile::load(Config::dir());
+    let mut eng_cfg = cfg.engine.clone();
     let mut notice: Option<String> = None;
+    if let Some(fallback) = fuse.veto(eng_cfg.model.as_deref()) {
+        let bad = eng_cfg.model.take().unwrap_or_default();
+        notice = Some(format!(
+            "{bad} didn't survive its last run \u{2014} on {}; \
+             '#/model {bad} save' to insist",
+            fallback.as_deref().unwrap_or("auto")
+        ));
+        eng_cfg.model = fallback;
+    }
     // Append-only session log for engine context: byte-stable prefix so
     // the provider's KV cache re-uses everything but the appended tail.
     // Epoch-trims at a block boundary when over budget (one cache miss).
     let mut ctx_log = String::new();
     let mut blocks_seen: u64 = 0;
     let mut engine: Option<Engine> = if cfg.engine.provider != "none" {
-        Engine::start(cfg.engine.clone()).ok()
+        Engine::start(eng_cfg).ok()
     } else {
         None
     };
@@ -507,6 +601,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 &suggestions,
                 &notice,
                 &band,
+                browse,
+                &sug_hist,
             );
             let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);
             if !pre.is_empty() {
@@ -625,6 +721,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     block_tail.clear();
                                     notice = None;
                                     band = None;
+                                    browse = None;
                                 }
                                 Mark::CmdEnd(code) => {
                                     rec.cmd_end(code);
@@ -673,6 +770,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             let id = next_sid;
                                             next_sid += 1;
                                             rec.suggest(id, &v.command, &v.why, v.vendor);
+                                            hist_push(
+                                                &mut sug_hist,
+                                                SugTurn {
+                                                    id,
+                                                    cmd: v.command.clone(),
+                                                    text: v.why.clone(),
+                                                },
+                                            );
                                             suggestions.insert(0, (id, v.command, v.why));
                                         }
                                         suggestions.truncate(8);
@@ -699,6 +804,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 }
                                 Mark::Ask(q) => {
                                     rec.aside(&q);
+                                    browse = None;
                                     let body = q.trim_start_matches('#').trim();
                                     if let Some(cmdline) = body.strip_prefix('/') {
                                         // #/ commands: goulash controls, not
@@ -711,6 +817,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             blocks_seen,
                                             &mut commentary,
                                             &mut memory,
+                                            &mut fuse,
                                         );
                                     } else if let Some(eng) = engine.as_ref() {
                                         eng.ask(
@@ -734,32 +841,50 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     }
                                 }
                                 Mark::Pull(buffer) => {
-                                    // Context shifting: empty buffer pulls
-                                    // the top suggestion; a buffer that IS
-                                    // one of our suggestions cycles to the
-                                    // next (kill line, repaste); the user's
-                                    // own text is never clobbered.
-                                    let next = if suggestions.is_empty() {
+                                    // Slot history: a single-slot scrollable
+                                    // view over past (suggestion, chat)
+                                    // turns. Empty buffer enters at the
+                                    // newest; a buffer that IS the current
+                                    // slot steps one older (kill line,
+                                    // repaste) and STOPS at the oldest.
+                                    // The user's own text is never
+                                    // clobbered — a mismatch ends browsing.
+                                    let target = if sug_hist.is_empty() {
+                                        browse = None;
                                         None
                                     } else if buffer.is_empty() {
                                         Some(0)
                                     } else {
-                                        suggestions
-                                            .iter()
-                                            .position(|s| s.1 == buffer)
-                                            .map(|p| (p + 1) % suggestions.len())
-                                    };
-                                    if let Some(i) = next {
-                                        let (id, cmdtext, _why) = suggestions[i].clone();
-                                        rec.accept(id);
-                                        let mut bytes = Vec::new();
-                                        if !buffer.is_empty() {
-                                            bytes.push(0x15); // ^U: kill line
+                                        let pos = browse
+                                            .filter(|&p| {
+                                                sug_hist.get(p).map(|t| t.cmd == buffer)
+                                                    == Some(true)
+                                            })
+                                            .or_else(|| {
+                                                sug_hist.iter().position(|t| t.cmd == buffer)
+                                            });
+                                        match pos {
+                                            Some(p) => Some((p + 1).min(sug_hist.len() - 1)),
+                                            None => {
+                                                browse = None;
+                                                None
+                                            }
                                         }
-                                        bytes.extend_from_slice(b"\x1b[200~");
-                                        bytes.extend_from_slice(cmdtext.as_bytes());
-                                        bytes.extend_from_slice(b"\x1b[201~");
-                                        write_all(master, &bytes)?;
+                                    };
+                                    if let Some(i) = target {
+                                        let turn = sug_hist[i].clone();
+                                        if turn.cmd != buffer {
+                                            rec.accept(turn.id);
+                                            let mut bytes = Vec::new();
+                                            if !buffer.is_empty() {
+                                                bytes.push(0x15); // ^U: kill line
+                                            }
+                                            bytes.extend_from_slice(b"\x1b[200~");
+                                            bytes.extend_from_slice(turn.cmd.as_bytes());
+                                            bytes.extend_from_slice(b"\x1b[201~");
+                                            write_all(master, &bytes)?;
+                                        }
+                                        browse = Some(i);
                                     }
                                 }
                             },
@@ -854,6 +979,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         remembers,
                         forgets,
                     } => {
+                        // The generation completed: the bound model earned
+                        // its trust (ends probation, clears any distrust).
+                        if let Some(m) = engine_model.as_ref() {
+                            fuse.promote(m);
+                        }
                         if memory.enabled {
                             // Forgets first: a modify is FORGET + REMEMBER in
                             // one reply, and the delete must free the slot
@@ -891,6 +1021,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     "from # ask"
                                 };
                                 rec.suggest(id, &cmd, why, "engine");
+                                hist_push(
+                                    &mut sug_hist,
+                                    SugTurn {
+                                        id,
+                                        cmd: cmd.clone(),
+                                        text: one_line.clone(),
+                                    },
+                                );
                                 suggestions.insert(0, (id, cmd.clone(), why.to_string()));
                                 suggestions.truncate(8);
                                 ctx_log.push_str(&format!("CMD: {cmd}\n"));
@@ -917,6 +1055,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         }
                     }
                     engine::Event::Debug(raw) => rec.engine_debug(&raw),
+                    engine::Event::Busy(model) => fuse.busy(&model),
+                    engine::Event::Idle => fuse.idle(),
                     engine::Event::Models(names) => {
                         let list = names
                             .iter()
@@ -963,6 +1103,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     &suggestions,
                     &notice,
                     &band,
+                    browse,
+                    &sug_hist,
                 );
                 if rows != last_rows {
                     let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);
