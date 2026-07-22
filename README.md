@@ -27,7 +27,7 @@ Goulash doesn't pop up windows.
 
 Goulash doesn't take over.
 
-This is your terminal, with a navigator.
+This is your terminal... just with a navigator.
 
 
 
@@ -43,7 +43,7 @@ brew install goulash
 ```
 
 ## Usage
-Run `goulash` and use your shell exactly as before. Goulash provides suggestions *below* your prompt, like a *future* history.  Just press the down arrow if you see something you like.
+Run `goulash` and use your shell exactly as before. Goulash provides suggestions *below* your prompt, like a *future history*.  Just press the down arrow if you see something you like.
 
 ### `#` ask a question, get an answer + a pullable command
 Type `#` and a question at your prompt (it's a shell comment recorded in history, never executed).
@@ -63,7 +63,7 @@ Shell history lives above your prompt; goulash's suggestions live below. Up and 
 Down past the newest keeps going into the **history of suggested commands** with the position (`↑ 3/7 ↓`) shown at the right of the rule. Up retraces to your empty prompt, and past that it's plain zsh/bash history.
 
 ### `##` chat, without retyping `#`
-`##` (or `## question`) flips into a chat panel; follow-ups need no prefix. The shell keeps running above.  When you select a command to run, you're back in your shell.
+`##` (or `## question`) flips into a chat panel; follow-ups need no prefix. The shell keeps running above.  When you select a command to copy to the prompt, you're back in your shell.
 
 ### `#/` goulash's menu controls
 ```text
