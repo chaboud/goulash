@@ -77,7 +77,54 @@ than that belongs in the selector or the TOML.
 - Same commands work from `##` chat as `/status`, `/model`, … (the `#`
   is already implied there).
 
-## Menus too — "both" is the answer
+## The menu primitive (v1 spec — get this one thing right)
+
+Bare `#/model` (and later `#/service`, `#/settings`, `#/memory`) drops
+into **one shared widget**: a filterable, scrollable list in the goulash
+area. Every menu is this; there is no second kind.
+
+```
+Menu { title, breadcrumb, items[(label, detail)], filter, cursor, on_commit }
+```
+
+Resolved rules, in priority order:
+
+1. **Modal, and only ever user-opened.** While a menu is up, goulash
+   owns the keyboard completely — the first true exception to
+   shell-owns-input, tolerable *only* because the user asked for it by
+   name. Goulash never opens a menu on its own. Exit is bulletproof:
+   Esc backs out one level, Esc at the top level closes, Ctrl-C always
+   aborts everything from anywhere.
+2. **Typing filters; there are no per-item hotkeys.** Shortcut letters
+   can't coexist with type-to-filter (`g` must mean "gemma", not "jump
+   to item G") — and even digits are out, because model names are full
+   of them (`qwen2.5`, `gemma3:12b`). Filter-first is the fzf model and
+   it wins. Backspace edits the filter; the filter is shown.
+3. **Edges visible** (rule 2 above): the bottom row of the menu shows
+   the live keymap — `↑↓ move · type to filter · ⏎ select · esc back` —
+   plus `n/M` match count and scroll arrows when the list overflows.
+4. **The band grows for the menu, then gives the rows back.** A fixed
+   4-row area can't browse 14 models; the menu temporarily deepens the
+   reserved area (more [winsize arithmetic](../architecture/status-rows.md),
+   ~10 rows) and restores on close. This is a *user-initiated* resize —
+   the "never resize mid-session" rule guards against goulash surprising
+   the user, not against the user asking for room.
+5. **Never block the shell.** Menus that need a probe (`/api/tags`)
+   open instantly with a `probing…` row and fill in async.
+6. **Multi-level = a stack of the same primitive.** `#/service` is just
+   the level above models: providers → models. Esc pops one frame;
+   breadcrumb shows where you are (`engine ▸ ollama ▸ model`).
+
+Commit semantics (see write-back rule): **Enter selects for now AND
+persists as the default** — TV-remote semantics; your TV doesn't forget
+its input on power-cycle. `auto` is a first-class list entry that
+restores the probe chain. The typed form `#/model <name>` stays
+**session-only** — that's the "try it once" path, and the asymmetry is
+deliberate: browsing is choosing a default, typing is an experiment.
+
+Write-back edits `config.toml` **surgically** (`toml_edit`-style,
+comments and formatting preserved) — never a full re-serialize, which
+would dump every default and nuke the user's comments.
 
 Spatial shortcuts cover the handful of live-tunable things (split
 height, reserved row count, list visibility). A conventional menu (Down

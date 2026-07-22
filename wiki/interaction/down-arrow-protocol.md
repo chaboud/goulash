@@ -48,6 +48,41 @@ executing. Details: [suggestion-list.md](suggestion-list.md).
 | fish | reader integration | |
 | other | `Alt-Down` chord + bracketed paste | see [shell-integration](../architecture/shell-integration.md) |
 
+## Slot history: cycling past the newest suggestion
+
+The pullable slot is a **single-slot view over the history of
+(suggestion, chat message) turns** — just like shell history, but for
+our side of the conversation:
+
+```
+↓ past history end   pull newest suggestion (slot 1)
+↓ again              slot 2 (older) — buffer repastes, band shows that
+                     turn's chat text
+↑                    walk back newer; past slot 1, restore the original
+                     buffer and return to normal shell history
+```
+
+Rules:
+
+- **Browsing freezes the goulash area.** While the user is in the slot
+  stack, new suggestions/answers queue instead of repainting — no
+  mutation under the user's cursor. Unfreeze on edit, Enter, or Ctrl-C;
+  never on a timer.
+- **Editing the buffer exits the stack.** The existing buffer-match
+  guard already does this: if the line no longer equals a slot's text,
+  cycling stops touching it.
+- **The rule row shows position**: scroll indicators (`▲ 2/7 ▼`) ride
+  the right end of the rule — the same real estate as the idle ingress
+  tip, which they replace while browsing. Arrows only render for
+  directions that can actually move.
+- The stack holds turns **that vended a command** (capped, ~50); their
+  chat text rides along in the band. Turns with prose but no command
+  are reachable through `##` chat scroll instead — cycling a slot whose
+  entry pastes nothing would feel broken. (Open: revisit if that split
+  feels wrong in practice.)
+- In `##` chat mode, **Up from the chat line lands on this same slot**
+  ([chat-mode](chat-mode.md)) — one mechanism, two doors.
+
 ## History record
 
 Each pull — accepted, edited, ignored, or expired — is a suggestion block

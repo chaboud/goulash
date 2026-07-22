@@ -8,25 +8,35 @@ pub const RULE_SGR: &str = "\x1b[0;37m"; // white rule on default bg
 pub const QUERY_SGR: &str = "\x1b[0;2m"; // dim question on default bg
 pub const TEXT_SGR: &str = "\x1b[0m"; // plain answer text
 
-/// Top boundary of the goulash area: a horizontal rule with optional text
-/// cutting in near the right edge — orange chip for a pullable
-/// suggestion, plain inset text for notices.
-pub fn rule_row(text: Option<&str>, orange: bool, cols: usize) -> String {
-    let Some(t) = text else {
-        return format!("{RULE_SGR}{}\x1b[0m", "\u{2500}".repeat(cols));
+/// Top boundary of the goulash area: a horizontal rule. An orange chip
+/// for a pullable suggestion (or plain inset text for a notice) cuts in
+/// at the left edge; a dim ingress tip cuts in at the right edge and
+/// yields silently when space runs out.
+pub fn rule_row(text: Option<&str>, orange: bool, tip: Option<&str>, cols: usize) -> String {
+    // Left chip: one-dash lead-in.
+    let (left, left_len) = match text {
+        Some(t) => {
+            let clipped: String = t.chars().take(cols.saturating_sub(6)).collect();
+            let n = clipped.chars().count();
+            let sgr = if orange { SUGGEST_SGR } else { "\x1b[0m" };
+            (format!("{RULE_SGR}\u{2500}{sgr}{clipped}"), n + 1)
+        }
+        None => (format!("{RULE_SGR}\u{2500}"), 1),
     };
-    let clipped: String = t.chars().take(cols.saturating_sub(6)).collect();
-    let tlen = clipped.chars().count();
-    let trail = cols.saturating_sub(tlen + 1);
-    let mid = if orange {
-        format!("{SUGGEST_SGR}{clipped}")
-    } else {
-        format!("\x1b[0m{clipped}")
-    };
-    // Chip at the left edge: one-dash lead-in, rule fills to the right.
+    // Right tip: one-dash trail-out, dropped when the row is tight.
+    if let Some(t) = tip {
+        let tlen = t.chars().count();
+        if left_len + tlen + 2 <= cols {
+            let mid = cols - left_len - tlen - 1;
+            return format!(
+                "{left}{RULE_SGR}{}{QUERY_SGR}{t}{RULE_SGR}\u{2500}\x1b[0m",
+                "\u{2500}".repeat(mid)
+            );
+        }
+    }
     format!(
-        "{RULE_SGR}\u{2500}{mid}{RULE_SGR}{}\x1b[0m",
-        "\u{2500}".repeat(trail)
+        "{left}{RULE_SGR}{}\x1b[0m",
+        "\u{2500}".repeat(cols.saturating_sub(left_len))
     )
 }
 
@@ -59,4 +69,47 @@ pub fn pad_row(text: &str, cols: usize, sgr: &str) -> String {
     let used = line.chars().count();
     line.push_str(&" ".repeat(cols.saturating_sub(used)));
     format!("{sgr}{line}\x1b[0m")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rule_row;
+
+    fn width(row: &str) -> usize {
+        // Strip SGR sequences; what's left is the printed cells.
+        let mut n = 0;
+        let mut esc = false;
+        for c in row.chars() {
+            match (esc, c) {
+                (false, '\x1b') => esc = true,
+                (false, _) => n += 1,
+                (true, 'm') => esc = false,
+                (true, _) => {}
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn tip_rides_the_right_edge() {
+        let row = rule_row(None, false, Some(" tip "), 40);
+        assert!(row.contains(" tip "));
+        assert_eq!(width(&row), 40);
+        // one-dash trail after the tip
+        assert!(row.ends_with("\u{2500}\x1b[0m"));
+    }
+
+    #[test]
+    fn tip_yields_when_tight() {
+        let row = rule_row(Some(" a long left chip "), false, Some(" a long tip "), 24);
+        assert!(!row.contains("tip"));
+        assert_eq!(width(&row), 24);
+    }
+
+    #[test]
+    fn left_chip_and_tip_coexist() {
+        let row = rule_row(Some(" notice "), false, Some(" tip "), 40);
+        assert!(row.contains(" notice ") && row.contains(" tip "));
+        assert_eq!(width(&row), 40);
+    }
 }

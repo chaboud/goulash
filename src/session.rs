@@ -222,9 +222,17 @@ fn compose_rows(
 
     let n_text = cfg.status.band_rows.clamp(1, 4);
     let mut rows = Vec::new();
+    // Ingress tip rides the right end of the rule until a pullable
+    // suggestion exists — the command is the more important thing.
+    let tip = if sug_chip.is_none() {
+        Some(" # message to chat \u{b7} #/help for help ")
+    } else {
+        None
+    };
     rows.push(status::rule_row(
         rule_text.as_deref(),
         sug_chip.is_some(),
+        tip,
         cols,
     ));
     let q = band

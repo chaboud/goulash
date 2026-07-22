@@ -160,10 +160,19 @@ start, probe chain live.
   forgets applied first), the user via
   `#/memory add|delete|modify|find|limit` —
   [agent-memory](../architecture/agent-memory.md).
-- **Remaining**: selector *widgets* for `#/` (today: text notices, no
-  arrow-driven pickers), config write-back for `#/model`, richer answer
-  surface (heckle band — one bar row truncates real answers), streaming
-  responses, Apple FM / cloud providers, `##` chat mode (M6).
+- **Remaining**: the **menu primitive** — bare `#/model` (then
+  `#/service`, `#/settings`, `#/memory`) opens a modal filterable list:
+  type-to-filter, no hotkeys, Esc/Ctrl-C bulletproof exit, band grows
+  temporarily, `auto` as a first-class entry, Enter persists to
+  `config.toml` surgically while typed `#/model <name>` stays
+  session-only ([settings-and-nav](../interaction/settings-and-nav.md));
+  **suggestion slot history** — Down cycles older (suggestion, chat)
+  turns single-slot-style with `▲ n/M ▼` indicators on the rule row and
+  a frozen band while browsing
+  ([down-arrow-protocol](../interaction/down-arrow-protocol.md));
+  richer answer surface, Apple FM / cloud providers, `##` chat mode
+  (M6 — "chat has focus" flow now specced in
+  [chat-mode](../interaction/chat-mode.md)).
 
 ## Milestone 5 — memory hierarchy + watcher tier
 Rolling cleanup loop (local model if available) setting region markers;

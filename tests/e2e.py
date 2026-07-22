@@ -90,6 +90,8 @@ def test_basic():
     check("scroll region asserted", f"\x1b[1;{inner}r".encode() in out,
           "no DECSTBM 1..%d in %r" % (inner, out[-200:]))
     check("status row drawn", b"goulash" in out and b"bash" in out)
+    check("ingress tip shown at idle", b"#/help for help" in
+          read_until(mfd, rb"#/help for help", 3.0, out))
 
     os.write(mfd, b"echo LINES=$(tput lines) COLS=$(tput cols)\r")
     out = read_until(mfd, rb"LINES=\d+ COLS=\d+")
