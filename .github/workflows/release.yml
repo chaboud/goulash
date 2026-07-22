@@ -1,7 +1,8 @@
 name: Release
 
 # Tag-driven (`git push origin v0.2.0`) or button-driven
-# (workflow_dispatch with an existing tag). Builds per-target archives,
+# (workflow_dispatch: the tag is CREATED on main if it doesn't exist —
+# no push-capable local git required). Builds per-target archives,
 # publishes a GitHub Release, then refreshes the in-repo Homebrew
 # formula to point at the new source tarball.
 
@@ -11,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to release (e.g. v0.2.0)"
+        description: "Tag to create (on main) and release, e.g. v0.2.0"
         required: true
 
 permissions:
@@ -21,7 +22,28 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  tag:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Create the tag if it doesn't exist
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null; then
+            echo "tag ${TAG} already exists"
+          else
+            git tag -a "${TAG}" -m "goulash ${TAG#v}"
+            git push origin "refs/tags/${TAG}"
+          fi
+
   build:
+    needs: tag
+    # Run whether `tag` ran (dispatch) or was skipped (tag push).
+    if: ${{ !cancelled() && (needs.tag.result == 'success' || needs.tag.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
