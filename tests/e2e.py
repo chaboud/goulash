@@ -543,15 +543,18 @@ def test_chat_mode():
     check("chat expands the goulash area", b"\x1b[1;16r" in out, out[-300:])
     out = read_until(mfd, rb"goulash: ANS", 8.0)
     check("first answer in the transcript", b"goulash: ANS" in out, out[-300:])
-    out = read_until(mfd, "↑ echo p1-".encode(), 4.0)
-    check("pullable command visible in the chat chip",
-          "↑ echo p1-".encode() in out, out[-300:])
+    out = read_until(mfd, "↓ suggestion: echo p1-".encode(), 4.0)
+    check("slot row under the chat panel shows the command",
+          "↓ suggestion: echo p1-".encode() in out, out[-300:])
     time.sleep(0.3)
     os.write(mfd, b"and a follow-up\r")  # no '#' needed — chat has focus
     out = read_until(mfd, rb"ANS-CTX", 8.0)
     check("follow-up carries the running chat", b"ANS-CTX" in out, out[-300:])
     time.sleep(0.3)
-    os.write(mfd, b"\x1b[A")  # Up at neutral: hand the NEWEST command over
+    os.write(mfd, b"\x1b[B")  # Down: onto the slot row (newest selected)
+    out = read_until(mfd, rb"1/2", 4.0)
+    check("Down selects the newest slot", b"1/2" in out, out[-300:])
+    os.write(mfd, b"\r")  # Enter: hand it up to the shell line
     out = read_until(mfd, rb"\x1b\[1;20r", 4.0)
     check("handoff returns focus (area restored)", b"\x1b[1;20r" in out, out[-300:])
     time.sleep(0.4)

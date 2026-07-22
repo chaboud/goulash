@@ -55,14 +55,16 @@ arbitration.
 The flow for firing a suggested command while chatting:
 
 - **The same spatial axis as the prompt** ([down-arrow
-  protocol](down-arrow-protocol.md)), with the chat input as neutral:
-  **Down** dives older through the slot stack (the selected command
-  shows in the chip with its `n/M` position), **Up** walks back newer
-  to neutral, **Enter on a selection hands that command off**, and
-  **Up at neutral** is the shortcut that grabs the newest directly.
-  Esc backs out one layer: selection → input → shell. The chat input
-  line has no cursor navigation (single-line, append/edit-at-end
-  only), which is exactly what frees Up/Down for the axis.
+  protocol](down-arrow-protocol.md)), rendered honestly: the panel is
+  transcript → chat input → **slot row at the bottom**. Down from the
+  input lands on the slot row (newest) and dives older; Up walks back
+  newer and — from any depth — returns to the chat input. The selected
+  slot is an **orange band whose up-arrow says where Enter sends it**:
+  up onto the real shell line, where a second Enter executes. The
+  unselected slot row is a dim `↓ suggestion: <cmd>` hint. Esc backs
+  out one layer: selection → input → shell. The chat input line has no
+  cursor navigation (single-line, append/edit-at-end only), which is
+  exactly what frees Up/Down for the axis.
 - **Selecting a command hands it to the real shell line** (bracketed
   paste, focus flips to shell): the user edits with their *own* line
   editor — zle/readline, their bindings, their muscle memory — and

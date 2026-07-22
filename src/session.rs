@@ -363,32 +363,15 @@ fn compose_rows(
         // an input line. compose returning more rows IS the resize; the
         // winsize machinery does the rest.
         let extra = 4.min(layout.real.rows.saturating_sub(reserved_now + 8));
-        let n_chat = (cfg.status.band_rows.clamp(1, 4) + extra) as usize;
+        // One transcript row cedes to the slot row at the BOTTOM of the
+        // panel, so Down is spatially honest all the way: input above,
+        // suggestion below, shell line beyond (Enter sends it up there).
+        let n_chat = (cfg.status.band_rows.clamp(1, 4) + extra).saturating_sub(1) as usize;
         let reserved = reserved_now + extra;
         let inner = layout.real.rows.saturating_sub(reserved).max(1);
         let mut rows = Vec::new();
-        // The pullable command rides in the chip — a handoff delivers
-        // exactly this to the shell line, so it must be visible. While
-        // browsing (Down), the chip shows the selected slot + position.
-        let chip = match c.sel.and_then(|i| sug_hist.get(i).map(|t| (i, t))) {
-            Some((i, t)) => format!(
-                " ## chat \u{2502} \u{23ce} {} \u{b7} \u{2191} {}/{}{} ",
-                t.cmd,
-                i + 1,
-                sug_hist.len(),
-                if i + 1 < sug_hist.len() {
-                    " \u{2193}"
-                } else {
-                    ""
-                }
-            ),
-            None => match sug_hist.first() {
-                Some(t) => format!(" ## chat \u{2502} \u{2191} {} ", t.cmd),
-                None => " ## chat ".to_string(),
-            },
-        };
-        let tip = " \u{23ce} send \u{b7} ## or esc back ";
-        rows.push(status::rule_row(Some(&chip), true, Some(tip), cols));
+        let tip = " \u{23ce} send \u{b7} \u{2193} command \u{b7} ## or esc back ";
+        rows.push(status::rule_row(Some(" ## chat "), true, Some(tip), cols));
         let mut tail: Vec<&str> = c.lines.iter().map(|s| s.as_str()).collect();
         let stream_line = c.stream.as_ref().map(|s| format!("goulash: {s} \u{2026}"));
         if let Some(sl) = stream_line.as_deref() {
@@ -409,6 +392,35 @@ fn compose_rows(
             cols,
             status::TEXT_SGR,
         ));
+        // The slot row: selected = the orange band, its up-arrow saying
+        // "Enter inserts this up into your shell line"; unselected = a
+        // dim hint that Down reaches it.
+        let slot_row = match c.sel.and_then(|i| sug_hist.get(i).map(|t| (i, t))) {
+            Some((i, t)) => status::pad_row(
+                &format!(
+                    " \u{2191} {} \u{b7} {}/{}{}",
+                    t.cmd,
+                    i + 1,
+                    sug_hist.len(),
+                    if i + 1 < sug_hist.len() {
+                        " \u{2193}"
+                    } else {
+                        ""
+                    }
+                ),
+                cols,
+                status::SUGGEST_SGR,
+            ),
+            None => match sug_hist.first() {
+                Some(t) => status::pad_row(
+                    &format!(" \u{2193} suggestion: {}", t.cmd),
+                    cols,
+                    status::QUERY_SGR,
+                ),
+                None => status::pad_row("", cols, status::TEXT_SGR),
+            },
+        };
+        rows.push(slot_row);
         rows.push(status::chrome_row(
             layout.real,
             inner,
@@ -1351,7 +1363,6 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 Key::Up if c.input.is_empty() => match c.sel {
                                     Some(0) => c.sel = None,
                                     Some(i) => c.sel = Some(i - 1),
-                                    None if !sug_hist.is_empty() => handoff = Some(0),
                                     None => {}
                                 },
                                 Key::Backspace => {
