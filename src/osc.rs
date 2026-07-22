@@ -20,6 +20,9 @@ pub enum Mark {
     /// S;<base64 buffer> — line editor requests a suggestion pull; the
     /// current buffer contents let goulash cycle through the list
     Pull(String),
+    /// U;<base64 buffer> — line editor slides back UP the slot stack
+    /// (toward the neutral empty line; zsh history resumes above it)
+    PullUp(String),
 }
 
 const MARKER: &[u8] = b"\x1b]7770;";
@@ -150,6 +153,11 @@ fn parse_mark(body: &[u8]) -> Option<Mark> {
         b"P" => Some(Mark::Cwd(b64(payload)?)),
         b"Q" => Some(Mark::Ask(b64(payload)?)),
         b"S" => Some(Mark::Pull(if payload.is_empty() {
+            String::new()
+        } else {
+            b64(payload)?
+        })),
+        b"U" => Some(Mark::PullUp(if payload.is_empty() {
             String::new()
         } else {
             b64(payload)?

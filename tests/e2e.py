@@ -275,8 +275,13 @@ def test_zsh_auto_integration():
     os.write(mfd, b"\x1b[B")
     out = read_until(mfd, rb"1/1", 4.0)
     check("slot history survives the clear", b"1/1" in out, out[-300:])
-    os.write(mfd, b"\x15")  # ^U: abandon the browsed slot
-    time.sleep(0.3)
+    # Up slides back to the neutral empty line (one continuous axis):
+    # if any slot text lingered, the marker command would garble.
+    os.write(mfd, b"\x1b[A")
+    time.sleep(0.6)
+    os.write(mfd, b"echo neut-$((3*3))\r")
+    out = read_until(mfd, rb"neut-9", 5.0)
+    check("Up returns to the neutral empty line", b"neut-9" in out, out[-300:])
     os.write(mfd, b"# hello goulash\r")
     out = read_until(mfd, rb"no engine", 5.0)
     check("aside acknowledged (no engine reachable)", b"no engine" in out, out[-300:])

@@ -484,11 +484,11 @@ fn compose_rows(
     // exists (the command is the more important thing).
     let tip = match browsed {
         Some((i, _)) => Some(format!(
-            " {}/{}{} ",
+            " \u{2191} {}/{}{} ",
             i + 1,
             sug_hist.len(),
             if i + 1 < sug_hist.len() {
-                " \u{b7} \u{2193} older"
+                " \u{2193}"
             } else {
                 ""
             }
@@ -1147,8 +1147,46 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             bytes.extend_from_slice(turn.cmd.as_bytes());
                                             bytes.extend_from_slice(b"\x1b[201~");
                                             write_all(master, &bytes)?;
+                                        } else {
+                                            // At the oldest: resolve the
+                                            // shell's paste-expect anyway.
+                                            write_all(master, b"\x1b[200~\x1b[201~")?;
                                         }
                                         browse = Some(i);
+                                    } else {
+                                        write_all(master, b"\x1b[200~\x1b[201~")?;
+                                    }
+                                }
+                                Mark::PullUp(buffer) => {
+                                    // The same axis, other direction: Up
+                                    // slides toward the neutral empty line
+                                    // (zsh history resumes above it). Empty
+                                    // pastes resolve the shell's tracking
+                                    // on every path.
+                                    let pos = browse
+                                        .filter(|&p| {
+                                            sug_hist.get(p).map(|t| t.cmd == buffer) == Some(true)
+                                        })
+                                        .or_else(|| sug_hist.iter().position(|t| t.cmd == buffer));
+                                    match pos {
+                                        Some(0) => {
+                                            write_all(master, b"\x15\x1b[200~\x1b[201~")?;
+                                            browse = None;
+                                        }
+                                        Some(i) => {
+                                            let turn = sug_hist[i - 1].clone();
+                                            rec.accept(turn.id);
+                                            let mut bytes = vec![0x15];
+                                            bytes.extend_from_slice(b"\x1b[200~");
+                                            bytes.extend_from_slice(turn.cmd.as_bytes());
+                                            bytes.extend_from_slice(b"\x1b[201~");
+                                            write_all(master, &bytes)?;
+                                            browse = Some(i - 1);
+                                        }
+                                        None => {
+                                            write_all(master, b"\x1b[200~\x1b[201~")?;
+                                            browse = None;
+                                        }
                                     }
                                 }
                             },

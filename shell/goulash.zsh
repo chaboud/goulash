@@ -18,6 +18,8 @@ __goulash_precmd() {
   __goulash_osc "D;${code}"
   __goulash_osc "P;$(__goulash_b64 "$PWD")"
   __goulash_osc "A"
+  __goulash_slot_buf=""
+  __goulash_expect=0
 }
 
 __goulash_preexec() {
@@ -48,16 +50,50 @@ __goulash_accept_line() {
 }
 zle -N accept-line __goulash_accept_line
 
+# Slot-space tracking: goulash's pulls come back as bracketed pastes.
+# Wrapping the paste widget records exactly what landed, so "is the
+# line a goulash slot?" is a local buffer comparison that cannot drift
+# — the load-bearing check for two-way slot scrolling.
+__goulash_slot_buf=""
+__goulash_expect=0
+__goulash_bracketed_paste() {
+  zle .bracketed-paste
+  if (( __goulash_expect )); then
+    __goulash_slot_buf="$BUFFER"
+    __goulash_expect=0
+  fi
+}
+zle -N bracketed-paste __goulash_bracketed_paste
+
 # Down arrow: ordinary movement always wins — multiline buffers and
 # history-forward behave exactly as before. Only past the end of history
-# does Down ask goulash to pull the top suggestion into the line.
+# does Down ask goulash to pull a suggestion into the line (and pulls
+# again step deeper into the slot history).
 __goulash_down_or_suggest() {
   if [[ "$RBUFFER" == *$'\n'* ]] || (( HISTNO < HISTCMD )); then
     zle down-line-or-history
     return
   fi
+  __goulash_expect=1
   __goulash_osc "S;$(__goulash_b64 "$BUFFER")"
 }
 zle -N __goulash_down_or_suggest
 bindkey '^[[B' __goulash_down_or_suggest
 bindkey '^[OB' __goulash_down_or_suggest
+
+# Up arrow: one continuous axis. On a goulash slot (untouched since the
+# paste), Up slides back toward the neutral empty line; everywhere else
+# — including after any edit — it is plain zsh history.
+__goulash_up_or_history() {
+  if [[ -n "$__goulash_slot_buf" && "$BUFFER" == "$__goulash_slot_buf" \
+        && "$LBUFFER" != *$'\n'* ]]; then
+    __goulash_expect=1
+    __goulash_osc "U;$(__goulash_b64 "$BUFFER")"
+    return
+  fi
+  __goulash_slot_buf=""
+  zle up-line-or-history
+}
+zle -N __goulash_up_or_history
+bindkey '^[[A' __goulash_up_or_history
+bindkey '^[OA' __goulash_up_or_history
