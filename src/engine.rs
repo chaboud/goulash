@@ -28,8 +28,12 @@ pub enum Event {
     /// Raw model output, emitted when [engine] debug = true.
     Debug(String),
     /// A load/generation is starting on this model — the dangerous
-    /// window the crash fuse marks (state.rs).
-    Busy(String),
+    /// window the crash fuse marks (state.rs). `warm` distinguishes a
+    /// model load (worth a "loading …" notice) from an ordinary ask.
+    Busy {
+        model: String,
+        warm: bool,
+    },
     /// The in-flight work returned (however it went).
     Idle,
 }
@@ -81,7 +85,11 @@ impl Engine {
         let question = "Without being asked, briefly review the most recent \
                         command and its result. If you have ONE genuinely \
                         useful short tip or fix, say it (add a CMD: line if \
-                        a command applies). Otherwise reply exactly: PASS"
+                        a command applies). A CMD: line is for a command the \
+                        user would plausibly run next — never invent \
+                        busywork like logging, note-taking, or echo \
+                        commands. Most turns deserve no comment: when in \
+                        doubt, reply exactly: PASS"
             .to_string();
         let _ = self.job_tx.send(Job::Ask {
             question,
@@ -140,7 +148,11 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
         // Drain the queue before working: control jobs apply immediately,
         // and only the NEWEST ask survives — answering stale questions
         // serially just burns GPU on answers nobody is waiting for.
+        // Warms are deferred to AFTER the drain (at most one, for the
+        // final model), so a slow model load never pins a queued
+        // ListModels — the menu answers from cache instantly.
         let mut latest_ask = None;
+        let mut pending_warm = false;
         let mut job = first;
         loop {
             match job {
@@ -150,9 +162,7 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                         *model = m.clone();
                         cfg.model = Some(m);
                         announce(&ev, &wr, model);
-                        if cfg.prewarm {
-                            warm_marked(&agent, &cfg, model, &ev, &wr);
-                        }
+                        pending_warm = true;
                     }
                     None => unreachable_engine(&ev, &wr, &cfg),
                 },
@@ -162,9 +172,7 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                     match &state {
                         Some((model, _)) => {
                             announce(&ev, &wr, model);
-                            if cfg.prewarm {
-                                warm_marked(&agent, &cfg, model, &ev, &wr);
-                            }
+                            pending_warm = true;
                         }
                         None => unreachable_engine(&ev, &wr, &cfg),
                     }
@@ -182,6 +190,12 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                 Err(_) => break,
             }
         }
+        if pending_warm
+            && cfg.prewarm
+            && let Some((model, _)) = &state
+        {
+            warm_marked(&agent, &cfg, model, &ev, &wr);
+        }
         if let Some(Job::Ask {
             question,
             context,
@@ -193,7 +207,10 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                 unreachable_engine(&ev, &wr, &cfg);
                 continue;
             };
-            let _ = ev.send(Event::Busy(model.clone()));
+            let _ = ev.send(Event::Busy {
+                model: model.clone(),
+                warm: false,
+            });
             notify(&wr);
             let result = generate(
                 &agent, &cfg, model, &question, &context, &memories, &ev, &wr, proactive,
@@ -266,7 +283,10 @@ fn warm_marked(
     ev: &mpsc::Sender<Event>,
     wr: &OwnedFd,
 ) {
-    let _ = ev.send(Event::Busy(model.to_string()));
+    let _ = ev.send(Event::Busy {
+        model: model.to_string(),
+        warm: true,
+    });
     notify(wr);
     let mut body = serde_json::json!({"model": model});
     if !cfg.keep_alive.is_empty() {

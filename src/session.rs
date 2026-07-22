@@ -253,27 +253,45 @@ fn parse_keys(chunk: &[u8]) -> Vec<Key> {
     while i < chunk.len() {
         match chunk[i] {
             0x1b => {
-                if chunk.get(i + 1) == Some(&b'[') {
-                    // Consume the whole CSI so parameterized sequences
-                    // (e.g. 1;3B) never leak bytes into a filter.
-                    let mut j = i + 2;
-                    while j < chunk.len() && !(0x40..0x7f).contains(&chunk[j]) {
-                        j += 1;
-                    }
-                    if j < chunk.len() {
-                        let plain = j == i + 2;
-                        match chunk[j] {
-                            b'A' if plain => keys.push(Key::Up),
-                            b'B' if plain => keys.push(Key::Down),
-                            _ => {}
+                match chunk.get(i + 1) {
+                    Some(&b'[') => {
+                        // Consume the whole CSI so parameterized
+                        // sequences (e.g. 1;3B) never leak into a filter.
+                        let mut j = i + 2;
+                        while j < chunk.len() && !(0x40..0x7f).contains(&chunk[j]) {
+                            j += 1;
                         }
-                        i = j + 1;
-                    } else {
-                        i = chunk.len(); // truncated CSI: drop
+                        if j < chunk.len() {
+                            let plain = j == i + 2;
+                            match chunk[j] {
+                                b'A' if plain => keys.push(Key::Up),
+                                b'B' if plain => keys.push(Key::Down),
+                                _ => {}
+                            }
+                            i = j + 1;
+                        } else {
+                            i = chunk.len(); // truncated CSI: drop
+                        }
                     }
-                } else {
-                    keys.push(Key::Esc);
-                    i += 1;
+                    // SS3 form (ESC O A/B): what real terminals send in
+                    // application-cursor mode — which zsh's zle enables,
+                    // so THIS is the arrow encoding live sessions use.
+                    Some(&b'O') => {
+                        if let Some(&f) = chunk.get(i + 2) {
+                            match f {
+                                b'A' => keys.push(Key::Up),
+                                b'B' => keys.push(Key::Down),
+                                _ => {}
+                            }
+                            i += 3;
+                        } else {
+                            i = chunk.len(); // truncated SS3: drop
+                        }
+                    }
+                    _ => {
+                        keys.push(Key::Esc);
+                        i += 1;
+                    }
                 }
             }
             0x03 => {
@@ -459,7 +477,7 @@ fn compose_rows(
                     };
                     format!(" {name}{star}")
                 }
-                None if idx == 0 && !m.loaded => " probing \u{2026}".to_string(),
+                None if idx == 0 && !m.loaded => " probing \u{2026} (esc backs out)".to_string(),
                 None if idx == 0 => " (no matches)".to_string(),
                 None => String::new(),
             };
@@ -851,6 +869,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut band: Option<Band> = None;
     let mut menu: Option<Menu> = None;
     let mut chat: Option<Chat> = None;
+    let mut warming: Option<String> = None;
     #[allow(unused_assignments)] // initialized by the first redraw! below
     let mut last_rows: Vec<String> = Vec::new();
     macro_rules! redraw {
@@ -1574,8 +1593,22 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         }
                     }
                     engine::Event::Debug(raw) => rec.engine_debug(&raw),
-                    engine::Event::Busy(model) => fuse.busy(&model),
-                    engine::Event::Idle => fuse.idle(),
+                    engine::Event::Busy { model, warm } => {
+                        fuse.busy(&model);
+                        if warm {
+                            // A model load can take a long minute on a
+                            // big model — never leave the user pinned
+                            // and guessing.
+                            notice = Some(format!("loading {model} \u{2026}"));
+                            warming = Some(model);
+                        }
+                    }
+                    engine::Event::Idle => {
+                        fuse.idle();
+                        if let Some(m) = warming.take() {
+                            notice = Some(format!("{m} ready"));
+                        }
+                    }
                     engine::Event::Models(names) => match menu.as_mut() {
                         Some(m) if !m.loaded => {
                             // "auto" is a first-class entry: it restores
@@ -1677,4 +1710,44 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let code = st.code().unwrap_or_else(|| 128 + st.signal().unwrap_or(0));
     rec.end(code);
     Ok(code)
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::{Key, parse_keys};
+
+    fn kinds(chunk: &[u8]) -> String {
+        parse_keys(chunk)
+            .iter()
+            .map(|k| match k {
+                Key::Char(c) => *c,
+                Key::Enter => '\u{23ce}',
+                Key::Backspace => '<',
+                Key::KillLine => 'K',
+                Key::Up => 'U',
+                Key::Down => 'D',
+                Key::Esc => 'E',
+                Key::CtrlC => 'C',
+            })
+            .collect()
+    }
+
+    #[test]
+    fn csi_and_ss3_arrows_both_parse() {
+        // CSI form (tests, some terminals) and SS3 form (application
+        // cursor mode — what zle-driven live sessions actually send).
+        assert_eq!(kinds(b"\x1b[A\x1b[B"), "UD");
+        assert_eq!(kinds(b"\x1bOA\x1bOB"), "UD");
+    }
+
+    #[test]
+    fn parameterized_csi_never_leaks_into_filter() {
+        assert_eq!(kinds(b"\x1b[1;3Bgem"), "gem");
+    }
+
+    #[test]
+    fn lone_esc_and_controls() {
+        assert_eq!(kinds(b"\x1b"), "E");
+        assert_eq!(kinds(b"\x03\r\x7f\x15q"), "C\u{23ce}<Kq");
+    }
 }

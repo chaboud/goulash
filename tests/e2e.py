@@ -465,10 +465,10 @@ def test_model_menu():
     os.write(mfd, b"gem")  # type-to-filter
     out = read_until(mfd, rb"1/1", 5.0)
     check("filter narrows to one", b"1/1" in out, out[-300:])
-    os.write(mfd, b"\r")  # Enter commits + persists; engine rebinds
-    out = read_until(mfd, "engine: ollama · gemma3:4b".encode(), 6.0)
-    check("commit rebinds the engine",
-          "engine: ollama · gemma3:4b".encode() in out, out[-300:])
+    os.write(mfd, b"\r")  # Enter commits + persists; engine rebinds + warms
+    out = read_until(mfd, rb"gemma3:4b ready", 6.0)
+    check("commit rebinds and warms the engine",
+          b"gemma3:4b ready" in out, out[-300:])
     time.sleep(0.5)
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
@@ -568,9 +568,10 @@ def test_chat_mode():
     time.sleep(0.8)
     os.write(mfd, b"\x1b[B")
     time.sleep(0.3)
-    os.write(mfd, b"\x1b[B")
+    os.write(mfd, b"\x1bOB")  # SS3 form: what real zle sessions send
     out = read_until(mfd, rb"2/2", 4.0)
-    check("Down browses older slots in chat", b"2/2" in out, out[-300:])
+    check("Down browses older slots in chat (incl. SS3 arrows)",
+          b"2/2" in out, out[-300:])
     os.write(mfd, b"\r")  # Enter on the selection: handoff the OLDER cmd
     time.sleep(0.6)
     os.write(mfd, b"\r")
