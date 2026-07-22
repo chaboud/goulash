@@ -83,13 +83,14 @@ impl Engine {
     /// Unprompted per-turn review; coalescing lets a user ask supersede it.
     pub fn ask_proactive(&self, context: String, memories: String) {
         let question = "Without being asked, briefly review the most recent \
-                        command and its result. If you have ONE genuinely \
-                        useful short tip or fix, say it (add a CMD: line if \
-                        a command applies). A CMD: line is for a command the \
-                        user would plausibly run next — never invent \
-                        busywork like logging, note-taking, or echo \
-                        commands. Most turns deserve no comment: when in \
-                        doubt, reply exactly: PASS"
+                        command and its result — one short observation, \
+                        tip, or wry aside is always welcome. Add a CMD: \
+                        line ONLY when there is a genuinely useful command \
+                        the user would plausibly run next: most \
+                        observations need no command, and inventing \
+                        busywork (logging, note-taking, echo) is worse \
+                        than none. Only if you truly have nothing worth \
+                        saying, reply exactly: PASS"
             .to_string();
         let _ = self.job_tx.send(Job::Ask {
             question,
