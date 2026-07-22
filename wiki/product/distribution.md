@@ -59,7 +59,11 @@ Order of attack for the [engine](../architecture/llm-engine.md):
    leverage move in the codebase: llama.cpp server, LM Studio, vLLM,
    OpenRouter, Groq, Together, DeepSeek … are all this one shape.
    SSE streaming instead of ollama's JSONL; same worker, same
-   coalescing, same stable prefix.
+   coalescing, same stable prefix. And it makes **`auto-local` the
+   default service**: probe the local candidates in order — ollama
+   (`:11434`), LM Studio (`:1234`), llama.cpp server (`:8080`) — and
+   bind whatever is up; `#/service auto-local` restores it after any
+   explicit pin. LM Studio doubles as the test rig for the adapter.
 2. **Anthropic Messages adapter** — and here the architecture pays
    off: the epoch-trimmed append-only session log was *designed* as a
    stable prefix, which maps 1:1 onto server-side **prompt caching**

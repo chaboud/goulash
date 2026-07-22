@@ -64,6 +64,19 @@ model saves with a `REMEMBER: <note>` line and drops with
 levers: `#/memory add|delete|modify|find|limit`, plus bare `#/memory`
 for status.
 
+## Install
+
+```sh
+cargo install goulash                                      # from crates.io
+brew tap chaboud/goulash https://github.com/chaboud/goulash
+brew install goulash                                       # via Homebrew
+curl -fsSL https://goulash.dev/install.sh | sh             # prebuilt binary
+```
+
+Releases are tag-driven (`v*` → `.github/workflows/release.yml`):
+binaries for mac (arm64/x86_64) and linux (x86_64/arm64), with the
+in-repo Homebrew formula refreshed automatically.
+
 ## Build & run
 
 ```
@@ -99,3 +112,12 @@ Tests (drives the binary under a real PTY):
 ```
 cargo build && python3 tests/e2e.py
 ```
+
+## License
+
+Dual-licensed under [MIT](LICENSE-MIT) or
+[Apache-2.0](LICENSE-APACHE), at your option. Unless you explicitly
+state otherwise, any contribution intentionally submitted for
+inclusion in goulash by you, as defined in the Apache-2.0 license,
+shall be dual licensed as above, without any additional terms or
+conditions.
