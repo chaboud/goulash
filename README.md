@@ -71,7 +71,8 @@ Down past the newest keeps going into the **history of suggested commands** with
 #/model NAME       try a model for this session (add `save` to persist)
 #/memory on        give the model a small pinned memory (REMEMBER/FORGET)
 #/commentary off   quiet the per-turn heckling
-#/status · #/help
+#/status
+#/help
 ```
 
 ## Nerd Stuff: Build & modify
