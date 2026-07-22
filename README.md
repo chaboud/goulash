@@ -9,7 +9,9 @@ We don't always remember the syntax for all terminal commands.  So there's a fam
 Start typing command → forget esoteric syntax → go to Google/ChatGPT/Claude to ask → notice email/slack/Hacker-News → get lunch → come back to prompt confused about what was happening → re-understand the situation → start typing command → ...
 
 Context switching has a cost.
+
 Cognitive load is bad.
+
 But Large Language Models are pretty good at esoteric syntax.
 
 ## What?
@@ -20,7 +22,9 @@ Goulash is an LLM-aware overlay for the shell you already use. It watches the se
 </p>
 
 Goulash doesn't run commands.
+
 Goulash doesn't pop up windows.
+
 Goulash doesn't take over.
 
 This is your terminal, with a navigator.
