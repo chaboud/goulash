@@ -226,6 +226,10 @@ struct Chat {
     input: String,
     /// Streaming partial for the in-flight ask, shown as a live line.
     stream: Option<String>,
+    /// Slot-stack selection: the same axis as at the prompt. None =
+    /// neutral (typing); Down dives older, Up walks back to neutral,
+    /// Enter on a selection hands that command to the shell.
+    sel: Option<usize>,
 }
 
 /// One parsed keypress for goulash-owned surfaces (menus, chat line).
@@ -363,11 +367,25 @@ fn compose_rows(
         let reserved = reserved_now + extra;
         let inner = layout.real.rows.saturating_sub(reserved).max(1);
         let mut rows = Vec::new();
-        // The pullable command rides in the chip — Up hands exactly
-        // this to the shell line, so it must be visible.
-        let chip = match sug_hist.first() {
-            Some(t) => format!(" ## chat \u{2502} \u{2191} {} ", t.cmd),
-            None => " ## chat ".to_string(),
+        // The pullable command rides in the chip — a handoff delivers
+        // exactly this to the shell line, so it must be visible. While
+        // browsing (Down), the chip shows the selected slot + position.
+        let chip = match c.sel.and_then(|i| sug_hist.get(i).map(|t| (i, t))) {
+            Some((i, t)) => format!(
+                " ## chat \u{2502} \u{23ce} {} \u{b7} \u{2191} {}/{}{} ",
+                t.cmd,
+                i + 1,
+                sug_hist.len(),
+                if i + 1 < sug_hist.len() {
+                    " \u{2193}"
+                } else {
+                    ""
+                }
+            ),
+            None => match sug_hist.first() {
+                Some(t) => format!(" ## chat \u{2502} \u{2191} {} ", t.cmd),
+                None => " ## chat ".to_string(),
+            },
         };
         let tip = " \u{23ce} send \u{b7} ## or esc back ";
         rows.push(status::rule_row(Some(&chip), true, Some(tip), cols));
@@ -1050,6 +1068,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             lines: Vec::new(),
                                             input: String::new(),
                                             stream: None,
+                                            sel: None,
                                         };
                                         if !body.is_empty()
                                             && let Some(eng) = engine.as_ref()
@@ -1292,26 +1311,57 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     // the newest suggestion over and focus flips back.
                     let mut exit_chat = false;
                     let mut submit: Option<String> = None;
-                    let mut handoff = false;
+                    let mut handoff: Option<usize> = None;
                     if let Some(c) = chat.as_mut() {
                         for key in parse_keys(&buf[..len]) {
                             match key {
-                                Key::Esc | Key::CtrlC => exit_chat = true,
-                                Key::Enter => {
-                                    let text = c.input.trim().to_string();
-                                    c.input.clear();
-                                    if text == "##" {
+                                // Esc backs out one layer: selection →
+                                // input → shell.
+                                Key::Esc | Key::CtrlC => {
+                                    if c.sel.is_some() {
+                                        c.sel = None;
+                                    } else {
                                         exit_chat = true;
-                                    } else if !text.is_empty() {
-                                        submit = Some(text);
                                     }
                                 }
-                                Key::Up if c.input.is_empty() => handoff = true,
+                                Key::Enter => {
+                                    if let Some(i) = c.sel {
+                                        handoff = Some(i);
+                                        c.sel = None;
+                                    } else {
+                                        let text = c.input.trim().to_string();
+                                        c.input.clear();
+                                        if text == "##" {
+                                            exit_chat = true;
+                                        } else if !text.is_empty() {
+                                            submit = Some(text);
+                                        }
+                                    }
+                                }
+                                // Same axis as the prompt: Down dives
+                                // older through the slot stack, Up walks
+                                // back newer to neutral — and Up at
+                                // neutral grabs the newest directly.
+                                Key::Down if c.input.is_empty() && !sug_hist.is_empty() => {
+                                    c.sel = Some(match c.sel {
+                                        None => 0,
+                                        Some(i) => (i + 1).min(sug_hist.len() - 1),
+                                    });
+                                }
+                                Key::Up if c.input.is_empty() => match c.sel {
+                                    Some(0) => c.sel = None,
+                                    Some(i) => c.sel = Some(i - 1),
+                                    None if !sug_hist.is_empty() => handoff = Some(0),
+                                    None => {}
+                                },
                                 Key::Backspace => {
                                     c.input.pop();
                                 }
                                 Key::KillLine => c.input.clear(),
-                                Key::Char(ch) => c.input.push(ch),
+                                Key::Char(ch) => {
+                                    c.sel = None; // typing returns to input
+                                    c.input.push(ch);
+                                }
                                 _ => {}
                             }
                         }
@@ -1343,17 +1393,18 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 .push("goulash: no engine configured yet".to_string());
                         }
                     }
-                    if handoff && !sug_hist.is_empty() {
+                    if let Some(i) = handoff
+                        && let Some(turn) = sug_hist.get(i).cloned()
+                    {
                         // Keep it pure: the command lands on the real
                         // shell line for the user's own editor + Enter.
-                        let turn = sug_hist[0].clone();
                         rec.accept(turn.id);
                         let mut bytes = Vec::new();
                         bytes.extend_from_slice(b"\x1b[200~");
                         bytes.extend_from_slice(turn.cmd.as_bytes());
                         bytes.extend_from_slice(b"\x1b[201~");
                         write_all(master, &bytes)?;
-                        browse = Some(0);
+                        browse = Some(i);
                         exit_chat = true;
                     }
                     if exit_chat {

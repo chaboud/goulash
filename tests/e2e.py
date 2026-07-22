@@ -515,13 +515,18 @@ def test_chat_mode():
             if "Without being asked" in p:
                 ans = "PASS"  # proactive commentary stays quiet
             else:
+                FakeOllama.asks += 1
+                n = FakeOllama.asks
                 ans = "ANS" + ("-CTX" if "goulash:" in p else "")
-                ans += "\nCMD: echo from-chat"
+                # distinct command per turn -> a browsable slot stack;
+                # the $(( )) form separates display from execution
+                ans += f"\nCMD: echo p{n}-$((6*{6+n}))"
             self._send({"response": ans})
 
         def log_message(self, *a):
             pass
 
+    FakeOllama.asks = 0
     srv = http.server.HTTPServer(("127.0.0.1", 0), FakeOllama)
     port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -538,21 +543,36 @@ def test_chat_mode():
     check("chat expands the goulash area", b"\x1b[1;16r" in out, out[-300:])
     out = read_until(mfd, rb"goulash: ANS", 8.0)
     check("first answer in the transcript", b"goulash: ANS" in out, out[-300:])
-    out = read_until(mfd, "↑ echo from-chat".encode(), 4.0)
+    out = read_until(mfd, "↑ echo p1-".encode(), 4.0)
     check("pullable command visible in the chat chip",
-          "↑ echo from-chat".encode() in out, out[-300:])
+          "↑ echo p1-".encode() in out, out[-300:])
     time.sleep(0.3)
     os.write(mfd, b"and a follow-up\r")  # no '#' needed — chat has focus
     out = read_until(mfd, rb"ANS-CTX", 8.0)
     check("follow-up carries the running chat", b"ANS-CTX" in out, out[-300:])
     time.sleep(0.3)
-    os.write(mfd, b"\x1b[A")  # Up: hand the suggested command to the shell
+    os.write(mfd, b"\x1b[A")  # Up at neutral: hand the NEWEST command over
     out = read_until(mfd, rb"\x1b\[1;20r", 4.0)
     check("handoff returns focus (area restored)", b"\x1b[1;20r" in out, out[-300:])
     time.sleep(0.4)
     os.write(mfd, b"\r")
-    out = read_until(mfd, rb"from-chat", 6.0)
-    check("handed-off command ran in the shell", b"from-chat" in out, out[-300:])
+    out = read_until(mfd, rb"p2-48", 6.0)  # newest = second turn's command
+    check("handed-off command ran in the shell", b"p2-48" in out, out[-300:])
+    time.sleep(0.5)
+    # Reopen and browse the slot stack IN chat: Down Down selects the
+    # older turn's command; Enter hands that one off.
+    os.write(mfd, b"## \r")
+    time.sleep(0.8)
+    os.write(mfd, b"\x1b[B")
+    time.sleep(0.3)
+    os.write(mfd, b"\x1b[B")
+    out = read_until(mfd, rb"2/2", 4.0)
+    check("Down browses older slots in chat", b"2/2" in out, out[-300:])
+    os.write(mfd, b"\r")  # Enter on the selection: handoff the OLDER cmd
+    time.sleep(0.6)
+    os.write(mfd, b"\r")
+    out = read_until(mfd, rb"p1-42", 6.0)
+    check("Enter hands off the selected older command", b"p1-42" in out, out[-300:])
     time.sleep(0.5)
     os.write(mfd, b"## \r")  # reopen ...
     time.sleep(0.8)
