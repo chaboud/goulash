@@ -196,7 +196,9 @@ searchable bank + memory vendor —
 markers over ssh
 ([remote-and-multiplexers](../architecture/remote-and-multiplexers.md)),
 `auto-evaluated` steward scopes, bundled llama.cpp option, final name
-call.
+call — and the road to `brew install goulash`:
+[distribution](distribution.md) (license → crates.io name grab →
+cargo-dist + tap → provider adapters → notarization → goulash.dev).
 
 ## Guiding order
 Each milestone is independently usable; trust properties
