@@ -381,11 +381,20 @@ fn generate(
     // lose instructions that only appear at the top of a long prompt.
     // Prompt shape (stable-prefix first): preamble, pinned memories,
     // session log, then the volatile time/question/directive suffix.
+    // Two modes of ingress, two contracts: a `#` ask is usually fishing
+    // for a runnable command; unprompted commentary earns its CMD line.
+    let directive = if proactive {
+        "Reply with ONE short prose line. Add a second line formatted \
+         exactly as: CMD: <command> ONLY if a genuinely useful next \
+         command exists."
+    } else {
+        "Reply with ONE short prose line. If any shell command could \
+         accomplish, fix, or demonstrate what was asked, you MUST add a \
+         second line formatted exactly as: CMD: <command>"
+    };
     let prompt = format!(
         "{PREAMBLE}{memories}Session log (oldest first):\n{context}\n\
-         Current local time: {}\nQuestion: {question}\n\
-         Reply with ONE short prose line. If a shell command applies, add a \
-         second line formatted exactly as: CMD: <command>\nAnswer:",
+         Current local time: {}\nQuestion: {question}\n{directive}\nAnswer:",
         local_now()
     );
     let mut body = serde_json::json!({
