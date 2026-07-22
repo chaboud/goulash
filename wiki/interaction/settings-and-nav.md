@@ -77,7 +77,7 @@ than that belongs in the selector or the TOML.
 - Same commands work from `##` chat as `/status`, `/model`, … (the `#`
   is already implied there).
 
-## The menu primitive (v1 spec — get this one thing right)
+## The menu primitive (v1 shipped for `#/model`; spec below)
 
 Bare `#/model` (and later `#/service`, `#/settings`, `#/memory`) drops
 into **one shared widget**: a filterable, scrollable list in the goulash

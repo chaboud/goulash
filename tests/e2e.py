@@ -477,6 +477,87 @@ def test_model_menu():
     check("probation recorded in state.toml", 'probation = "gemma3:4b"' in stat, stat)
 
 
+def test_chat_mode():
+    print("## chat focus: multi-turn without #, Up hands command to shell:")
+    if not shutil.which("zsh"):
+        print("  [SKIP] zsh not installed")
+        return
+    import http.server
+    import threading
+
+    class FakeOllama(http.server.BaseHTTPRequestHandler):
+        def _send(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/api/tags":
+                self._send({"models": [{"name": "chatmodel", "size": 1}]})
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            req = json.loads(self.rfile.read(n) or b"{}")
+            if "prompt" not in req:
+                self._send({"done": True})
+                return
+            p = req["prompt"]
+            if "Without being asked" in p:
+                ans = "PASS"  # proactive commentary stays quiet
+            else:
+                ans = "ANS" + ("-CTX" if "goulash:" in p else "")
+                ans += "\nCMD: echo from-chat"
+            self._send({"response": ans})
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), FakeOllama)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write(f'[engine]\nprovider = "ollama"\nhost = "http://127.0.0.1:{port}"\n'
+                'stream = false\n')
+    proc, mfd = spawn(["zsh"], home=home)
+    time.sleep(1.5)
+    os.write(mfd, b"## first question\r")
+    # Chat grows the area: reserved 4 -> 8 on a 24-row term, inner 16.
+    out = read_until(mfd, rb"\x1b\[1;16r", 6.0)
+    check("chat expands the goulash area", b"\x1b[1;16r" in out, out[-300:])
+    out = read_until(mfd, rb"goulash: ANS", 8.0)
+    check("first answer in the transcript", b"goulash: ANS" in out, out[-300:])
+    time.sleep(0.3)
+    os.write(mfd, b"and a follow-up\r")  # no '#' needed — chat has focus
+    out = read_until(mfd, rb"ANS-CTX", 8.0)
+    check("follow-up carries the running chat", b"ANS-CTX" in out, out[-300:])
+    time.sleep(0.3)
+    os.write(mfd, b"\x1b[A")  # Up: hand the suggested command to the shell
+    out = read_until(mfd, rb"\x1b\[1;20r", 4.0)
+    check("handoff returns focus (area restored)", b"\x1b[1;20r" in out, out[-300:])
+    time.sleep(0.4)
+    os.write(mfd, b"\r")
+    out = read_until(mfd, rb"from-chat", 6.0)
+    check("handed-off command ran in the shell", b"from-chat" in out, out[-300:])
+    time.sleep(0.5)
+    os.write(mfd, b"## \r")  # reopen ...
+    time.sleep(0.8)
+    os.write(mfd, b"\x1b")  # ... and Esc backs out
+    time.sleep(0.4)
+    os.write(mfd, b"echo bye-$((2*2))\r")
+    out = read_until(mfd, rb"bye-4", 5.0)
+    check("esc exits chat, shell keys flow again", b"bye-4" in out, out[-300:])
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+    srv.shutdown()
+
+
 def test_memory():
     print("#/memory flat store + model REMEMBER line (fake ollama):")
     if not shutil.which("zsh"):
@@ -592,6 +673,7 @@ def main():
         test_zsh_auto_integration,
         test_engine_ollama,
         test_model_menu,
+        test_chat_mode,
         test_memory,
         test_non_tty,
     ):

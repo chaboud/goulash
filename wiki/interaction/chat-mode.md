@@ -1,5 +1,10 @@
 # `##` Chat Mode
 
+**Status: v1 shipped** — the "chat has focus" flow below (toggle,
+grown area, transcript, `#`-free follow-ups, Up-handoff to the shell
+line, Esc/`##` exit, alt-screen suspend). The delegated-agent tooling
+and autonomy rungs remain design.
+
 `#` is a one-shot aside. `##` **flips the script**: it opens a chat
 session with the LLM, where the LLM has tooling to explore history and
 suggest (eventually run) commands. The escalation ladder:

@@ -160,19 +160,24 @@ start, probe chain live.
   forgets applied first), the user via
   `#/memory add|delete|modify|find|limit` —
   [agent-memory](../architecture/agent-memory.md).
-- **Remaining**: the **menu primitive** — bare `#/model` (then
-  `#/service`, `#/settings`, `#/memory`) opens a modal filterable list:
-  type-to-filter, no hotkeys, Esc/Ctrl-C bulletproof exit, band grows
-  temporarily, `auto` as a first-class entry, Enter persists to
-  `config.toml` surgically while typed `#/model <name>` stays
-  session-only ([settings-and-nav](../interaction/settings-and-nav.md));
-  **suggestion slot history** — Down cycles older (suggestion, chat)
-  turns single-slot-style with `▲ n/M ▼` indicators on the rule row and
-  a frozen band while browsing
-  ([down-arrow-protocol](../interaction/down-arrow-protocol.md));
-  richer answer surface, Apple FM / cloud providers, `##` chat mode
-  (M6 — "chat has focus" flow now specced in
+  **Menus, persistence, slot history, `##` chat (v1s)**: bare
+  `#/model` opens the modal type-to-filter selector (list scrolls
+  under a fixed cursor, `auto` first-class, Enter persists surgically
+  to config.toml, Esc/Ctrl-C out); `#/model <name> save` persists from
+  the prompt while the bare typed form stays session-only; the **crash
+  fuse** (state.toml busy/probation/distrust/last_good marks) keeps a
+  model that killed its last run from auto-binding; Down cycles the
+  **slot history** of past (suggestion, chat) turns with a frozen band
+  and `n/M` indicator; and `##` flips into **chat focus** — grown
+  area, transcript, `#`-free follow-ups, Up handing the command to the
+  real shell line ([settings-and-nav](../interaction/settings-and-nav.md),
+  [down-arrow-protocol](../interaction/down-arrow-protocol.md),
   [chat-mode](../interaction/chat-mode.md)).
+- **Remaining**: menus for `#/service`/`#/settings`/`#/memory` (same
+  primitive), Up-steps-newer in the slot stack (needs a paste-ack
+  channel), richer answer surface, OpenAI-compatible adapter +
+  `auto-local` probe chain, Apple FM / cloud providers
+  ([distribution](distribution.md)), chat-mode delegated agents (M6).
 
 ## Milestone 5 — memory hierarchy + watcher tier
 Rolling cleanup loop (local model if available) setting region markers;

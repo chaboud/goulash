@@ -102,8 +102,22 @@ disabled (it burned the whole token budget invisibly). `#` asides are
 recorded in shell history — **Up** recalls them to edit and re-fire.
 Debugging: everything lands in `~/.goulash/history/session-*.jsonl`.
 
-At the prompt: `#/model` lists installed models, `#/model <name>`
-switches live, `#/status`, `#/help`.
+At the prompt: bare `#/model` opens a **modal selector** — type to
+filter, ↑↓ to move, Enter selects *and persists* to config.toml
+(`auto` restores the probe order), Esc backs out. Typed forms:
+`#/model <name>` switches for this session only; `#/model <name> save`
+persists. Persistence is guarded by a **crash fuse**
+(`~/.goulash/state.toml`): a model that took the machine down mid-load
+is never auto-bound again until an explicit retry survives. Also
+`#/status`, `#/help`.
+
+**`##` chat mode**: `## <question>` (or bare `##`) flips focus to a
+chat pane — the goulash area grows a few rows, and follow-ups need no
+`#` prefix. When a command comes up, **Up** hands it to your real
+shell line (your editor, your Enter — goulash never runs commands);
+`##` or Esc returns to the shell. **Down** at the prompt cycles a
+history of past suggested commands (with their chat text) even after
+the live suggestion cleared.
 
 **Memory** (off by default): `#/memory on` gives the model a flat,
 slot-limited pinned store (25 slots × ≤240 chars, durable in

@@ -215,6 +215,19 @@ impl Menu {
     }
 }
 
+/// `##` chat focus (wiki: interaction/chat-mode.md): goulash owns the
+/// keyboard for a multi-turn conversation — no `#` retyping. Kept pure:
+/// commands only ever exit through the real shell line (Up hands the
+/// newest suggestion over and focus flips back); there is no
+/// act-observe loop here.
+struct Chat {
+    /// Transcript lines: "# question" / "goulash: answer".
+    lines: Vec<String>,
+    input: String,
+    /// Streaming partial for the in-flight ask, shown as a live line.
+    stream: Option<String>,
+}
+
 /// One parsed keypress for goulash-owned surfaces (menus, chat line).
 enum Key {
     Char(char),
@@ -332,10 +345,56 @@ fn compose_rows(
     sug_hist: &[SugTurn],
     menu: &Option<Menu>,
     engine_model: &Option<String>,
+    chat: &Option<Chat>,
 ) -> Vec<String> {
     let cols = layout.real.cols as usize;
     let reserved_now = cfg.reserved_rows();
     let inner_now = layout.real.rows.saturating_sub(reserved_now).max(1);
+    if cfg.status.band
+        && menu.is_none()
+        && let Some(c) = chat
+    {
+        // Chat has focus: the area grows a few rows (a user-initiated
+        // resize — they toggled it) and shows the transcript tail plus
+        // an input line. compose returning more rows IS the resize; the
+        // winsize machinery does the rest.
+        let extra = 4.min(layout.real.rows.saturating_sub(reserved_now + 8));
+        let n_chat = (cfg.status.band_rows.clamp(1, 4) + extra) as usize;
+        let reserved = reserved_now + extra;
+        let inner = layout.real.rows.saturating_sub(reserved).max(1);
+        let mut rows = Vec::new();
+        let chip = " ## chat ".to_string();
+        let tip = " \u{23ce} send \u{b7} \u{2191} command \u{b7} ## or esc back ";
+        rows.push(status::rule_row(Some(&chip), true, Some(tip), cols));
+        let mut tail: Vec<&str> = c.lines.iter().map(|s| s.as_str()).collect();
+        let stream_line = c.stream.as_ref().map(|s| format!("goulash: {s} \u{2026}"));
+        if let Some(sl) = stream_line.as_deref() {
+            tail.push(sl);
+        }
+        let skip = tail.len().saturating_sub(n_chat);
+        for row in 0..n_chat {
+            let line = tail.get(skip + row).copied().unwrap_or("");
+            let sgr = if line.starts_with('#') {
+                status::QUERY_SGR
+            } else {
+                status::TEXT_SGR
+            };
+            rows.push(status::pad_row(&format!(" {line}"), cols, sgr));
+        }
+        rows.push(status::pad_row(
+            &format!(" ## {}\u{258f}", c.input),
+            cols,
+            status::TEXT_SGR,
+        ));
+        rows.push(status::chrome_row(
+            layout.real,
+            inner,
+            reserved,
+            shell_name,
+            sense::label(st, hook),
+        ));
+        return rows;
+    }
     if cfg.status.band
         && let Some(m) = menu
     {
@@ -756,6 +815,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut memory = MemoryStore::load(Config::dir());
     let mut band: Option<Band> = None;
     let mut menu: Option<Menu> = None;
+    let mut chat: Option<Chat> = None;
     #[allow(unused_assignments)] // initialized by the first redraw! below
     let mut last_rows: Vec<String> = Vec::new();
     macro_rules! redraw {
@@ -773,6 +833,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 &sug_hist,
                 &menu,
                 &engine_model,
+                &chat,
             );
             let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);
             if !pre.is_empty() {
@@ -976,7 +1037,34 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     rec.aside(&q);
                                     browse = None;
                                     let body = q.trim_start_matches('#').trim();
-                                    if let Some(cmdline) = body.strip_prefix('/') {
+                                    if q.starts_with("##") {
+                                        // `##` flips the script: chat has
+                                        // focus. A body rides along as the
+                                        // first message.
+                                        let mut c = Chat {
+                                            lines: Vec::new(),
+                                            input: String::new(),
+                                            stream: None,
+                                        };
+                                        if !body.is_empty()
+                                            && let Some(eng) = engine.as_ref()
+                                        {
+                                            c.lines.push(format!("# {body}"));
+                                            eng.ask(
+                                                body.to_string(),
+                                                ctx_log.clone(),
+                                                memory.context_block(),
+                                            );
+                                            ctx_log.push_str(&format!(
+                                                "# {} [asked {}]\n",
+                                                body,
+                                                engine::hms()
+                                            ));
+                                        }
+                                        band = None;
+                                        notice = None;
+                                        chat = Some(c);
+                                    } else if let Some(cmdline) = body.strip_prefix('/') {
                                         // #/ commands: goulash controls, not
                                         // LLM asides. One arg max — the
                                         // single most obvious swivel.
@@ -1155,6 +1243,81 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     }
                     dirty = true;
                 }
+                Ok(len) if chat.is_some() => {
+                    // Chat has focus: a real (if minimal) input line.
+                    // Commands still exit through the shell — Up hands
+                    // the newest suggestion over and focus flips back.
+                    let mut exit_chat = false;
+                    let mut submit: Option<String> = None;
+                    let mut handoff = false;
+                    if let Some(c) = chat.as_mut() {
+                        for key in parse_keys(&buf[..len]) {
+                            match key {
+                                Key::Esc | Key::CtrlC => exit_chat = true,
+                                Key::Enter => {
+                                    let text = c.input.trim().to_string();
+                                    c.input.clear();
+                                    if text == "##" {
+                                        exit_chat = true;
+                                    } else if !text.is_empty() {
+                                        submit = Some(text);
+                                    }
+                                }
+                                Key::Up if c.input.is_empty() => handoff = true,
+                                Key::Backspace => {
+                                    c.input.pop();
+                                }
+                                Key::KillLine => c.input.clear(),
+                                Key::Char(ch) => c.input.push(ch),
+                                _ => {}
+                            }
+                        }
+                    }
+                    if let Some(text) = submit {
+                        rec.aside(&format!("## {text}"));
+                        if let Some(cmdline) = text.strip_prefix('/') {
+                            let out = slash_command(
+                                cmdline,
+                                engine.as_ref(),
+                                &engine_model,
+                                blocks_seen,
+                                &mut commentary,
+                                &mut memory,
+                                &mut fuse,
+                                &mut menu,
+                            );
+                            if let (Some(c), Some(msg)) = (chat.as_mut(), out) {
+                                c.lines.push(format!("goulash: {msg}"));
+                            }
+                        } else if let Some(eng) = engine.as_ref() {
+                            if let Some(c) = chat.as_mut() {
+                                c.lines.push(format!("# {text}"));
+                            }
+                            eng.ask(text.clone(), ctx_log.clone(), memory.context_block());
+                            ctx_log.push_str(&format!("# {} [asked {}]\n", text, engine::hms()));
+                        } else if let Some(c) = chat.as_mut() {
+                            c.lines
+                                .push("goulash: no engine configured yet".to_string());
+                        }
+                    }
+                    if handoff && !sug_hist.is_empty() {
+                        // Keep it pure: the command lands on the real
+                        // shell line for the user's own editor + Enter.
+                        let turn = sug_hist[0].clone();
+                        rec.accept(turn.id);
+                        let mut bytes = Vec::new();
+                        bytes.extend_from_slice(b"\x1b[200~");
+                        bytes.extend_from_slice(turn.cmd.as_bytes());
+                        bytes.extend_from_slice(b"\x1b[201~");
+                        write_all(master, &bytes)?;
+                        browse = Some(0);
+                        exit_chat = true;
+                    }
+                    if exit_chat {
+                        chat = None;
+                    }
+                    dirty = true;
+                }
                 Ok(len) => {
                     // Alt-Down: generic-shell suggestion pull. Only ever
                     // intercepted at a hook-confirmed prompt with a live
@@ -1201,13 +1364,20 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         notice = Some(format!("engine: {provider} \u{b7} {model}"));
                         engine_model = Some(model);
                     }
-                    engine::Event::Partial(text) => match band.as_mut() {
-                        Some(b) => b.text = format!("{text} \u{2026}"),
-                        None => {
-                            let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                            notice = Some(format!("{one_line} \u{2026}"));
+                    engine::Event::Partial(text) => {
+                        if let Some(c) = chat.as_mut() {
+                            c.stream = Some(text.split_whitespace().collect::<Vec<_>>().join(" "));
+                        } else {
+                            match band.as_mut() {
+                                Some(b) => b.text = format!("{text} \u{2026}"),
+                                None => {
+                                    let one_line =
+                                        text.split_whitespace().collect::<Vec<_>>().join(" ");
+                                    notice = Some(format!("{one_line} \u{2026}"));
+                                }
+                            }
                         }
-                    },
+                    }
                     engine::Event::Answer {
                         text,
                         command,
@@ -1269,7 +1439,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 suggestions.truncate(8);
                                 ctx_log.push_str(&format!("CMD: {cmd}\n"));
                             }
-                            if proactive {
+                            if let Some(c) = chat.as_mut() {
+                                c.stream = None;
+                                c.lines.push(format!("goulash: {one_line}"));
+                            } else if proactive {
                                 band = Some(Band {
                                     question: None,
                                     text,
@@ -1285,9 +1458,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     engine::Event::Error(msg) => {
                         rec.aside_answer(&msg, false);
                         let m = format!("engine error: {msg}");
-                        match band.as_mut() {
-                            Some(b) => b.text = m,
-                            None => notice = Some(m),
+                        if let Some(c) = chat.as_mut() {
+                            c.stream = None;
+                            c.lines.push(format!("goulash: {m}"));
+                        } else {
+                            match band.as_mut() {
+                                Some(b) => b.text = m,
+                                None => notice = Some(m),
+                            }
                         }
                     }
                     engine::Event::Debug(raw) => rec.engine_debug(&raw),
@@ -1327,6 +1505,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         if st != cur_state {
             cur_state = st;
             rec.state(st);
+            // A fullscreen app took the inner world: chat focus yields
+            // (vim needs the keyboard more than we do).
+            if cur_state.alt_screen && chat.is_some() {
+                chat = None;
+            }
             dirty = true;
         }
 
@@ -1353,6 +1536,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     &sug_hist,
                     &menu,
                     &engine_model,
+                    &chat,
                 );
                 if rows != last_rows {
                     let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);

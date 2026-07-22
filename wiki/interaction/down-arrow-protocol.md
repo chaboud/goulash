@@ -48,7 +48,12 @@ executing. Details: [suggestion-list.md](suggestion-list.md).
 | fish | reader integration | |
 | other | `Alt-Down` chord + bracketed paste | see [shell-integration](../architecture/shell-integration.md) |
 
-## Slot history: cycling past the newest suggestion
+## Slot history: cycling past the newest suggestion (v1 shipped)
+
+*v1 note:* Down-cycling (older) is live, with the frozen band and
+`n/M` indicator; stepping back **newer with Up** needs a paste-ack
+channel shell-side and is the open remainder — today Up returns to
+native history and editing/running exits the stack.
 
 The pullable slot is a **single-slot view over the history of
 (suggestion, chat message) turns** — just like shell history, but for
