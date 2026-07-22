@@ -17,8 +17,6 @@ and the [build plan](wiki/product/build-plan.md).
 ```sh
 cargo install goulash                                      # from crates.io
 brew tap chaboud/goulash https://github.com/chaboud/goulash
-brew install goulash                                       # via Homebrew
-curl -fsSL https://goulash.dev/install.sh | sh             # prebuilt binary
 ```
 
 Releases are tag-driven (`v*` → `.github/workflows/release.yml`):
