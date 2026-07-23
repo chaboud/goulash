@@ -1,35 +1,24 @@
-# goulash
+# goulash - a plain-language navigator for your shell
 
-**Focus on the flow.**
-Think about the problem, not the syntax.
+Just Down-arrow for your *future* history.
 
 ## Why?
-We don't always remember the syntax for all terminal commands.  So there's a familiar loop:
+(If you are a terminal graybeard who regexed raw curl to read this page, you can stop now and go back to being immortal.  For the rest of us...)
 
-Start typing command → forget esoteric syntax → go to Google/ChatGPT/Claude to ask → notice email/slack/Hacker-News → get lunch → come back to prompt confused about what was happening → re-understand the situation → start typing command → ...
+We don't always remember the syntax for all terminal commands, and we shouldn't have to.  When we try to string together operations, there's a familiar loop:
 
-Context switching has a cost.
+Start typing command → forget *esoteric syntax* → go to Google/ChatGPT/Claude to ask → notice email/slack/Hacker-News → read a few papers/links/threads → get lunch → come back to prompt confused about what was happening in this terminal → re-understand the situation → start typing command → ...
 
-Cognitive load is bad.
+Context switching has a cost.  Going to a browser or an agent breaks working flow.
 
-But Large Language Models are pretty good at esoteric syntax.
+But large language models (LLMs) are pretty good at *esoteric syntax*, even *small* large language models... brainwave! ka-ching! (note: this software is free.)
 
 ## What?
-Goulash is an LLM-aware overlay for the shell you already use. It watches the session and offers advice and executable suggestions *in your terminal*, but every keystroke and every command is still yours.
+Goulash is an LLM-aware overlay for the shell you already use. It watches the session and offers advice and executable suggestions *in your terminal*, but every keystroke and every command is still yours.  Goulash doesn't run commands, pop up choices, or take over how you work.  It's your terminal... with a navigator.
 
 <p align="center">
   <img src="docs/GoulashHashes.gif" alt="goulash demo: asking a question at the prompt, then pulling the suggested command down onto the shell line" width="760">
 </p>
-
-Goulash doesn't run commands.
-
-Goulash doesn't pop up windows.
-
-Goulash doesn't take over.
-
-This is your terminal... with a navigator.
-
-
 
 ## Install
 ```sh
@@ -43,12 +32,13 @@ brew install goulash
 ```
 
 ## Usage
-Run `goulash` and use your shell exactly as before. Goulash provides suggestions *below* your prompt, like a *future history*.  Just press the down arrow if you see something you like.
+Run `goulash` and use your shell exactly as before. Goulash provides suggestions *below* your prompt; your *future history*.  Just press the down arrow if you see something you like.
 
 ### `#` ask a question, get an answer + a pullable command
 Type `#` and a question at your prompt (it's a shell comment recorded in history, never executed).
 
-The LLM can provide a suggested command. Press down (past the end of shell history) and it lands on your prompt for editing.  Enter runs it as your own command. Goulash also reviews each command turn unprompted and may leave a tip in the same spot.
+The LLM will provide a suggested command. Press down (past the end of shell history) and it lands on your prompt for editing.  Enter runs it as your own command. 
+Goulash also reviews your shell use as you go and may leave a tip in the same spot.  Use a local model, and it's all private, all local, just like your terminal command history.
 
 ### Style - Arrows: one spatial axis
 
