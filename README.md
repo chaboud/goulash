@@ -3,7 +3,7 @@
 Just Down-arrow for your *future* history.
 
 ## Why?
-(If you are a terminal graybeard who regexed raw curl to read this page, you can stop now and go back to being immortal.  For the rest of us...)
+*(If you are a terminal graybeard who regexed raw curl to read this page, you can stop now and go back to being immortal.  For the rest of us...)*
 
 We don't always remember the syntax for all terminal commands, and we shouldn't have to.  When we try to string together operations, there's a familiar loop:
 
