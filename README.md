@@ -52,7 +52,7 @@ Shell history lives above your prompt; goulash's suggestions live below. Up and 
 
 Down past the newest keeps going into the **history of suggested commands** with the position (`↑ 3/7 ↓`) shown at the right of the rule. Up retraces to your empty prompt, and past that it's plain zsh/bash history.
 
-### `##` chat, without retyping `#`
+### `##` longer chat
 `##` (or `## question`) flips into a chat panel; follow-ups need no prefix. The shell keeps running above.  When you select a command to copy to the prompt, you're back in your shell.
 
 ### `#/` goulash's menu controls
