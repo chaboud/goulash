@@ -221,13 +221,23 @@ Field-driven, roughly in order of leverage:
    chrome indicator and an ingest meter:
    [working-context](../architecture/working-context.md). Design
    session before code.
-6. **Transcript retention.** `~/.goulash/history/session-*.jsonl` is
-   written forever and pruned never — with `record.output` on
-   (default) that is every byte the terminal ever printed. Needs a
-   retention policy (age and/or total-size cap, pruned at startup),
-   and probably a `#/history` surface, since those files are also the
-   only durable record of past conversations: the in-session chat
-   context (`ctx_log`) is memory-only and dies with the shell.
+6. **Transcript retention, and `#/study`.**
+   `~/.goulash/history/session-*.jsonl` is written forever and pruned
+   never — with `record.output` on (default) that is every byte the
+   terminal ever printed. It needs a retention policy (age and/or
+   total-size cap, pruned at startup) — but the better framing is to
+   make those transcripts *earn their keep* first: **`#/study`** kicks
+   off a background worker that reads command history and writes
+   [memories](../architecture/agent-memory.md) aimed squarely at
+   making goulash a better coach for **this** user — their tools,
+   their idioms, the fixes they keep re-deriving. Self-directed
+   tuning through the memory store, no weights involved.
+   Two prerequisites: retention (so study has a bounded corpus rather
+   than every byte since install), and **a real memory browser** —
+   `[id] text` in a bar row does not survive a study run that wants to
+   write dozens of slots. The [menu primitive](../interaction/settings-and-nav.md)
+   already exists; `#/memory` should become an instance of it, with
+   review/approve for machine-written entries.
 
 ## Milestone 5 — memory hierarchy + watcher tier
 Rolling cleanup loop (local model if available) setting region markers;

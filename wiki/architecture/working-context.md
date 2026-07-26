@@ -85,42 +85,71 @@ pin registers immediately with an `ingesting …` marker, the session
 stays responsive, and the digest swaps in when it lands. Never block a
 prompt turn on an ingest.
 
-### Partial or atomic? Both — split by cache position
+### Promotion: atomic for a file, checkpointed for a tree
 
-An ask that arrives mid-cook should get the best context available,
-but a digest that dribbles into the **stable prefix** re-prefills the
-whole prompt on every update, and [prefill is the devil](llm-engine.md).
-So the cook is staged:
+The two cases are nothing alike in human time, and the promotion rule
+follows that, not cache theory:
 
-- **While cooking**, whatever is ready lives in the *volatile suffix*,
-  after the stable prefix. An ask mid-cook sees the partial and pays
-  prefill only for the tail — the "information on the table" model,
-  without the cache thrash.
-- **On completion**, it promotes into the prefix **atomically**, in one
-  epoch. Exactly one cache invalidation per ingest, whatever the file
-  size.
+- **A markdown file** cooks in seconds — read, maybe one compression
+  call, done. Promote **atomically** on completion: one epoch, and it
+  lands before the user finishes typing their next command.
+- **A directory can take hours.** Holding everything back until the
+  last file would make the pin useless for the whole run — the wrong
+  trade even though it is the cache-optimal one. So promote at
+  **checkpoints** (per-file, or per-N-files): a handful of epochs
+  spread over an hour is nothing, and each one makes the pin more
+  useful *now*. A tree ingest is a job, and it must be useful while
+  incomplete — including if it never finishes.
 
-A re-cook (file changed) is just another live ingest: meter shows, old
-digest keeps serving from the prefix, new one promotes atomically when
-done.
+While a checkpoint is being assembled, the in-flight piece rides the
+*volatile suffix* (after the stable prefix), so an ask mid-cook sees
+the freshest partial and pays prefill only for the tail.
+
+A long cook needs **throttling** — background ingest must yield to the
+user's interactive asks, never race them for the GPU — and a **cancel**,
+which the mediated syntax gives for free:
+
+```
+#@ hey, nevermind, cancel that shit      → PINCANCEL
+```
+
+### No file watching — re-cook is asked for
+
+Goulash does not watch the filesystem and pounce. A cheap `stat` at
+prompt turns is enough to notice drift and mark the pin **dirty
+(`*`)** in the chrome; acting on it is the user's call:
+
+```
+#@ hey buddy, can you reload that markdown for me?
+```
+
+This is deliberate: no inotify/FSEvents platform code, no autosave
+storm re-cooking the prompt, no surprise GPU spend, and the
+epoch-churn hazard mostly evaporates because every promotion is
+user-initiated. An `auto_recook` toggle is a later convenience, not
+the default.
 
 ## Freshness
 
-Cheap `stat` per ask; on mtime/size change, re-ingest in the background
-and **keep serving the old digest until the new one is ready**. Stale
-beats stalled. Digests cache under `~/.goulash/context/` keyed by
-path + mtime + size, so re-pinning across sessions is free.
+Cheap `stat` at prompt turns marks a pin dirty; the old digest keeps
+serving until the user asks for a re-cook (above). Stale beats
+stalled, and stale-and-labelled beats both. Digests cache under
+`~/.goulash/context/` keyed by path + mtime + size, so re-pinning
+across sessions is free.
 
 ## Hazards to settle before writing code
 
-- **Secrets: the rule is egress, not content.** On a local engine,
-  reading a file with credentials in it is not a leak — it is the
+- **Secrets: the rule is egress, not content.** Reading a file with
+  credentials in it is not a leak when the model is yours — it is the
   point. "*# can we put my AWS keys in this command?*" is a feature,
   and filtering it would be paternalistic nonsense on your own
-  machine. So: **local provider → no content filtering**; remote or
-  metered provider → skip-list + explicit confirm, because that is
-  where a pin actually leaves the building, on every ask. The property
-  that matters belongs to the provider, not the file.
+  machine. So the gate is a **per-provider `trusted` flag**, inferred
+  smartly (loopback → trusted; anything else → untrusted until said
+  otherwise) and always overridable — because someone's own GPU box on
+  the LAN is *remote by address and trusted by ownership*, and address
+  alone cannot tell you that. Trusted → no content filtering.
+  Untrusted → skip-list + explicit confirm, since that is where a pin
+  actually leaves the building, on every ask.
 - **Budget shares, not one pot.** Working context +
   [memories](agent-memory.md) + session log compete for the same
   prefix, so each gets a percentage of a total derived from `num_ctx`,
@@ -129,10 +158,11 @@ path + mtime + size, so re-pinning across sessions is free.
   (verbatim → digest → outline), and **memories evict last** — they
   are the smallest and the most deliberately curated. Shares and the
   live totals visible in `#/status`.
-- **Epoch churn.** Every promotion invalidates the prefix cache. The
-  staged cook above bounds it to one epoch per ingest; a file being
-  saved repeatedly in another pane still needs debouncing so an editor
-  on autosave cannot re-cook the prompt continuously.
+- **Epoch churn.** Every promotion invalidates the prefix cache — but
+  since goulash never watches files and re-cooks are user-asked, churn
+  is bounded by intent rather than by an editor's autosave. What
+  remains to bound is a *tree* cook's checkpoint rate: coarse enough
+  that a long job costs a handful of epochs, not hundreds.
 
 ## Open questions (for the design session)
 
