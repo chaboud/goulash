@@ -179,6 +179,47 @@ start, probe chain live.
   `auto-local` probe chain, Apple FM / cloud providers
   ([distribution](distribution.md)), chat-mode delegated agents (M6).
 
+## Next up — engine & ergonomics backlog
+
+Field-driven, roughly in order of leverage:
+
+1. **Raise the token ceiling.** `max_tokens` (256) was set as a
+   runaway backstop *before* streaming existed. With partials flowing
+   into the band, the cost of a longer budget is not latency-to-first
+   token — it is only the tail nobody reads. Raise it, and consider
+   splitting the budget by surface: a one-line bar answer and a `##`
+   chat reply do not deserve the same ceiling.
+2. **`CMD:` FIRST, prose after.** The command is the payload; the
+   explanation is commentary. Emitting the command first means (a)
+   truncation eats prose instead of the command, and (b) the
+   suggestion chip can populate **mid-stream**, as soon as that line
+   completes — a real perceived-latency win, not just a safety one.
+   Costs: flip the directive, flip the chat-history shape (mimicry is
+   what actually teaches small models the format — see the M4 CMD
+   vending fix), and teach `split_answer` both orders so old logs and
+   stubborn models still parse. Knob first (`command_first`), default
+   once proven.
+3. **Thinking level.** `think:false` is currently hardcoded, from the
+   milestone where reasoning models spent the whole budget invisibly.
+   Make it a dial — `[engine] thinking = off|low|medium|high` plus
+   `#/thinking` — mapping to each provider's field. Two conditions
+   attached: a raised thinking level must raise (or separately
+   account) the token budget, and thinking must be *visible* while it
+   burns time, either as a state label or a dim live line from
+   ollama's separate `thinking` field.
+4. **`--help` worth reading, and `--config`.** Sectioned help (the
+   `#` / `##` / `#/` surfaces, config path, key table with defaults),
+   plus a `git config`-style CLI: `--config print` (effective values
+   and where each came from), `--config path`, `--config set k v`
+   (reusing the surgical `toml_edit` write-back), and an interactive
+   `--config` walkthrough for first run. Hard constraint: goulash is
+   zero-setup and stays that way — the walkthrough is offered, never
+   required, and never blocks a shell from starting.
+5. **`#@` working context** — pinned files as near-tool-use, with a
+   chrome indicator and an ingest meter:
+   [working-context](../architecture/working-context.md). Design
+   session before code.
+
 ## Milestone 5 — memory hierarchy + watcher tier
 Rolling cleanup loop (local model if available) setting region markers;
 logarithmic ramp-off retrieval; epoch-based prefix caching for API calls.
