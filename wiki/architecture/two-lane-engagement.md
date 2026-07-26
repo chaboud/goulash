@@ -65,6 +65,78 @@ reasoning retained separately. A researcher that hands over finished
 goods makes faithful relay the path of least resistance. Handing fast
 eight hundred words and hoping is where drift would actually enter.
 
+## The grammar: the sigil chooses who works
+
+One rule covers the whole surface: **the second character is a
+destination, and you always hear fast.** `#?` is not a bypass — slow
+researches, fast still relays — so it slots into the existing pattern
+rather than being an exception to it.
+
+| At the prompt | In chat | Destination |
+|---|---|---|
+| `# …` | *(bare)* | fast |
+| `#? …` | `? …` | slow researches, fast relays |
+| `#@ …` | `@ …` | [working context](working-context.md) |
+| `#/ …` | `/ …` | goulash itself |
+
+Chat drops the `#` because you are already inside. The selector is
+identical in both columns, so there is nothing new to learn.
+
+### `##?` is an ingress, not a mode
+
+`##?` means "open chat, first question goes to slow" — not "open a chat
+that stays slow". Nothing else in goulash is modal except chat itself;
+`#/` and `#@` are per-line. A sticky lane would need an unset gesture, an
+indicator, and a rule for what a bare line means: three concepts to save
+one keystroke.
+
+And it is a keystroke worth paying. A slow turn costs real seconds and
+real GPU, so typing `?` each time keeps it deliberate rather than
+ambient — the same reason `#@/path` is explicit. In a sticky slow chat,
+"thanks, now rename that file" burns a research cycle on nothing.
+
+If research sessions turn out to be common, stickiness is a small
+addition and the chat chip has room to show it. Cheap to add, awkward to
+remove.
+
+### Bare `#?` asks for help without hardcoding help
+
+`?` reads as "help" to a lot of people, and that instinct should be
+rewarded rather than corrected. A bare `#?` does not print a canned
+syntax card — it tells the model *the user typed a bare `?` and may not
+know the syntax; they may be asking for help*, and the answer comes back
+in the one voice, in context. Instruct, don't hardcode.
+
+Floor, as everywhere: with no engine bound there is no answer, so a
+plain syntax line stands in.
+
+Other collisions, for the record. A chat line genuinely starting with
+`?` routes to slow — escapable with `\?`, same as everywhere. Spanish is
+unaffected: `¿cómo…` opens with `¿`. And `#?` is shell-safe by the same
+specification as `#@` ([shell-integration](shell-integration.md)):
+comments are discarded at tokenization, so the glob character never
+globs.
+
+## When slow engages: a ladder, not a toggle
+
+| Value | Slow runs | Cost |
+|---|---|---|
+| `off` | never | zero |
+| `manual` | only `#?` / `?` | exactly what was asked for |
+| **`ingest`** *(default)* | + on `#@` — classify, card, wiki | bounded, and **the user triggered it by pinning** |
+| `volunteer` | + on ordinary `#` asks | unbounded — fires on everything typed |
+
+`ingest` versus `volunteer` is the line that matters, and `ingest` is
+the default because it is the original promise exactly: pin something,
+lose no speed in general operation, gain more thoughtful options. The
+work is bounded and user-triggered. `volunteer` is where the GPU burns
+continuously for questions that already had a good answer — opt-in, and
+honest about why.
+
+One hard rule at every setting: **slow never touches the proactive
+commentary path.** Heckling every command turn through a research lane
+is the most expensive possible version of the least important feature.
+
 ## Lanes
 
 A lane is a role, not necessarily a model — "billing address and mailing
@@ -178,6 +250,25 @@ only — wikis, notes, digests, cards. Everything carries provenance
 outranks its source**. Without that rule slow reads its own wiki,
 refines it, writes it back, and drifts with no ground truth.
 
+### Artifacts belong to a slot
+
+Goulash gets to decide what to build — that is its own space. What the
+user gets is not an approval prompt but **visibility and
+reversibility**, which is the trade the [memory store](agent-memory.md)
+already makes: browse it, see who wrote it, delete it with a confirm.
+
+So every derived artifact **hangs off the `#@` slot that produced it**,
+and the lifecycle falls out for free: drop the pin and its card, digest
+and wiki go with it; LRU-evict the slot and its artifacts go too. No
+orphans in `.goulash`, and no separate reaper to write.
+
+The concrete consequence: **`#@` needs the browser treatment `#/memory`
+got.** A notice line listing 50 slots is unusable — the exact argument
+that turned the memory list into a menu. Bare `#@` opens a pin browser:
+path, tier, freshness, and the artifacts nested under each slot, with
+arm-then-confirm delete. The [menu primitive](../interaction/settings-and-nav.md)
+already exists; this is another instance of it.
+
 ## The answer shape
 
 Every researched finding is three layers, and they map onto surfaces
@@ -194,6 +285,53 @@ user's shell — but adapting is not re-summarising. The retained
 reasoning exists so the user can go look and so slow can answer an
 alteration with its own context intact. It is a receipt, not an audit
 mechanism.
+
+## Amend: the one mechanism, wearing two hats
+
+Slow never appends. **It amends what was.**
+
+A finding always has a *lineage of origin* — the turn it came from — and
+it lands there, in place, rather than at the top of the stack. `?` in
+chat and `volunteer` on ordinary asks are therefore not two behaviours
+to design: they are one mechanism seen from two places. Fast answered;
+slow researched; fast relays the improvement into the turn that asked.
+
+**If the user has moved on, we move on.** An amendment for a turn that
+is no longer current does not jump the queue, does not interrupt, and
+does not re-take the band. It is simply *there* when the user browses
+back. This is the flow guarantee surviving a feature that could easily
+have broken it: nothing arriving late can ever seize attention.
+
+That also disposes of the awkward case — an amendment landing after the
+user already pulled and ran the original. It cannot mislead, because the
+superseded command stays visible in the lineage; it is unambiguous which
+one was run.
+
+**Lineage is a DAG; the walk is flat.** Internally a turn can carry its
+origin and its amendment. For display that graph flattens into the same
+single up/down axis it always was — an *insert* into a flat lineage, not
+a tree to navigate. Commands stay the anchor and the spatial rule holds.
+
+When slow finds nothing better there is no amendment and no pair. The
+turn stays single, which is what keeps the paired rendering rare enough
+to mean something.
+
+### Rendering a pair
+
+- The researched command takes the chip, in the usual
+  [orange](status-rows.md). Fast's original **insets below it**, in
+  blue — secondary reads as secondary at a glance.
+- Down walks into the inset before moving on: depth-first within a turn,
+  then the next turn. One axis, still.
+- **A pair only ever exists within a single turn.** That constraint is
+  what stops this becoming a general tree.
+- Lineage is intact, so the explanation can say what changed and why.
+
+The blue: `\x1b[0;97;48;5;25m` — white on 256-colour 25, a deep royal
+blue. It recedes against the orange (208) instead of competing with it,
+the way brighter 26/33 would, and white-on-25 carries the contrast that
+orange gets from black text. Adjustable once it has been seen on a real
+terminal next to the orange.
 
 ## `#?` — the deliberate door, and it never blocks
 
@@ -273,7 +411,13 @@ Two consequences to accept knowingly:
    in its cheapest form, and it answers the question the whole design
    rests on: **is a researched suggestion arriving forty seconds late
    delightful, or annoying?** Nobody knows yet, including this page.
-4. MCP, skills, VLM — after (3) answers that.
+4. **The `#@` pin browser**, before anything writes a durable artifact.
+   Slot-associated assets are only safe because they are visible and
+   deletable; shipping the writer first would fill `.goulash` with
+   things nobody can see. Same unmet prerequisite
+   [`#/study`](../product/build-plan.md) has — build the surface once,
+   use it for both.
+5. MCP, skills, VLM — after (3) answers that.
 
 ## Open questions
 
@@ -284,14 +428,19 @@ Two consequences to accept knowingly:
    fast needs a handle to name, and slow needs its thread to still
    exist. Threaded state is new; the session log is flat and
    append-only.
-3. **Do researched suggestions look different in the stack?** They
-   arrive late, for a question the user may have moved past. A
-   `↓ researched:` marker is cheap; whether it helps or just adds noise
-   is a field question.
-4. **What cancels a research job**, and does `#@/cancel` cover it or
+3. **What cancels a research job**, and does `#@/cancel` cover it or
    does slow need its own?
-5. **Is a card per pin, or a card per pin *per question*?** The second
+4. **Is a card per pin, or a card per pin *per question*?** The second
    is better and destroys the cache.
+5. **Does a stale amendment still amend?** Suggestions clear on cwd
+   change today. A finding landing after a `cd` should be dropped or
+   marked by that same rule rather than inventing a new one — but
+   "dropped" throws away work that may still be right.
+
+Settled in conversation, recorded so they are not re-opened: `##?` is an
+ingress rather than a mode; amendments insert at their origin and never
+jump the queue; a pair renders only within one turn; artifacts belong to
+their slot; classification is the model's call except for `directive`.
 
 ## Related
 

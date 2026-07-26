@@ -83,7 +83,13 @@ owner can do.
    question, testing the SWA thesis) — if that does not beat a
    prefix-only digest, the rest is built on sand. Do not build a lane
    scheduler before measuring: ollama slots or two separately-cached
-   models may simply do the job.
+   models may simply do the job. Grammar is settled (`#?` / `?` / `##?`,
+   the sigil selects who works, you always hear fast) and so is the
+   amend mechanic (findings insert at their origin in a DAG lineage that
+   flattens to the usual up/down walk; if the user has moved on, we move
+   on). **Prerequisite for anything that writes durable artifacts: the
+   `#@` pin browser**, since slot-associated assets are only safe when
+   visible and deletable — the same surface `#/study` needs.
 3. **`#/study`** — background worker mining transcripts into memories
    tuned to coach *this* user. Prerequisites: transcript retention
    (`~/.goulash/history/*.jsonl` grows unbounded today) and
