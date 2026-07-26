@@ -369,7 +369,12 @@ fn compose_rows(
     engine_model: &Option<String>,
     chat: &Option<Chat>,
 ) -> Vec<String> {
-    let cols = layout.real.cols as usize;
+    // Never write the terminal's LAST cell. A row that fills the final
+    // column is flagged as continued/soft-wrapped, and a width change
+    // makes the emulator reflow it into a second line — field-observed
+    // on macOS Terminal as trailing rule fragments sprayed up the
+    // scrollback during a drag-resize.
+    let cols = (layout.real.cols as usize).saturating_sub(1);
     let reserved_now = cfg.reserved_rows();
     let inner_now = layout.real.rows.saturating_sub(reserved_now).max(1);
     if cfg.status.band
@@ -617,10 +622,34 @@ fn fixup_bytes(layout: &Layout, screen: &vt100::Screen, rows: &[String]) -> Vec<
     out.extend_from_slice(format!("\x1b[1;{}r", inner.rows).as_bytes());
     for (i, row) in rows.iter().enumerate() {
         out.extend_from_slice(format!("\x1b[{};1H", inner.rows + 1 + i as u16).as_bytes());
+        // Reset+erase first: the row payload stops one cell short of the
+        // right edge (see compose_rows), and this guarantees that last
+        // cell is *erased* rather than merely unwritten.
+        out.extend_from_slice(b"\x1b[0m\x1b[K");
         out.extend_from_slice(row.as_bytes());
     }
     out.extend_from_slice(&screen.attributes_formatted());
     out.extend_from_slice(&screen.cursor_state_formatted());
+    out
+}
+
+/// Erase-bytes for rows the band occupied last paint but no longer
+/// does. `last` is the previous (top row, height); rows still covered by
+/// the new band, or now off-screen, need no erase.
+fn vacated_rows(last: (u16, u16), top: u16, height: u16, real_rows: u16) -> Vec<u8> {
+    let (old_top, old_height) = last;
+    let mut out = Vec::new();
+    if old_height == 0 || (old_top, old_height) == (top, height) {
+        return out;
+    }
+    for r in old_top..old_top.saturating_add(old_height) {
+        if r >= top && r < top.saturating_add(height) {
+            continue; // still ours — the repaint covers it
+        }
+        if r >= 1 && r <= real_rows {
+            out.extend_from_slice(format!("\x1b[{r};1H\x1b[0m\x1b[K").as_bytes());
+        }
+    }
     out
 }
 
@@ -872,6 +901,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut warming: Option<String> = None;
     #[allow(unused_assignments)] // initialized by the first redraw! below
     let mut last_rows: Vec<String> = Vec::new();
+    // Where the band sat last paint: (top row, height). Drives the
+    // vacated-row erase when a resize moves it.
+    let mut last_band: (u16, u16) = (0, 0);
+    // Drag-resize debounce: a mac window drag fires SIGWINCH per step,
+    // and repainting into a terminal that is still reflowing is how the
+    // screen fills with half-drawn bands. Settle first, then draw once.
+    let mut winch_at: Option<std::time::Instant> = None;
+    const WINCH_SETTLE_MS: u64 = 60;
     macro_rules! redraw {
         () => {{
             let rows = compose_rows(
@@ -893,6 +930,17 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
             if !pre.is_empty() {
                 write_all(STDOUT, &pre)?;
             }
+            // Erase wherever the band USED to be. sync_reserved only
+            // covers rows handed back when the band's height changes; a
+            // terminal resize moves the whole band, and the rows it
+            // vacated would otherwise keep showing a stale copy that the
+            // shell has no reason to overwrite.
+            let top = layout.status_row();
+            let vacated = vacated_rows(last_band, top, rows.len() as u16, layout.real.rows);
+            if !vacated.is_empty() {
+                write_all(STDOUT, &vacated)?;
+            }
+            last_band = (top, rows.len() as u16);
             write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &rows))?;
             last_rows = rows;
         }};
@@ -927,8 +975,16 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         };
         // Tick at 250ms even when idle so job-control transitions with no
         // accompanying I/O (e.g. `sleep 5` starting) are still sensed;
-        // 30ms while dirty for quiescence-debounced redraws.
-        let timeout = PollTimeout::try_from(if dirty { 30 } else { 250 }).unwrap();
+        // 30ms while dirty for quiescence-debounced redraws, and 20ms
+        // while a resize settles so the drag debounce can expire.
+        let timeout = PollTimeout::try_from(if winch_at.is_some() {
+            20
+        } else if dirty {
+            30
+        } else {
+            250
+        })
+        .unwrap();
         let n = match nix::poll::poll(&mut fds, timeout) {
             Ok(n) => n,
             Err(nix::errno::Errno::EINTR) => continue,
@@ -1257,7 +1313,18 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         if winch_ready {
             let mut drain = [0u8; 64];
             let _ = read_some(winch_rd.as_raw_fd(), &mut drain);
-            if let Ok(real) = term::get_size(STDOUT) {
+            winch_at = Some(std::time::Instant::now());
+        }
+
+        // Apply the resize once the drag goes quiet — and only if the
+        // geometry actually moved, so a no-op SIGWINCH costs nothing.
+        if let Some(at) = winch_at
+            && at.elapsed() >= std::time::Duration::from_millis(WINCH_SETTLE_MS)
+        {
+            winch_at = None;
+            if let Ok(real) = term::get_size(STDOUT)
+                && real != layout.real
+            {
                 layout.real = real;
                 let inner = layout.inner();
                 parser.screen_mut().set_size(inner.rows, inner.cols);
@@ -1677,12 +1744,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     &chat,
                 );
                 if rows != last_rows {
-                    let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);
-                    if !pre.is_empty() {
-                        write_all(STDOUT, &pre)?;
-                    }
-                    write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &rows))?;
-                    last_rows = rows;
+                    // Same paint as redraw!, which also erases wherever
+                    // the band used to sit (band open/close moves it).
+                    redraw!();
                 }
                 dirty = false;
                 idle_ticks = 0;
@@ -1749,5 +1813,43 @@ mod key_tests {
     fn lone_esc_and_controls() {
         assert_eq!(kinds(b"\x1b"), "E");
         assert_eq!(kinds(b"\x03\r\x7f\x15q"), "C\u{23ce}<Kq");
+    }
+}
+
+#[cfg(test)]
+mod band_tests {
+    use super::vacated_rows;
+
+    /// Row numbers named by the emitted `ESC[<n>;1H` cursor moves.
+    fn rows(bytes: &[u8]) -> Vec<u16> {
+        String::from_utf8_lossy(bytes)
+            .split("\x1b[")
+            .filter_map(|s| s.strip_suffix(";1H"))
+            .filter_map(|s| s.parse().ok())
+            .collect()
+    }
+
+    #[test]
+    fn resize_taller_erases_the_band_left_behind() {
+        // 24-row terminal, band at 21..24; grow to 30 -> band at 27..30.
+        assert_eq!(
+            rows(&vacated_rows((21, 4), 27, 4, 30)),
+            vec![21, 22, 23, 24]
+        );
+    }
+
+    #[test]
+    fn overlap_is_not_erased_and_offscreen_is_skipped() {
+        // Band slid up by one: the three shared rows are repainted, so
+        // only the row it no longer covers needs erasing.
+        assert_eq!(rows(&vacated_rows((21, 4), 20, 4, 24)), vec![24]);
+        // Shrunk terminal: the old band is off-screen, nothing to erase.
+        assert!(vacated_rows((27, 4), 17, 4, 20).is_empty());
+    }
+
+    #[test]
+    fn unchanged_band_and_first_paint_are_no_ops() {
+        assert!(vacated_rows((21, 4), 21, 4, 24).is_empty());
+        assert!(vacated_rows((0, 0), 21, 4, 24).is_empty());
     }
 }

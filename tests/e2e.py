@@ -686,6 +686,55 @@ def test_memory():
           any(e["ev"] == "memory" and e["op"] == "add" for e in events))
 
 
+def painted_rows(chunk):
+    """[(row, printable_width)] for each band row goulash painted."""
+    out = []
+    # Body runs to the next cursor move or the cursor-restore that ends
+    # goulash's paint -- anything past that is the shell's own output.
+    for m in re.finditer(
+            rb"\x1b\[(\d+);1H\x1b\[0m\x1b\[K((?:(?!\x1b\[\d+;\d*H|\x1b\[\?25).)*)",
+            chunk, re.S):
+        body = re.sub(rb"\x1b\[[0-9;?]*[a-zA-Z]", b"", m.group(2))
+        out.append((int(m.group(1)), len(body.decode("utf-8", "replace"))))
+    return out
+
+
+def test_resize_hygiene():
+    print("resize leaves no stale band and never fills the last column:")
+    proc, mfd = spawn(["bash", "--norc"])
+    read_until(mfd, rb"\$")
+    os.write(mfd, b"lls\r")   # typo -> suggestion chip rides the rule
+    read_until(mfd, "suggestion: ls".encode())
+
+    # Narrow the window a few steps, like a drag. A row that fills the
+    # final column gets flagged soft-wrapped and reflows into a second
+    # line on the next width change -- that was the spray.
+    for cols in (78, 76, 75):
+        set_winsize(mfd, 24, cols)
+        os.killpg(os.getpgid(proc.pid), signal.SIGWINCH)
+        out = read_until(mfd, rb"goulash", 1.5)
+        wide = [(r, w) for r, w in painted_rows(out) if w > cols - 1]
+        check(f"no row fills the last column at {cols} cols", not wide, f"{wide}")
+
+    # Grow taller: the rows the band just left must be erased, or a
+    # stale copy sits there until something scrolls it away.
+    set_winsize(mfd, 30, 75)
+    os.killpg(os.getpgid(proc.pid), signal.SIGWINCH)
+    out = read_until(mfd, rb"\x1b\[27;1H", 3.0)
+    rows = painted_rows(out)
+    erased = {r for r, w in rows if w == 0}
+    check("vacated band rows erased", {21, 22, 23, 24} <= erased,
+          f"erased={sorted(erased)}")
+    check("band repainted at the new bottom",
+          {27, 28, 29, 30} <= {r for r, _ in rows}, f"rows={sorted(r for r, _ in rows)}")
+
+    os.write(mfd, b"echo alive-$((7*6))\r")
+    out = read_until(mfd, rb"alive-42", 5.0)
+    check("shell still healthy after the resizes", b"alive-42" in out, out[-200:])
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+
+
 def test_non_tty():
     print("refuses to run without a tty:")
     r = subprocess.run([BIN, "true"], capture_output=True)
@@ -707,6 +756,7 @@ def main():
         test_model_menu,
         test_chat_mode,
         test_memory,
+        test_resize_hygiene,
         test_non_tty,
     ):
         try:

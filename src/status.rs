@@ -50,7 +50,9 @@ pub fn chrome_row(
     shell_name: &str,
     state: &str,
 ) -> String {
-    let cols = real.cols as usize;
+    // Width stops one cell short of the real edge (compose_rows explains
+    // why); the geometry text still reports the true column count.
+    let cols = (real.cols as usize).saturating_sub(1);
     let chrome = format!(
         " goulash \u{2502} {shell_name} \u{2502} {state} # {}x{inner_rows}+{reserved} ",
         real.cols
