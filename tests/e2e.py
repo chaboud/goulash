@@ -730,10 +730,18 @@ def test_chat_mode():
     os.write(mfd, b"## \r")  # reopen ...
     time.sleep(0.8)
     # goulash's own controls keep their sigils inside chat: "pin that
-    # file" is a thing you say mid-conversation.
+    # file" is a thing you say mid-conversation. Bare @ opens the pin
+    # browser over the chat panel...
     os.write(mfd, b"@\r")
-    out = read_until(mfd, rb"nothing pinned", 5.0)
-    check("@ commands work from inside chat", b"nothing pinned" in out, out[-300:])
+    out = read_until(mfd, "@ pinned ▸".encode(), 5.0)
+    check("@ opens the pin browser from inside chat",
+          "@ pinned ▸".encode() in out, out[-300:])
+    # ...and Esc drops the menu back to the chat it came from, not out
+    # to the shell.
+    os.write(mfd, b"\x1b")
+    out = read_until(mfd, "## chat".encode(), 4.0)
+    check("esc returns to chat, not to the shell",
+          "## chat".encode() in out, out[-300:])
     time.sleep(0.4)
     os.write(mfd, b"\x1b")  # ... and Esc backs out
     time.sleep(0.4)
@@ -833,8 +841,12 @@ def test_working_context():
 
     # Nothing pinned: say so, and don't spend a byte of prompt on it.
     os.write(mfd, b"#@\r")
-    out = read_until(mfd, rb"nothing pinned", 5.0)
-    check("bare #@ reports an empty context", b"nothing pinned" in out, out[-200:])
+    out = read_until(mfd, "@ pinned ▸".encode(), 5.0)
+    check("bare #@ opens the pin browser",
+          "@ pinned ▸".encode() in out, out[-300:])
+    check("browser offers a + pin row", "+ pin a file".encode() in out, out[-400:])
+    os.write(mfd, b"\x1b")
+    time.sleep(0.4)
 
     # The deterministic form: no model involved at all.
     os.write(mfd, b"#@/path commandRef.md\r")
@@ -889,6 +901,12 @@ def test_working_context():
     out = read_until(mfd, rb"@commandRef.md\+1\*", 5.0)
     check("a changed pin is marked in the chrome",
           b"@commandRef.md+1*" in out, out[-300:])
+    # ...and the browser says which one, in words.
+    os.write(mfd, b"#@\r")
+    out = read_until(mfd, rb"changed", 5.0)
+    check("the browser names the changed pin", b"changed" in out, out[-400:])
+    os.write(mfd, b"\x1b")
+    time.sleep(0.4)
     os.write(mfd, b"#still here\r")
     read_until(mfd, rb"PASS", 8.0)
     asked = [p for p in prompts if "still here" in p]
@@ -930,13 +948,39 @@ def test_working_context():
     check("and the dropped prose stays dropped",
           asked and "Explanatory prose" not in asked[-1], "")
 
+    # The browser's two actions: compose a pin, and arm-then-confirm a
+    # drop. Same gestures as the memory browser, deliberately.
+    os.write(mfd, b"#@\r")
+    read_until(mfd, "@ pinned ▸".encode(), 5.0)
+    os.write(mfd, b"\r")                      # Enter on "+ pin a file …"
+    out = read_until(mfd, "⏎ save".encode(), 4.0)
+    check("compose mode entered from the browser",
+          "⏎ save".encode() in out, out[-300:])
+    os.write(mfd, b"OTHER.md\r")
+    out = read_until(mfd, rb"OTHER.md", 6.0)
+    check("a pin composed in the browser lands", b"OTHER.md" in out, out[-300:])
+    os.write(mfd, b"big")                     # filter to the big pin
+    time.sleep(0.4)
+    os.write(mfd, b"\x1b[B")                  # past "+ pin", onto the entry
+    time.sleep(0.3)
+    os.write(mfd, b"\r")                      # arms
+    time.sleep(0.4)
+    os.write(mfd, b"\r")                      # confirms
+    out = read_until(mfd, rb"dropped", 5.0)
+    check("second Enter drops the pin", b"dropped" in out, out[-300:])
+    os.write(mfd, b"\x1b")
+    time.sleep(0.4)
+
     # Unset really unsets, and the block goes back to costing nothing.
     os.write(mfd, b"#@/unset\r")
     time.sleep(0.5)
     os.write(mfd, b"true\r")
     out = read_until(mfd, rb"goulash", 5.0)
+    # Measure the LAST chrome paint in the window: earlier ones in the
+    # same buffer legitimately still carry the pin.
+    chrome = out.rsplit("goulash │".encode(), 1)[-1]
     check("#@/unset clears the chrome marker",
-          b"@commandRef.md" not in out, out[-300:])
+          b"@" not in chrome, chrome[:200])
     os.write(mfd, b"#gone now\r")
     read_until(mfd, rb"PASS", 8.0)
     asked = [p for p in prompts if "gone now" in p]

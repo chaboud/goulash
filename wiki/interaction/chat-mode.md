@@ -137,6 +137,11 @@ into the transcript rather than the band.
 what you say mid-conversation, and having to leave chat to do it would
 be the wrong seam.
 
+A menu opened this way — bare `@` for the pin browser, `/model`,
+`/memory` — **overlays the chat panel, and Esc drops back into chat**
+rather than out to the shell. Menus are modal over whatever asked for
+them; chat is still underneath, with its transcript intact.
+
 ```text
 ## how do I sync widgets?
 > I don't know that tool.

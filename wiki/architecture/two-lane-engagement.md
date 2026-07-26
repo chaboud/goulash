@@ -456,12 +456,12 @@ Two consequences to accept knowingly:
    in its cheapest form, and it answers the question the whole design
    rests on: **is a researched suggestion arriving forty seconds late
    delightful, or annoying?** Nobody knows yet, including this page.
-4. **The `#@` pin browser**, before anything writes a durable artifact.
-   Slot-associated assets are only safe because they are visible and
-   deletable; shipping the writer first would fill `.goulash` with
-   things nobody can see. Same unmet prerequisite
-   [`#/study`](../product/build-plan.md) has — build the surface once,
-   use it for both.
+4. ~~**The `#@` pin browser**~~ **built** — bare `#@` opens the menu
+   primitive, with a `+ pin a file …` compose row and arm-then-confirm
+   drop. Slot-associated assets are only safe because they are visible
+   and deletable; shipping a writer first would fill `.goulash` with
+   things nobody can see. Same surface [`#/study`](../product/build-plan.md)
+   needs — built once, used for both.
 5. MCP, skills, VLM — after (3) answers that.
 
 ## Open questions

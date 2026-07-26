@@ -202,6 +202,9 @@ enum MenuKind {
     /// Settings, kept separate because these are levers on how goulash
     /// talks to the emulator, not preferences.
     Debug,
+    /// `#@` working context. Enter arms a pin; a second Enter drops it —
+    /// same arm-then-confirm as Memory, for the same reason.
+    Pins,
 }
 
 /// Live-tunable settings and the values Enter cycles through. Everything
@@ -233,7 +236,7 @@ const HELP_ITEMS: &[&str] = &[
     "#/memory               browse slots; + new to write one",
     "#/memory on|off|limit  enable, disable, resize the store",
     "#@/path FILE           pin a file (or dir) into the model's context",
-    "#@ <request>           pin/unpin in words; #@ alone lists",
+    "#@ <request>           pin/unpin in words; #@ alone browses",
     "#@/unset               drop every pin",
     "#@/list \u{b7} #@/cancel    what's pinned \u{b7} stop a running ingest",
     "#/settings             live-tune everything below",
@@ -558,6 +561,7 @@ fn compose_rows(
                 match m.kind {
                     MenuKind::Model => "\u{23ce} save",
                     MenuKind::Memory => "\u{23ce}\u{23ce} forget",
+                    MenuKind::Pins => "\u{23ce}\u{23ce} unpin",
                     MenuKind::Settings | MenuKind::Debug => "\u{23ce} cycles",
                     MenuKind::Help => "reference",
                 },
@@ -1007,12 +1011,14 @@ fn settings_items(
 /// shell comment goulash intercepts — the model can *suggest* one as a
 /// `CMD:` line that the user pulls with Down like any other. Everything
 /// else is handed to the model, which answers in PIN verbs (context.rs).
+#[allow(clippy::too_many_arguments)]
 fn at_command(
     rest: &str,
     work: &mut crate::context::WorkContext,
     engine: Option<&Engine>,
     cwd: &str,
     bound: bool,
+    menu: &mut Option<Menu>,
 ) -> Option<String> {
     let rest = rest.trim();
     // Paths are the USER's, so they resolve against the shell's cwd —
@@ -1076,7 +1082,15 @@ fn at_command(
         });
     }
     if rest.is_empty() {
-        return Some(list_pins(work));
+        // A notice listing 50 slots is unreadable — the exact argument
+        // that turned #/memory into a menu. Same primitive here, and it
+        // is what makes machine-written artifacts safe to have: goulash
+        // decides what to build, the user can always see it and bin it.
+        let mut m = Menu::open("@ pinned", MenuKind::Pins);
+        m.items = pin_items(work);
+        m.loaded = true;
+        *menu = Some(m);
+        return None;
     }
     // Natural language: the model resolves it against a listing of
     // candidates and answers in PIN verbs. Read-only, and goulash does
@@ -1145,6 +1159,17 @@ fn list_pins(work: &crate::context::WorkContext) -> String {
     } else {
         pins.join("  \u{b7}  ")
     }
+}
+
+/// The browser's first row: pinning should not require remembering the
+/// `#@/path` incantation, exactly as `+ new memory` does for slots.
+const NEW_PIN: &str = "+ pin a file \u{2026}";
+
+/// Rows for the pin browser, after the `+ pin` row.
+fn pin_items(work: &crate::context::WorkContext) -> Vec<String> {
+    std::iter::once(NEW_PIN.to_string())
+        .chain(work.list())
+        .collect()
 }
 
 /// `name: value` rows for the debug menu, from the live knobs.
@@ -1686,7 +1711,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         // what makes them suggestible:
                                         // `CMD: #@/path ref.md` is a
                                         // normal pullable suggestion.
-                                        notice = at_command(rest, &mut work, engine.as_ref(), &last_cwd, engine_model.is_some());
+                                        notice = at_command(
+                                            rest,
+                                            &mut work,
+                                            engine.as_ref(),
+                                            &last_cwd,
+                                            engine_model.is_some(),
+                                            &mut menu,
+                                        );
                                         band = None;
                                     } else if let Some(cmdline) = body.strip_prefix('/') {
                                         // #/ commands: goulash controls, not
@@ -1906,11 +1938,15 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         }
                                         MenuKind::Help => {}
                                         MenuKind::Settings | MenuKind::Debug => committed = sel,
+                                        MenuKind::Pins if sel.as_deref() == Some(NEW_PIN) => {
+                                            m.composing = Some(String::new());
+                                            m.armed = None;
+                                        }
                                         MenuKind::Memory if sel.as_deref() == Some(NEW_MEMORY) => {
                                             m.composing = Some(String::new());
                                             m.armed = None;
                                         }
-                                        MenuKind::Memory => {
+                                        MenuKind::Memory | MenuKind::Pins => {
                                             if sel.is_some() && m.armed == sel {
                                                 committed = sel;
                                                 m.armed = None;
@@ -1945,6 +1981,46 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     m.cursor = 0;
                                 }
                             }
+                        }
+                    }
+                    // The compose field is shared; which store it feeds
+                    // depends on the menu that opened it.
+                    if kind == MenuKind::Pins
+                        && let Some(path) = new_memory.take()
+                        && !path.trim().is_empty()
+                    {
+                        notice = at_command(
+                            &format!("/path {}", path.trim()),
+                            &mut work,
+                            engine.as_ref(),
+                            &last_cwd,
+                            engine_model.is_some(),
+                            &mut None,
+                        );
+                        if let Some(m) = menu.as_mut() {
+                            m.items = pin_items(&work);
+                            m.clamp();
+                        }
+                    }
+                    if kind == MenuKind::Pins
+                        && let Some(item) = committed.take()
+                    {
+                        // "[7] /path/to/thing · …" -> 7
+                        let id = item
+                            .trim_start_matches('[')
+                            .split(']')
+                            .next()
+                            .and_then(|s| s.parse::<u64>().ok());
+                        notice = match id.and_then(|id| work.drop_id(id)) {
+                            Some(label) => Some(format!("@ dropped {label}")),
+                            None => Some("could not drop that pin".to_string()),
+                        };
+                        // A smaller pin list means a bigger share each;
+                        // some of the survivors may now fit unaided.
+                        kick_digests(&mut work, engine.as_ref(), engine_model.is_some());
+                        if let Some(m) = menu.as_mut() {
+                            m.items = pin_items(&work);
+                            m.clamp();
                         }
                     }
                     if let Some(text) = new_memory {
@@ -2176,7 +2252,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         // conversation, and having to leave chat to do
                         // it would be the wrong seam.
                         if let Some(rest) = text.strip_prefix('@') {
-                            let out = at_command(rest, &mut work, engine.as_ref(), &last_cwd, engine_model.is_some());
+                            let out = at_command(
+                                            rest,
+                                            &mut work,
+                                            engine.as_ref(),
+                                            &last_cwd,
+                                            engine_model.is_some(),
+                                            &mut menu,
+                                        );
                             if let (Some(c), Some(msg)) = (chat.as_mut(), out) {
                                 c.lines.push(format!("goulash: {msg}"));
                             }

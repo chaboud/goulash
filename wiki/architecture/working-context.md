@@ -17,7 +17,7 @@ whatever the user says matters right now.
 #@/drop 2                 unpin one
 #@/list                   what's pinned, with sizes and freshness
 #@/cancel                 abandon any ingest still cooking
-#@                        same as /list
+#@                        open the pin browser
 #@ <anything else>        hand it to the model (below)
 ```
 
@@ -306,6 +306,24 @@ across sessions is free.
    Nice, but goulash never acts unasked — a one-line notice at most.
 5. **Globs and URLs**: `#@ docs/*.md`, `#@ https://…`? Both plausible,
    both widen the hazard surface.
+
+## The pin browser
+
+Bare `#@` opens the [menu primitive](../interaction/settings-and-nav.md),
+not a notice: a line listing fifty slots is unreadable, which is the
+same argument that turned `#/memory` into a browser. Filter, scroll,
+a `+ pin a file …` compose row so pinning never requires remembering
+`#@/path`, and arm-then-confirm to drop — identical gestures to the
+memory browser, deliberately, because they are the same kind of act on
+the same kind of store.
+
+It also matters more than convenience. Once slow starts writing durable
+artifacts — cards, digests, wikis — those hang off the slot that
+produced them, and **slot-owned assets are only safe because they are
+visible and deletable.** Goulash gets to decide what to build; the user
+gets to see it and bin it. The browser is what makes that trade real,
+which is why it is a prerequisite for any durable write rather than a
+nicety after one. (wiki: [two-lane-engagement](two-lane-engagement.md))
 
 ## Where this goes next
 
