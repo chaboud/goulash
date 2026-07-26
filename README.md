@@ -60,6 +60,8 @@ Down past the newest keeps going into the **history of suggested commands** with
 #/model            modal model picker: type to filter, ⏎ selects & saves
 #/model NAME       try a model for this session (add `save` to persist)
 #/memory on        give the model a small pinned memory (REMEMBER/FORGET)
+#/memory           browse the slots: filter, ↑↓, ⏎⏎ to forget one
+#/thinking low     reasoning level: off | low | medium | high
 #/commentary off   quiet the per-turn heckling
 #/status
 #/help
