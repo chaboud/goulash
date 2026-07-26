@@ -38,6 +38,18 @@ pub enum Event {
         text: Option<String>,
         card: bool,
     },
+    /// A researched finding for `turn`. Fast relays it; the session
+    /// amends the turn it came from, never the top of the stack.
+    Finding {
+        turn: u64,
+        text: String,
+        command: Option<String>,
+        /// The full reasoning, retained rather than shown — the receipt
+        /// behind the one line the user actually reads.
+        reasoning: String,
+    },
+    /// Research started (`Some(turn)`) or went idle (`None`).
+    Researching(Option<u64>),
     Error(String),
     Models(Vec<String>),
     /// Resolved capabilities for the newly bound model. The session
@@ -89,8 +101,22 @@ pub enum Job {
         /// compression for the stable prefix.
         card: bool,
     },
+    /// The slow lane: a considered answer for a turn that fast already
+    /// answered. Never speaks — the finding goes back to fast, which
+    /// relays it. Supersedes by default (terminals are serial).
+    Research {
+        /// The turn this will amend. Findings land at their origin, so
+        /// this is carried the whole way round.
+        turn: u64,
+        question: String,
+        context: String,
+        memories: String,
+        pinned: String,
+    },
     /// Abandon every queued digest (`#@/cancel`).
     CancelDigests,
+    /// Abandon research in flight and pending (`#?/cancel`).
+    CancelResearch,
     SetModel(String),
     /// Live tuning: key/value applied to the worker's own config copy.
     SetOption(String, String),
@@ -221,6 +247,27 @@ impl Engine {
     pub fn cancel_digests(&self) {
         let _ = self.job_tx.send(Job::CancelDigests);
     }
+
+    pub fn research(
+        &self,
+        turn: u64,
+        question: String,
+        context: String,
+        memories: String,
+        pinned: String,
+    ) {
+        let _ = self.job_tx.send(Job::Research {
+            turn,
+            question,
+            context,
+            memories,
+            pinned,
+        });
+    }
+
+    pub fn cancel_research(&self) {
+        let _ = self.job_tx.send(Job::CancelResearch);
+    }
 }
 
 fn notify(wr: &OwnedFd) {
@@ -258,12 +305,17 @@ fn worker(
     // pass. `digest_total` is the batch size the meter counts against.
     let mut digest_queue: std::collections::VecDeque<Job> = std::collections::VecDeque::new();
     let mut digest_total = 0usize;
+    // At most one research job is live. A newer `#?` replaces it; the
+    // displaced one is dropped, or kept for backfill if configured.
+    let mut pending_research: Option<Job> = None;
+    let mut backfill: std::collections::VecDeque<Job> = std::collections::VecDeque::new();
 
     loop {
         // Blocking recv only when there is no background work waiting —
         // otherwise poll, so a quiet channel means "get on with the
         // cooking" rather than "sleep".
-        let first = if digest_queue.is_empty() {
+        let idle = digest_queue.is_empty() && pending_research.is_none() && backfill.is_empty();
+        let first = if idle {
             match jobs.recv() {
                 Ok(j) => Some(j),
                 Err(_) => break,
@@ -276,6 +328,19 @@ fn worker(
             }
         };
         let Some(first) = first else {
+            // Research outranks ingest: the user asked for it.
+            if run_research(
+                &agent,
+                &cfg,
+                &caps,
+                &state,
+                &mut pending_research,
+                &mut backfill,
+                &ev,
+                &wr,
+            ) {
+                continue;
+            }
             run_one_digest(
                 &agent,
                 &cfg,
@@ -322,6 +387,7 @@ fn worker(
                 },
                 Job::SetOption(k, v) => match k.as_str() {
                     "thinking" => cfg.thinking = v,
+                    "slow" => cfg.slow = v,
                     "command_first" => cfg.command_first = v == "true" || v == "on",
                     "max_tokens" => {
                         if let Ok(n) = v.parse() {
@@ -344,6 +410,23 @@ fn worker(
                 Job::Digest { .. } => {
                     digest_queue.push_back(job);
                     digest_total = digest_total.max(digest_queue.len());
+                }
+                // Supersede, not queue: terminals are serial, and three
+                // questions in a row is usually one mind changing rather
+                // than three answers wanted. `backfill_abandoned` gives
+                // the loser a second life instead of a queue slot.
+                Job::Research { .. } => {
+                    if let Some(old) = pending_research.replace(job)
+                        && cfg.backfill_abandoned
+                    {
+                        backfill.push_back(old);
+                    }
+                }
+                Job::CancelResearch => {
+                    pending_research = None;
+                    backfill.clear();
+                    let _ = ev.send(Event::Researching(None));
+                    notify(&wr);
                 }
                 Job::CancelDigests => {
                     // Report every abandoned pin so the session can put
@@ -450,9 +533,21 @@ fn worker(
             };
             notify(&wr);
         }
-        // Interactive work for this pass is done; spend what is left on
-        // the backlog. One at a time, so a new ask never waits behind
-        // more than a single compression.
+        // Interactive work for this pass is done. Research first (the
+        // user asked for it), then ingest. One at a time either way, so
+        // a new ask never waits behind more than a single job.
+        if run_research(
+            &agent,
+            &cfg,
+            &caps,
+            &state,
+            &mut pending_research,
+            &mut backfill,
+            &ev,
+            &wr,
+        ) {
+            continue;
+        }
         run_one_digest(
             &agent,
             &cfg,
@@ -465,6 +560,153 @@ fn worker(
         );
     }
     drop(wr);
+}
+
+/// Run the live research job, if there is one. Returns whether it did
+/// anything, so the caller can give research priority over ingest.
+///
+/// The whole point of the slow lane in one function: a bigger budget, no
+/// latency pressure, and an answer that goes to **fast** rather than to
+/// the user. Bounded by wall clock, because a lane with no deadline is
+/// a lane that can hang the backlog behind it.
+#[allow(clippy::too_many_arguments)]
+fn run_research(
+    agent: &ureq::Agent,
+    cfg: &EngineConfig,
+    caps: &Caps,
+    state: &Option<(String, Vec<String>)>,
+    pending: &mut Option<Job>,
+    backfill: &mut std::collections::VecDeque<Job>,
+    ev: &mpsc::Sender<Event>,
+    wr: &OwnedFd,
+) -> bool {
+    let job = pending.take().or_else(|| backfill.pop_front());
+    let Some(Job::Research {
+        turn,
+        question,
+        context,
+        memories,
+        pinned,
+    }) = job
+    else {
+        return false;
+    };
+    let Some((model, _)) = state else {
+        let _ = ev.send(Event::Researching(None));
+        notify(wr);
+        return true;
+    };
+    let _ = ev.send(Event::Researching(Some(turn)));
+    let _ = ev.send(Event::Busy {
+        model: model.clone(),
+        warm: false,
+    });
+    notify(wr);
+    let out = research_once(
+        agent, cfg, caps, model, &question, &context, &memories, &pinned,
+    );
+    let _ = ev.send(Event::Idle);
+    let _ = ev.send(Event::Researching(None));
+    if let Ok((text, command, reasoning)) = out
+        && !(text.is_empty() && command.is_none())
+    {
+        let _ = ev.send(Event::Finding {
+            turn,
+            text,
+            command,
+            reasoning,
+        });
+    }
+    notify(wr);
+    true
+}
+
+/// The considered answer. Same model as fast by default — "slow" is a
+/// role, not necessarily a second set of weights — with a budget that
+/// buys thinking room and a contract that keeps the output relayable:
+/// a command, one line, and the reasoning kept separately.
+#[allow(clippy::too_many_arguments)]
+fn research_once(
+    agent: &ureq::Agent,
+    cfg: &EngineConfig,
+    caps: &Caps,
+    model: &str,
+    question: &str,
+    context: &str,
+    memories: &str,
+    pinned: &str,
+) -> Result<(String, Option<String>, String), String> {
+    let budget = (cfg.max_tokens * 4).clamp(512, 4096);
+    let prompt = format!(
+        "{PREAMBLE}{memories}{pinned}Session log (oldest first):\n{context}\n\
+         Current local time: {}\nQuestion: {question}\n\
+         Take your time and get this RIGHT rather than fast \u{2014} another \
+         model already gave a quick answer, and yours only earns its keep \
+         by being better.\nAnswer in exactly this shape:\n\
+         CMD: <the command, if one applies>\n\
+         <ONE short line a terminal status bar can hold>\n\
+         REASON: <why, including what you ruled out \u{2014} this is kept \
+         for follow-up questions, not shown>\n\
+         If you have nothing better than an obvious answer, reply exactly: \
+         PASS",
+        local_now()
+    );
+    let mut body = serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "stream": false,
+        "options": {
+            "temperature": 0.3,
+            "num_predict": (budget + caps.allowance(&cfg.thinking, cfg.thinking_tokens)) as i64,
+            "num_ctx": cfg.num_ctx as i64,
+        },
+    });
+    if let Some(think) = caps.think_field(&cfg.thinking) {
+        body["think"] = think;
+    }
+    if !cfg.keep_alive.is_empty() {
+        body["keep_alive"] = serde_json::json!(cfg.keep_alive);
+    }
+    let resp = agent
+        .post(&format!("{}/api/generate", cfg.host))
+        .timeout(Duration::from_secs(cfg.slow_max_secs))
+        .send_string(&body.to_string())
+        .map_err(|e| e.to_string())?;
+    let text = resp.into_string().map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let raw = v["response"].as_str().unwrap_or("").trim();
+    if raw.is_empty() || raw.trim_end_matches(['.', '!']) == "PASS" {
+        return Err("nothing better".to_string());
+    }
+    Ok(split_finding(raw))
+}
+
+/// Pull a finding apart into the line the user sees, the command, and
+/// the reasoning that is kept but not shown.
+fn split_finding(raw: &str) -> (String, Option<String>, String) {
+    let mut command = None;
+    let mut line = String::new();
+    let mut reason = String::new();
+    let mut in_reason = false;
+    for l in raw.lines() {
+        let t = l.trim();
+        if let Some(r) = t.strip_prefix("REASON:") {
+            in_reason = true;
+            reason.push_str(r.trim());
+            reason.push('\n');
+        } else if in_reason {
+            reason.push_str(l);
+            reason.push('\n');
+        } else if let Some(c) = t.strip_prefix("CMD:") {
+            let c = c.trim();
+            if !c.is_empty() {
+                command = Some(c.to_string());
+            }
+        } else if !t.is_empty() && line.is_empty() {
+            line = t.to_string();
+        }
+    }
+    (line, command, reason.trim().to_string())
 }
 
 /// Compress one queued pin, if there is one and a model to do it with.

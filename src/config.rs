@@ -61,6 +61,27 @@ pub struct EngineConfig {
     /// putting it first means truncation eats the explanation instead of
     /// the command, and the suggestion can vend mid-stream.
     pub command_first: bool,
+    /// When the slow lane engages, as a ladder rather than a toggle:
+    ///
+    /// - `off` — never.
+    /// - `manual` — only when asked, `#?` / `?`.
+    /// - `ingest` — also on `#@`, to classify and card a pin. Bounded,
+    ///   and the user triggered it by pinning. **Default.**
+    /// - `volunteer` — also on ordinary `#` asks, contributing an
+    ///   amendment when it finds something better. Unbounded: fires on
+    ///   everything typed.
+    ///
+    /// (wiki: architecture/two-lane-engagement.md)
+    pub slow: String,
+    /// A superseded or stale research job can be picked up later and
+    /// amended into the turn it belonged to. Costs nothing in attention
+    /// — an amendment for an old turn never intrudes — and costs compute
+    /// for something nobody may look at.
+    pub backfill_abandoned: bool,
+    /// Hard bounds on one research job, since slow tool-calls and can
+    /// therefore spin. Reported when hit rather than silently truncated.
+    pub slow_max_steps: usize,
+    pub slow_max_secs: u64,
     /// Total characters all `#@` pinned files together may spend in the
     /// stable prefix. Shared equally between pins; anything over its
     /// share is outlined rather than truncated (context.rs).
@@ -95,6 +116,10 @@ impl Default for EngineConfig {
             thinking_tokens: 512,
             thinking: "off".to_string(),
             command_first: true,
+            slow: "ingest".to_string(),
+            backfill_abandoned: false,
+            slow_max_steps: 8,
+            slow_max_secs: 180,
             context_files_max_chars: 6000,
             num_ctx: 8192,
             prewarm: true,

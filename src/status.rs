@@ -4,6 +4,12 @@ use crate::term::Size;
 /// chrome chip is white-on-grey; the suggestion chip is orange.
 pub const CHROME_SGR: &str = "\x1b[0;97;100m"; // white on grey chip
 pub const SUGGEST_SGR: &str = "\x1b[0;30;48;5;208m"; // black on orange chip
+/// A researched finding, inset under the answer it fills in. Deep royal
+/// blue: it recedes against the suggestion orange (208) instead of
+/// competing the way a brighter blue would, and white carries the
+/// contrast that orange gets from black text.
+/// (wiki: architecture/two-lane-engagement.md)
+pub const RESEARCH_SGR: &str = "\x1b[0;97;48;5;25m";
 pub const RULE_SGR: &str = "\x1b[0;37m"; // white rule on default bg
 pub const QUERY_SGR: &str = "\x1b[0;2m"; // dim question on default bg
 pub const TEXT_SGR: &str = "\x1b[0m"; // plain answer text

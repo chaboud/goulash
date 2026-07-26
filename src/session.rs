@@ -172,6 +172,23 @@ struct SugTurn {
     id: u64,
     cmd: String,
     text: String,
+    /// A researched finding for this turn. Fast stays primary and this
+    /// **fills in beneath it** — an addition to the record rather than a
+    /// replacement, so the stack reads as a transcript of what happened
+    /// instead of a bait-and-switch.
+    /// (wiki: architecture/two-lane-engagement.md)
+    alt: Option<Finding>,
+}
+
+/// What the slow lane came back with, hung off the turn it answers.
+#[derive(Clone)]
+struct Finding {
+    cmd: Option<String>,
+    text: String,
+    /// Kept, not shown — the justification behind the one line, there
+    /// for when the user asks about the suggestion rather than for
+    /// filling the band.
+    reasoning: String,
 }
 
 const SUG_HIST_CAP: usize = 50;
@@ -212,6 +229,7 @@ enum MenuKind {
 /// restart stays in the TOML where it cannot mislead.
 const SETTINGS: &[(&str, &[&str])] = &[
     ("commentary", &["on", "off"]),
+    ("slow", &["ingest", "volunteer", "manual", "off"]),
     ("thinking", &["off", "low", "medium", "high"]),
     ("memory", &["off", "on"]),
     ("max_tokens", &["256", "512", "1024", "2048"]),
@@ -240,6 +258,8 @@ const HELP_ITEMS: &[&str] = &[
     "#@/unset               drop every pin",
     "#@/list \u{b7} #@/cancel    what's pinned \u{b7} stop a running ingest",
     "#/settings             live-tune everything below",
+    "#? <question>          ask the slow lane; fast still answers first",
+    "#?/cancel \u{b7} #/cancel   stop research \u{b7} stop everything",
     "#/debug                terminal-hackery toggles (esoteric)",
     "#/thinking off|low|medium|high",
     "#/commentary on|off    per-turn heckling",
@@ -663,15 +683,45 @@ fn compose_rows(
         tip.as_deref(),
         cols,
     ));
-    let q = match browsed {
-        Some(_) => "suggestion history",
-        None => band
-            .as_ref()
-            .and_then(|b| b.question.as_deref())
-            .unwrap_or(""),
-    };
-    rows.push(status::pad_row(&format!(" {q}"), cols, status::QUERY_SGR));
+    // The question row doubles as the slot for a researched finding.
+    // When one exists for the browsed turn it overlays here, indented
+    // and in its own colour — the question was not doing much work on
+    // this row anyway, so it truncates to a stub and an ellipsis.
+    let alt = browsed.and_then(|(_, t)| t.alt.as_ref());
+    match alt {
+        Some(a) => {
+            let stub: String = match browsed.map(|(_, t)| t.text.as_str()) {
+                Some(q) if !q.is_empty() => {
+                    format!("{}\u{2026} ", q.chars().take(10).collect::<String>())
+                }
+                _ => String::new(),
+            };
+            let cmd = a.cmd.as_deref().unwrap_or(&a.text);
+            rows.push(status::pad_row(
+                &format!(" {stub}\u{21b3} {cmd}"),
+                cols,
+                status::RESEARCH_SGR,
+            ));
+        }
+        None => {
+            let q = match browsed {
+                Some(_) => "suggestion history",
+                None => band
+                    .as_ref()
+                    .and_then(|b| b.question.as_deref())
+                    .unwrap_or(""),
+            };
+            rows.push(status::pad_row(&format!(" {q}"), cols, status::QUERY_SGR));
+        }
+    }
     let mut lines = match browsed {
+        // A finding's one line explains the inset above it; the turn's
+        // own text is what the question row already stubbed.
+        Some((_, t)) if t.alt.is_some() => wrap_chars(
+            &t.alt.as_ref().unwrap().text,
+            cols.saturating_sub(2),
+            n_text as usize,
+        ),
         Some((_, t)) => wrap_chars(&t.text, cols.saturating_sub(2), n_text as usize),
         None => band
             .as_ref()
@@ -846,6 +896,7 @@ fn slash_command(
     max_tokens: usize,
     caps: Option<&crate::models::Caps>,
     dbg: &crate::config::DebugConfig,
+    slow: &str,
 ) -> Option<String> {
     let mut it = cmdline.splitn(2, char::is_whitespace);
     let cmd = it.next().unwrap_or("");
@@ -945,7 +996,7 @@ fn slash_command(
         },
         ("settings", _) | ("config", _) => {
             let mut m = Menu::open("settings", MenuKind::Settings);
-            m.items = settings_items(*commentary, thinking, max_tokens, memory, caps);
+            m.items = settings_items(*commentary, slow, thinking, max_tokens, memory, caps);
             *menu = Some(m);
             None
         }
@@ -963,6 +1014,16 @@ fn slash_command(
             *menu = Some(m);
             None
         }
+        ("cancel", _) => match engine {
+            Some(eng) => {
+                // The sigil scopes the cancel: this is the bare one, so
+                // it stops everything goulash has in flight.
+                eng.cancel_research();
+                eng.cancel_digests();
+                Some("cancelled background work".to_string())
+            }
+            None => Some("no engine running".to_string()),
+        },
         ("status", _) => Some(format!(
             "goulash {} \u{b7} engine: {} \u{b7} {} \u{b7} {} blocks this session",
             env!("CARGO_PKG_VERSION"),
@@ -982,6 +1043,7 @@ fn slash_command(
 /// with it — a dial that silently does nothing is worse than no dial.
 fn settings_items(
     commentary: bool,
+    slow: &str,
     thinking: &str,
     max_tokens: usize,
     memory: &MemoryStore,
@@ -992,6 +1054,7 @@ fn settings_items(
         .map(|(name, _)| {
             let v = match *name {
                 "commentary" => if commentary { "on" } else { "off" }.to_string(),
+                "slow" => slow.to_string(),
                 "thinking" => format!("{thinking}{}", thinking_note(caps)),
                 "memory" => if memory.enabled { "on" } else { "off" }.to_string(),
                 "max_tokens" => max_tokens.to_string(),
@@ -1107,6 +1170,95 @@ fn at_command(
         }
         None => Some("no engine running \u{2014} try #@/path <file>".to_string()),
     }
+}
+
+/// What the chrome chip carries about goulash's own state: the active
+/// pin, and a `?` while the slow lane is working.
+///
+/// A silent multi-second research job is the same "am I frozen?" failure
+/// as a silent model load, and the answer is the same — say so in the
+/// one place that is always on screen.
+fn chrome_tag(work: &crate::context::WorkContext, researching: Option<u64>) -> Option<String> {
+    let pin = work.chrome_tag();
+    match (pin, researching.is_some()) {
+        (Some(p), true) => Some(format!("{p} \u{b7} ?\u{2026}")),
+        (Some(p), false) => Some(p),
+        (None, true) => Some("?\u{2026}".to_string()),
+        (None, false) => None,
+    }
+}
+
+/// Dispatch a `#?` / `?` question to the slow lane, returning the notice
+/// (if any) to show.
+///
+/// With slow unavailable this **answers via fast and says so** rather
+/// than refusing: the user asked a question and deserves an answer, and
+/// silently downgrading would be worse than either.
+#[allow(clippy::too_many_arguments)]
+fn ask_slow(
+    body: &str,
+    turn: u64,
+    engine: Option<&Engine>,
+    slow: &str,
+    ctx_log: &str,
+    memories: String,
+    pinned: String,
+    cards: String,
+) -> Option<String> {
+    let Some(eng) = engine else {
+        return Some("no engine running".to_string());
+    };
+    if slow == "off" {
+        eng.ask(body.to_string(), ctx_log.to_string(), memories, pinned, cards);
+        // Said on the question row, not as a notice: a notice is
+        // transient and the answer arriving would wipe it, so the user
+        // would never learn why their `#?` behaved like a `#`.
+        return Some("answered by fast \u{b7} #/settings \u{2192} slow".to_string());
+    }
+    // Fast answers first and keeps the microphone; slow researches the
+    // same turn and amends it if it finds something better.
+    eng.ask(
+        body.to_string(),
+        ctx_log.to_string(),
+        memories.clone(),
+        pinned.clone(),
+        cards,
+    );
+    eng.research(turn, body.to_string(), ctx_log.to_string(), memories, pinned);
+    None
+}
+
+/// Land a finding on the turn it belongs to, and record it in the
+/// session log **by reference** rather than by rewriting what was
+/// already written.
+///
+/// The log is fast's own memory of the conversation. Silently replacing
+/// an earlier `CMD:` would leave that memory disagreeing with what the
+/// user is looking at — harder for a small model to follow than an
+/// overwrite would be, and survivable, which divergence is not.
+fn apply_finding(hist: &mut [SugTurn], turn: u64, finding: Finding, ctx_log: &mut String) {
+    let Some(slot) = hist.iter_mut().find(|t| t.id == turn) else {
+        return; // the turn aged out of the stack; nothing to amend
+    };
+    if let Some(cmd) = &finding.cmd {
+        ctx_log.push_str(&format!("CMD: {cmd} [amends the suggestion above]\n"));
+    }
+    // The reasoning is retained rather than shown — but retained *where
+    // fast can read it*, because fast is the one who will be asked
+    // "why?" and it is the only voice. Bounded: this is a receipt, not a
+    // second transcript competing for the prompt.
+    if !finding.reasoning.is_empty() {
+        let brief: String = finding
+            .reasoning
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(400)
+            .collect();
+        ctx_log.push_str(&format!("[researched: {brief}]\n"));
+    }
+    slot.alt = Some(finding);
 }
 
 /// Ask the engine to compress any pin that no longer fits its share.
@@ -1378,8 +1530,15 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut chat: Option<Chat> = None;
     let mut warming: Option<String> = None;
     // Live copies of engine options the settings menu can turn.
+    let mut opt_slow = cfg.engine.slow.clone();
     let mut opt_thinking = cfg.engine.thinking.clone();
     let mut opt_max_tokens = cfg.engine.max_tokens;
+    // Findings that arrived while the user was browsing. The lineage
+    // never mutates under an active selection, so they wait here and
+    // land on the return to neutral.
+    let mut held_findings: Vec<(u64, Finding)> = Vec::new();
+    // The turn currently being researched, for the chrome.
+    let mut researching: Option<u64> = None;
     // What the bound model can actually do (models.rs). None until the
     // engine reports; the UI hedges rather than lies in that window.
     let mut model_caps: Option<crate::models::Caps> = None;
@@ -1431,7 +1590,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     &menu,
                     &engine_model,
                     &chat,
-                    work.chrome_tag().as_deref(),
+                    chrome_tag(&work, researching).as_deref(),
                 );
                 let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);
                 if !pre.is_empty() {
@@ -1641,6 +1800,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                     id,
                                                     cmd: v.command.clone(),
                                                     text: v.why.clone(),
+                                                    alt: None,
                                                 },
                                             );
                                             suggestions.insert(0, (id, v.command, v.why));
@@ -1703,6 +1863,59 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         band = None;
                                         notice = None;
                                         chat = Some(c);
+                                    } else if let Some(rest) = body.strip_prefix('?') {
+                                        // `#?` — the deliberate door to
+                                        // the slow lane. Fast still
+                                        // answers and still speaks; slow
+                                        // researches the same turn.
+                                        let rest = rest.trim();
+                                        if let Some(sub) = rest.strip_prefix("/cancel") {
+                                            let _ = sub;
+                                            if let Some(eng) = engine.as_ref() {
+                                                eng.cancel_research();
+                                            }
+                                            notice = Some("research cancelled".to_string());
+                                        } else {
+                                            // A bare `?` most likely means
+                                            // "help" — tell the model that
+                                            // rather than printing a card.
+                                            let q = if rest.is_empty() {
+                                                "The user typed a bare '?' with no question. \
+                                                 They may not know the syntax and may be asking \
+                                                 for help: '#' asks, '##' chats, '#@' pins a \
+                                                 file, '#/' is settings, '#?' asks the slow \
+                                                 model. Say so, briefly."
+                                            } else {
+                                                rest
+                                            };
+                                            let turn = next_sid;
+                                            let fallback = ask_slow(
+                                                q,
+                                                turn,
+                                                engine.as_ref(),
+                                                &opt_slow,
+                                                &ctx_log,
+                                                memory.context_block(),
+                                                work.context_block(),
+                                                work.cards_block(),
+                                            );
+                                            ctx_log.push_str(&format!(
+                                                "# {q} [asked {}]\n",
+                                                engine::hms()
+                                            ));
+                                            // Fast still owns the band —
+                                            // it is answering this turn
+                                            // like any other. Research
+                                            // reports in the chrome.
+                                            notice = None;
+                                            band = Some(Band {
+                                                question: Some(match &fallback {
+                                                    Some(why) => format!("? {q} \u{2014} {why}"),
+                                                    None => format!("? {q}"),
+                                                }),
+                                                text: "\u{2026}".to_string(),
+                                            });
+                                        }
                                     } else if let Some(rest) = body.strip_prefix('@') {
                                         // `#@` working context. The `/`
                                         // forms are deterministic — no
@@ -1737,6 +1950,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             opt_max_tokens,
                                             model_caps.as_ref(),
                                             &dbg,
+                                            &opt_slow,
                                         );
                                     } else if let Some(eng) = engine.as_ref() {
                                         eng.ask(
@@ -2058,6 +2272,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     );
                                 }
                                 "memory" => memory.set_enabled(next == "on"),
+                                "slow" => {
+                                    opt_slow = next.to_string();
+                                    if let Some(eng) = engine.as_ref() {
+                                        eng.set_option("slow", next);
+                                    }
+                                    let _ = Config::persist_key("engine", "slow", next);
+                                }
                                 "thinking" => {
                                     opt_thinking = next.to_string();
                                     if let Some(eng) = engine.as_ref() {
@@ -2087,6 +2308,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             if let Some(m) = menu.as_mut() {
                                 m.items = settings_items(
                                     commentary,
+                                    &opt_slow,
                                     &opt_thinking,
                                     opt_max_tokens,
                                     &memory,
@@ -2251,7 +2473,27 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         // exactly the kind of thing you say mid-
                         // conversation, and having to leave chat to do
                         // it would be the wrong seam.
-                        if let Some(rest) = text.strip_prefix('@') {
+                        if let Some(rest) = text.strip_prefix('?') {
+                            // Same selector as at the prompt, minus the
+                            // `#` we are already inside.
+                            let turn = next_sid;
+                            let out = ask_slow(
+                                rest.trim(),
+                                turn,
+                                engine.as_ref(),
+                                &opt_slow,
+                                &ctx_log,
+                                memory.context_block(),
+                                work.context_block(),
+                                work.cards_block(),
+                            );
+                            if let Some(c) = chat.as_mut() {
+                                c.lines.push(format!("? {}", rest.trim()));
+                                if let Some(msg) = out {
+                                    c.lines.push(format!("goulash: {msg}"));
+                                }
+                            }
+                        } else if let Some(rest) = text.strip_prefix('@') {
                             let out = at_command(
                                             rest,
                                             &mut work,
@@ -2277,6 +2519,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 opt_max_tokens,
                                 model_caps.as_ref(),
                                 &dbg,
+                                &opt_slow,
                             );
                             if let (Some(c), Some(msg)) = (chat.as_mut(), out) {
                                 c.lines.push(format!("goulash: {msg}"));
@@ -2373,6 +2616,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         {
                             m.items = settings_items(
                                 commentary,
+                                &opt_slow,
                                 &opt_thinking,
                                 opt_max_tokens,
                                 &memory,
@@ -2383,6 +2627,36 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     // A compression landed (or failed, in which case the
                     // pin quietly keeps its outline — which is exactly
                     // why the outline had to exist first).
+                    // A finding lands at its ORIGIN, never at the top of
+                    // the stack. If the user has moved on, they have
+                    // moved on — this is simply there when they browse
+                    // back, and nothing arriving late can seize
+                    // attention.
+                    engine::Event::Finding {
+                        turn,
+                        text,
+                        command,
+                        reasoning,
+                    } => {
+                        let finding = Finding {
+                            cmd: command,
+                            text,
+                            reasoning,
+                        };
+                        // The lineage never mutates under an active
+                        // selection: while the user is browsing, an
+                        // amendment would change the entry they are
+                        // reading. Hold it and land it on return to
+                        // neutral.
+                        if browse.is_some() || chat.as_ref().is_some_and(|c| c.sel.is_some()) {
+                            held_findings.push((turn, finding));
+                        } else {
+                            apply_finding(&mut sug_hist, turn, finding, &mut ctx_log);
+                        }
+                    }
+                    engine::Event::Researching(t) => {
+                        researching = t;
+                    }
                     engine::Event::Digest { id, text, card } => {
                         let applied = if card {
                             work.set_card(id, text)
@@ -2429,6 +2703,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     .as_ref()
                                     .and_then(|b| b.question.clone())
                                     .unwrap_or_default(),
+                                alt: None,
                             },
                         );
                         suggestions.insert(0, (id, cmd.clone(), "from # ask".to_string()));
@@ -2524,6 +2799,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         id,
                                         cmd: cmd.clone(),
                                         text: one_line.clone(),
+                                        alt: None,
                                     },
                                 );
                                 suggestions.insert(0, (id, cmd.clone(), why.to_string()));
@@ -2629,6 +2905,19 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         // a second — overwriting an intact bar with identical content is
         // invisible, so this costs nothing visually.
         if n == 0 {
+            // Focus released: land anything that arrived while the user
+            // was reading. Checked here rather than hooked into every
+            // place browsing can end — there are six of those, and a
+            // missed one would strand a finding forever.
+            if !held_findings.is_empty()
+                && browse.is_none()
+                && chat.as_ref().is_none_or(|c| c.sel.is_none())
+            {
+                for (turn, finding) in held_findings.drain(..) {
+                    apply_finding(&mut sug_hist, turn, finding, &mut ctx_log);
+                }
+                dirty = true;
+            }
             if dirty || paint_deferred {
                 let rows = compose_rows(
                     cfg,
@@ -2644,7 +2933,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     &menu,
                     &engine_model,
                     &chat,
-                    work.chrome_tag().as_deref(),
+                    chrome_tag(&work, researching).as_deref(),
                 );
                 if rows != last_rows {
                     // Same paint as redraw!, which also erases wherever

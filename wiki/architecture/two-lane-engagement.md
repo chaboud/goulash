@@ -1,8 +1,12 @@
 # Two-Lane Engagement: Fast Speaks, Slow Researches
 
-**Status: design. Nothing here is built.** The pieces it builds on —
-[`#@` working context](working-context.md), the digest tier, the
-[suggestion protocol](suggestion-vendors.md) — are.
+**Status: partly built.** Working: the [card](working-context.md), the
+`#@` pin browser, the `#?` / `?` grammar, the engagement ladder, cancel
+scoping, and the slow lane itself — research dispatched alongside a fast
+answer, findings amending the turn they came from, and the inset
+rendering. **Not built:** slow's tools (it currently reasons with the
+same context fast has, not with a toolset), lanes as separate model
+instances, Right-arrow descent, and the artifact cache.
 
 Today goulash has one engagement: you type `#`, a fast model answers from
 the [stable prefix](llm-engine.md), a command lands in the slot stack.

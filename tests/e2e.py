@@ -753,6 +753,140 @@ def test_chat_mode():
     srv.shutdown()
 
 
+def test_slow_lane():
+    print("#? researches; fast keeps the microphone (fake ollama):")
+    if not shutil.which("zsh"):
+        print("  [SKIP] zsh not installed")
+        return
+    import http.server
+    import threading
+
+    prompts = []
+
+    class FakeOllama(http.server.BaseHTTPRequestHandler):
+        def _send(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/api/tags":
+                self._send({"models": [{"name": "slowmodel", "size": 1}]})
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            req = json.loads(self.rfile.read(n) or b"{}")
+            if self.path == "/api/show":
+                self._send({"capabilities": show_caps(req.get("model", ""))})
+                return
+            if "prompt" not in req:
+                self._send({"done": True})
+                return
+            p = req["prompt"]
+            prompts.append(p)
+            if "Take your time and get this RIGHT" in p:
+                # The slow lane. Deliberately slower than the fast reply,
+                # so ordering is a fact rather than a race.
+                time.sleep(1.0)
+                self._send({"response":
+                            "CMD: find . -name '*.log' -mtime +7 -delete\n"
+                            "the researched way\n"
+                            "REASON: because BECAUSE-KEPT and not the naive one"})
+                return
+            # Match the Question: line, not the whole prompt -- the
+            # session log carries every earlier question, so a substring
+            # test answers the wrong turn.
+            q = ""
+            for line in p.splitlines():
+                if line.startswith("Question:"):
+                    q = line
+            if "why that one" in q:
+                self._send({"response": "WHY-ANSWERED\nCMD: true"})
+                return
+            if "anything" in q:
+                self._send({"response": "OFF-ANSWERED\nCMD: true"})
+                return
+            self._send({"response": "the quick way\nCMD: rm *.log"})
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeOllama)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write("[engine]\nprovider = \"ollama\"\n"
+                f"host = \"http://127.0.0.1:{port}\"\nstream = false\n"
+                "commentary = false\nslow = \"ingest\"\n")
+    proc, mfd = spawn(["zsh"], home=home)
+    time.sleep(1.5)
+
+    # #? asks BOTH: fast answers now and keeps the band; slow researches
+    # the same turn and amends it later.
+    os.write(mfd, b"#? how do i clear old logs\r")
+    out = read_until(mfd, rb"the quick way", 8.0)
+    check("fast answers a #? immediately", b"the quick way" in out, out[-300:])
+    check("fast's command is the one vended", b"rm \\*.log" in out or b"rm *.log" in out,
+          out[-300:])
+    check("both lanes got the question",
+          len([p for p in prompts if "clear old logs" in p]) == 2,
+          f"{len(prompts)} prompts")
+
+    # The finding lands on the turn it came from, not at the top.
+    time.sleep(2.0)
+    os.write(mfd, b"\x1b[B")          # Down: browse the turn
+    out = read_until(mfd, rb"researched", 5.0)
+    check("the researched finding insets under the turn",
+          b"researched" in out, out[-400:])
+    check("the finding wears its own colour",
+          b"\x1b[0;97;48;5;25m" in out, out[-400:])
+    os.write(mfd, b"\x1b[A")          # back to neutral
+    time.sleep(0.5)
+
+    # The reasoning is retained where fast can read it, since fast is the
+    # one who gets asked "why".
+    os.write(mfd, b"#why that one\r")
+    read_until(mfd, rb"WHY-ANSWERED", 8.0)
+    asked = [p for p in prompts if "why that one" in p]
+    check("the reasoning reaches fast's context",
+          asked and "BECAUSE-KEPT" in asked[-1], "")
+    check("the amendment is by reference, not a rewrite",
+          asked and "amends the suggestion above" in asked[-1], "")
+
+    # Turning slow off answers via fast and says so, rather than refusing.
+    os.write(mfd, b"#/settings\r")
+    read_until(mfd, rb"slow: ingest", 5.0)
+    os.write(mfd, b"\x1b[B")
+    time.sleep(0.3)
+    for _ in range(3):                # ingest -> volunteer -> manual -> off
+        os.write(mfd, b"\r")
+        time.sleep(0.4)
+    out = read_until(mfd, rb"slow: off", 4.0)
+    check("the engagement ladder cycles to off", b"slow: off" in out, out[-300:])
+    os.write(mfd, b"\x1b")
+    time.sleep(0.4)
+    before = len(prompts)
+    os.write(mfd, b"#? anything\r")
+    out = read_until(mfd, rb"OFF-ANSWERED", 8.0)
+    check("#? with slow off still answers", b"OFF-ANSWERED" in out, out[-300:])
+    check("...and says why it behaved like a #",
+          b"answered by fast" in out, out[-400:])
+    time.sleep(0.5)
+    check("...and does not dispatch research",
+          not any("Take your time" in p for p in prompts[before:]), "")
+
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+    srv.shutdown()
+
+
 def test_working_context():
     print("#@ pins files into the model's context (fake ollama):")
     if not shutil.which("zsh"):
@@ -1207,6 +1341,7 @@ def main():
         test_model_menu,
         test_model_capabilities,
         test_chat_mode,
+        test_slow_lane,
         test_working_context,
         test_memory,
         test_resize_hygiene,
