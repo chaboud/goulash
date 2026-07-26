@@ -115,6 +115,10 @@ discuss something, you reach a conclusion, and the last thing you say is
 also the thing that puts you back at your shell — rather than typing a
 final message, then separately hunting for the exit.
 
+This is **additive**: Esc and Ctrl-C still leave chat exactly as they
+always did. `##` with a payload is a convenience on top of the escapes,
+never a replacement for them.
+
 ### Bare `#?` asks for help without hardcoding help
 
 `?` reads as "help" to a lot of people, and that instinct should be
@@ -176,7 +180,17 @@ request for three answers later; it is usually a user changing their
 mind in public.
 
 So the default is **supersede**, the same shape as the existing ask
-coalescer: the newest `#?` wins and the previous one stops. The
+coalescer — fast already works recent-first, and `#?` inheriting that
+keeps one rule rather than two. The newest `#?` wins and the previous
+one stops.
+
+It does break chat lineage: a question you asked thirty seconds ago
+silently stops being answered. **Backfill abandoned** is therefore a
+setting of its own — an abandoned job can be picked up later and its
+finding amended into the turn it belonged to, which costs nothing in
+attention (an amendment for an old turn never intrudes) and costs
+compute for something nobody may look at. Same choice as stale work,
+same setting family. The
 alternative is **parallel**, for someone who really did want all of
 them, and either way **recent priority comes first**. A setting, at
 minimum in `#/debug` — and this is an *N* case, not a two-element one,
@@ -412,6 +426,14 @@ attention.
 The unfreeze points are the ones that already exist: edit, Enter,
 Ctrl-C, return to neutral. Nothing new to learn, nothing new to teach.
 
+### What slow may do when it arrives
+
+**Show up with a recommendation. That is the whole list.** No band, no
+prompt, no notification, no second voice — a command and a line, handed
+to fast, landing in a lineage. Every question about slow's reach has the
+same answer, and keeping it that short is what makes the rest of this
+page safe.
+
 ### Solo findings need no marker
 
 When fast has no command and slow does, the result is simply a turn with
@@ -441,24 +463,45 @@ the way brighter 26/33 would, and white-on-25 carries the contrast that
 orange gets from black text. Adjustable once it has been seen on a real
 terminal next to the orange.
 
-### Reaching the inset: deliberately unsettled
+### Reaching the alternative: two mechanics, both kept
 
-Depth-first-on-Down is the starting sketch, not a decision. It has an
-obvious cost — it puts a step between the user and "the turn before
-this one", on an axis whose whole appeal is that it is thoughtless.
+**Depth-first on Down.** The pair sits in the flat walk: Down steps into
+the alternative before moving on to the next turn. Simple, needs no new
+key, and costs something real — it puts a step between the user and "the
+turn before this one", on an axis whose whole appeal is being
+thoughtless.
 
-The alternative worth trying is **demote and indicate**: the pair
-collapses to one row with a marker, and the inset is reached
-sideways — Right from the end of the prompt, so the motion is *down,
-right to select*. Down keeps meaning "older", and the second dimension
-only exists where something was actually superseded.
+**Down for turns, Right to descend.** Down keeps meaning *older*, and
+Right descends into the researched alternative where one exists. The
+second dimension appears only where something was actually superseded,
+so the primary axis stays clean. Rendering: the alternative **overlays
+the dim question row, indented, in its own colour**, and the question
+truncates to a few characters and an ellipsis — it was not doing much
+work there anyway.
 
-Not worth sweating yet, for a concrete reason: the case that would
-justify the extra axis — *"I want the command from two turns ago, but in
-this directory"* — is **already served by the shell**. That is Up, Up.
-Goulash does not need to reinvent an affordance the user's fingers
-already have, and muscle memory is the thing being spent here. Build the
-simple version, live in it, and let the friction argue.
+Both stay on the table; the second is the one to try if we can pull it
+off. **Which of the pair is primary — the researched one on top, or
+fast's original — is also still open**, and probably only answerable by
+living with each.
+
+#### The hazard: Right is already spoken for
+
+A pulled suggestion is **text on the shell line, and the user can arrow
+around it and edit it**. Left and Right are ordinary cursor movement the
+moment anything is on the buffer — and browsing *is* pasting in the
+[Down-arrow protocol](../interaction/down-arrow-protocol.md), so there is
+always something there.
+
+This is the same shape as the gate problem Down already solved, and the
+same machinery answers it: the zsh adapter's wrapped `bracketed-paste`
+widget records **exactly** what goulash pasted. So Right can claim the
+gesture only when all three hold — the buffer is byte-identical to what
+goulash pasted, the cursor is at the end of it, and this slot actually
+has an alternative. One edited character and Right is a cursor key
+again, with no drift and no guessing.
+
+That narrow window is the whole reason this might work. It is also the
+reason it might not, and why the simpler mechanic stays.
 
 ## `#?` — the deliberate door, and it never blocks
 
@@ -588,25 +631,27 @@ Two consequences to accept knowingly:
 
 ## Open questions
 
-1. **Where does the retained reasoning surface?** [`##` chat](../interaction/chat-mode.md)
-   is the natural home, but a researched slot might want its own
-   expansion gesture.
-2. **How does a follow-up reach slow's transcript?** Fast decides — but
-   fast needs a handle to name, and slow needs its thread to still
-   exist. Threaded state is new; the session log is flat and
-   append-only.
-3. **Is a card per pin, or a card per pin *per question*?** The second
-   is better and destroys the cache.
-4. **Does a `cd` invalidate a finding in flight?** Suggestions clear on
-   cwd change today. Staleness-by-time is settled (abandon or lazy, a
-   setting); staleness-by-*place* may want the existing rule instead,
-   since a command researched for another directory is more likely to
-   be wrong than merely late.
-5. **Band contention.** Exactly one ask is ever in flight today. With
-   research running alongside an ordinary answer there are two things
-   and one band. Proposed but not ruled: the band always belongs to the
-   latest *interactive* turn, and research reports only in the chrome —
-   which keeps "never blocks" visible rather than merely asserted.
+1. **Which of a pair is primary** — the researched finding on top, or
+   fast's original? Probably only answerable by living with each.
+2. **Can Right actually be claimed?** The gate is narrow by
+   construction (unedited buffer, cursor at end, alternative exists).
+   Whether that window is wide enough to feel like an affordance rather
+   than a trick is a hands-on question.
+3. **How does a follow-up reach slow's transcript?** Fast decides — but
+   it needs a handle to name and slow needs its thread alive. Threaded
+   state is new; the session log is flat and append-only. A line verb
+   (`ASK-SLOW: <turn> <question>`) would match the existing protocol,
+   and transcripts could live exactly as long as their turn survives in
+   the slot history, which bounds them with machinery already present.
+4. **Is a card per pin, or a card per pin *per question*?** The second
+   is better and destroys the cache. A middle path worth trying first:
+   keep cards per-pin, but *choose which pins get carded* per question
+   by cheap keyword overlap — no model call, no cache churn.
+5. **Does a `cd` invalidate a finding in flight?** This may dissolve
+   rather than need a rule: amendments land at their **origin**, and
+   that turn happened in the old directory, so the finding is correct
+   where it sits. The cwd rule governs what is *current*; the lineage
+   keeps its own history. Worth confirming rather than assuming.
 
 Settled in conversation, recorded so they are not re-opened: `##?` is an
 ingress rather than a mode, and `##` from inside chat leaves *with* a
