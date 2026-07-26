@@ -80,3 +80,29 @@ user is **when there's a prompt and a blinky cursor**
 ([state machine](session-state-machine.md) PROMPT state). The status rows
 are the only channel allowed to update outside that moment — and they're
 display-only.
+
+## Known limitation: resize spray (partially fixed)
+
+Dragging a terminal window still sprays some fragments into the
+scrollback, though far less than before. Three causes were found and
+fixed (dev, 2026-07): band rows filled the terminal's last cell, so
+emulators flagged them soft-wrapped and reflowed them into extra lines
+on every width change; the band left stale copies behind on rows it
+vacated (now handed back by repainting from the vt100 mirror — never
+blank-erased, since the inner world only rebuilds at a prompt turn);
+and there was no debounce, so every SIGWINCH of a drag repainted into
+a terminal still mid-reflow.
+
+**What remains**: a vigorous drag still leaks fragments. The residue is
+inherent to painting absolute rows into a screen the emulator is
+concurrently reflowing — we write where the band *was* a moment ago.
+Options if it ever becomes intolerable:
+
+- **Full containment** (tmux-style): run the inner world on the
+  alternate screen and own every cell, repainting from our mirror.
+  Bulletproof, and a *lot* of machinery — plus it costs the native
+  scrollback that makes the overlay feel like a normal terminal. The
+  small elegance of the current approach is worth some spray.
+- **Suppress painting while a resize is in flight** and repaint once
+  the geometry has been stable for longer than the current 60 ms
+  settle. Cheap to try; trades a briefly-empty band for less residue.

@@ -234,10 +234,14 @@ Field-driven, roughly in order of leverage:
    tuning through the memory store, no weights involved.
    Two prerequisites: retention (so study has a bounded corpus rather
    than every byte since install), and **a real memory browser** —
-   `[id] text` in a bar row does not survive a study run that wants to
-   write dozens of slots. The [menu primitive](../interaction/settings-and-nav.md)
-   already exists; `#/memory` should become an instance of it, with
-   review/approve for machine-written entries.
+   `[id] text` crammed into a bar row is effectively unusable already
+   at 25 slots, and a study run writes far more than a human would
+   (which is why the cap goes to 50–100 with study). The
+   [menu primitive](../interaction/settings-and-nav.md) already
+   exists and works; **`#/memory` becomes an instance of it** —
+   scroll, type-to-filter, Enter to act — with review/approve for
+   machine-written entries. Cheap, independently useful, and the
+   natural next code task.
 
 ## Milestone 5 — memory hierarchy + watcher tier
 Rolling cleanup loop (local model if available) setting region markers;

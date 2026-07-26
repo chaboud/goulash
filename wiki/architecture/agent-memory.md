@@ -6,8 +6,12 @@
 model via `REMEMBER:`/`FORGET:` lines (a revision = both in one reply;
 forgets apply first so a full store can still be revised) and by the
 user via `#/memory add|delete|modify|find|limit`. The memory-bank tier,
-memory vendor, and promotion policy below remain backlog. Original
-design follows.
+memory vendor, and promotion policy below remain backlog. The slot
+count is sized for hand-curation; **`#/study` changes that** — a
+worker mining the transcripts writes far more than a human would, so
+the cap goes to 50–100 slots when it lands, together with a real
+memory browser to review what the machine wrote
+([build-plan](../product/build-plan.md)). Original design follows.
 
 Give goulash the ability to
 *decide to remember things* — the first durable, cross-session memory,
