@@ -81,6 +81,7 @@ mindmap
 ### Product
 - [product/positioning.md](product/positioning.md) — coach, not agent overlord
 - [product/build-plan.md](product/build-plan.md) — from wiki to working binary: MVP milestones
+- [product/state-of-play.md](product/state-of-play.md) — handoff notes: branch state, what's on `dev`, next tasks, field findings
 - [product/open-questions.md](product/open-questions.md) — unresolved design questions
 
 ### Meta
