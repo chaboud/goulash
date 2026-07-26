@@ -316,6 +316,25 @@ When slow finds nothing better there is no amendment and no pair. The
 turn stays single, which is what keeps the paired rendering rare enough
 to mean something.
 
+### Freeze-on-focus is now load-bearing
+
+**The lineage never mutates under an active selection.** If the user is
+focused — browsing the slot stack, or holding a selection in chat —
+everything freezes. Amendments queue and land only once control returns
+to the shell, and then they mutate *behind*.
+
+This is the existing [freeze-on-focus](../interaction/suggestion-list.md)
+rule, not a new one, but amend raises its stakes. Until now the freeze
+protected against *insertion*: a new suggestion arriving while you
+browsed would have shifted positions under your cursor. Amend introduces
+**in-place mutation of an entry you may be looking at**, which is worse —
+the thing you were reading becomes a different thing. Same rule, and now
+it is the only thing standing between a researcher and the user's
+attention.
+
+The unfreeze points are the ones that already exist: edit, Enter,
+Ctrl-C, return to neutral. Nothing new to learn, nothing new to teach.
+
 ### Rendering a pair
 
 - The researched command takes the chip, in the usual
@@ -332,6 +351,25 @@ blue. It recedes against the orange (208) instead of competing with it,
 the way brighter 26/33 would, and white-on-25 carries the contrast that
 orange gets from black text. Adjustable once it has been seen on a real
 terminal next to the orange.
+
+### Reaching the inset: deliberately unsettled
+
+Depth-first-on-Down is the starting sketch, not a decision. It has an
+obvious cost — it puts a step between the user and "the turn before
+this one", on an axis whose whole appeal is that it is thoughtless.
+
+The alternative worth trying is **demote and indicate**: the pair
+collapses to one row with a marker, and the inset is reached
+sideways — Right from the end of the prompt, so the motion is *down,
+right to select*. Down keeps meaning "older", and the second dimension
+only exists where something was actually superseded.
+
+Not worth sweating yet, for a concrete reason: the case that would
+justify the extra axis — *"I want the command from two turns ago, but in
+this directory"* — is **already served by the shell**. That is Up, Up.
+Goulash does not need to reinvent an affordance the user's fingers
+already have, and muscle memory is the thing being spent here. Build the
+simple version, live in it, and let the friction argue.
 
 ## `#?` — the deliberate door, and it never blocks
 
