@@ -315,6 +315,111 @@ handling classes; directive stays an explicit user act (`#@/directive`),
 which the model may *suggest* and never assume. One line of policy, and
 the injection story stays boring.
 
+## Slow's toolset
+
+**Not built.** Today slow is a *role* — same weights, four times the
+budget, no latency pressure — reasoning over the same context fast has.
+This is the shape the tools should take.
+
+### Line protocol, not function calling
+
+Small local models are bad at function calling and `gemma3` cannot do it
+at all — but they are fine at emitting `READ: ./deploy/run.md`. Every
+other capability in goulash already works this way (`CMD:`, `PIN:`,
+`REMEMBER:`), so tools reuse the same parser, the same
+instruct-with-a-floor discipline, and the same property that a model
+which ignores the contract simply produces nothing rather than
+crashing. It also keeps the toolset available on models that JSON
+function calling would exclude.
+
+### Two toolsets, because there are two jobs
+
+**Research** answers a question. **Ingest** builds something from a pin.
+They differ in the thing that matters — whether they write — so they are
+separate sets rather than one list with a dangerous half.
+
+#### Research: read to answer
+
+| Verb | Backed by |
+|---|---|
+| `READ: <path>` | `read_text` — binary refusal and the 512 KB cap for free |
+| `LIST: <dir>` | `WorkContext::candidates` |
+| `STAT: <path>` | the freshness check |
+| `FIND: <pattern>` | a bounded walk, the same shape as `collect` |
+
+All read-only, all performed by goulash rather than the shell. Worst
+case is a wasted read, which is what lets these run without an approval
+prompt in front of them.
+
+#### Ingest: read to build
+
+Triggered by `#@`, this is the loop that decides *what a pinned thing
+is* and *what to make of it*. It gets the research verbs plus:
+
+| Verb | Effect |
+|---|---|
+| `CLASS: <kind>` | declare the handling class — dataset, reference, runbook, code, wiki-material |
+| `CARD: <text>` | the few lines that ride beside the question |
+| `DIGEST: <text>` | the compression that rides in the prefix |
+| `WIKI: <name>` + body | an [LLM wiki](memory-hierarchy.md) page for this pin |
+| `NOTE: <text>` | a short durable note |
+| `DONE` | end the loop |
+
+`CARD` and `DIGEST` already exist as single-shot calls; folding them
+into the loop is what lets a model *read first, then write*, rather than
+compressing whatever it was handed.
+
+### Reads take paths. Writes take names.
+
+This is the whole security shape, and it is one line:
+
+> A read verb names a **path**. A write verb names an **artifact**.
+
+`WIKI: eero-setup` writes to a location goulash chooses —
+`.goulash/context/<content-hash>/eero-setup.md` — and there is no
+argument in which the model can express a destination. Not a relative
+path, not a traversal, not a symlink: the grammar has no slot for one.
+
+Reads can afford a path because the worst case is a wasted read. Writes
+cannot, so they are bounded by construction rather than by validation.
+Every artifact carries provenance (source path, content hash, model,
+timestamp), belongs to the pin that produced it, and is visible and
+deletable in the [pin browser](working-context.md#the-pin-browser) —
+which is why that browser had to exist before any of this.
+
+### Bounds, and the floor
+
+The loop is capped on **steps** and **wall clock** (`slow_max_steps`,
+`slow_max_secs`), reported when hit rather than silently truncated.
+`#?/cancel` and `#@/cancel` stop it. And the floor holds as everywhere:
+if the loop produces nothing usable, the pin still has its deterministic
+outline and card, so a failed ingest costs time and nothing else.
+
+### What this actually unlocks: tree ingest done properly
+
+Today a directory pin is walked and concatenated — crude, and capped at
+64 files because that is all a single prompt can survive. With the loop,
+a tree is read **file by file, by a model deciding what matters**, and
+what comes out is a wiki page rather than a truncated concatenation.
+That is the difference between "we pasted your repo" and "we read your
+repo", and it is the case the user described from the start: *`#@ take a
+look at ./images and we'll work with it`*.
+
+It is also the expensive case — dozens of model calls, possibly an hour
+— which is why checkpointing, the cancel verbs, and the chrome meter all
+exist ahead of it.
+
+### Then MCP
+
+The four-plus-five verbs above are deliberately the smallest set that
+tests whether a tool loop helps *at all* on a small local model. If a 4B
+model flails at three sequential reads, MCP is a much larger surface for
+the same failure — and the fix would be a bigger slow model, which loops
+back to [lanes](#lanes) genuinely needing separate instances.
+
+Once the loop is proven, MCP is the extension point, with the trust work
+below.
+
 ## Capabilities: principled interfaces, not a hand-rolled taxonomy
 
 Slow's reach is **MCP**, plus a skills engine, plus a VLM for images.
