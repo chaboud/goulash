@@ -103,17 +103,16 @@ Resolved rules, in priority order:
 3. **Edges visible** (rule 2 above): the bottom row of the menu shows
    the live keymap — `↑↓ move · type to filter · ⏎ select · esc back` —
    plus `n/M` match count and scroll arrows when the list overflows.
-4. **v1: the list scrolls under a fixed cursor, inside the fixed
-   area.** TV-menu style — the window stays the existing reserved rows,
-   the cursor row holds still, and the list moves beneath it with
-   `▲ n/M ▼` indicators. No winsize change at all: the menu opens
-   instantly, nothing reflows, and the hard-won fixed-height stability
-   is untouched. Type-to-filter makes a 2-3 row window genuinely
-   workable (fzf is usable at `--height=4`). Growing the band for a
-   deeper view stays on the table as an opt-in knob
-   (`[status] menu_rows`) — it's a *user-initiated* resize so the
-   no-resize rule permits it — but it costs a SIGWINCH + shell reflow
-   on every open/close, so it must earn its way in.
+4. **The list scrolls under a fixed cursor, and the area grows to
+   hold it.** TV-menu style — the cursor row holds still and the list
+   moves beneath it. The window itself opens to `[status] menu_rows`
+   item rows (**default 8**) when the terminal can spare them, and
+   hands the rows straight back on close. Two item rows is not a
+   browser; 8 is enough to see a model list or a memory store at a
+   glance without the overlay eating the terminal. The growth is
+   capped so the shell always keeps at least 10 rows, and it is
+   *user-initiated* and temporary, which is exactly what the
+   no-surprise-resize rule permits.
 5. **Never block the shell.** Menus that need a probe (`/api/tags`)
    open instantly with a `probing…` row and fill in async.
 6. **Multi-level = a stack of the same primitive.** `#/service` is just

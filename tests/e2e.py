@@ -459,6 +459,8 @@ def test_model_menu():
     os.write(mfd, b"#/model\r")
     out = read_until(mfd, rb"model \xe2\x96\xb8", 6.0)  # title chip "model ▸"
     check("menu opened", "model ▸".encode() in out, out[-300:])
+    # The area grows for the list: 24 rows - (rule + 8 items + chrome).
+    check("menu grows the area (inner 24->14)", b"\x1b[1;14r" in out, out[-300:])
     out = read_until(mfd, rb"auto", 5.0)
     check("auto is a first-class entry", b"auto" in out, out[-300:])
     time.sleep(0.4)
@@ -466,7 +468,9 @@ def test_model_menu():
     out = read_until(mfd, rb"1/1", 5.0)
     check("filter narrows to one", b"1/1" in out, out[-300:])
     os.write(mfd, b"\r")  # Enter commits + persists; engine rebinds + warms
-    out = read_until(mfd, rb"gemma3:4b ready", 6.0)
+    out = read_until(mfd, rb"\x1b\[1;20r", 4.0)
+    check("menu hands the rows back on close", b"\x1b[1;20r" in out, out[-300:])
+    out = read_until(mfd, rb"gemma3:4b ready", 6.0, out)
     check("commit rebinds and warms the engine",
           b"gemma3:4b ready" in out, out[-300:])
     time.sleep(0.5)

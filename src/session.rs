@@ -176,6 +176,10 @@ struct SugTurn {
 
 const SUG_HIST_CAP: usize = 50;
 
+/// Rows of shell the menu will never take: below this the overlay is
+/// eating the terminal rather than annotating it.
+const MENU_MIN_INNER: u16 = 10;
+
 /// The shared menu primitive (wiki: interaction/settings-and-nav.md):
 /// modal, type-to-filter (no per-item hotkeys), the list scrolling under
 /// a fixed cursor inside the fixed goulash area — no winsize change.
@@ -390,7 +394,6 @@ fn compose_rows(
     // scrollback during a drag-resize.
     let cols = (layout.real.cols as usize).saturating_sub(1);
     let reserved_now = cfg.reserved_rows();
-    let inner_now = layout.real.rows.saturating_sub(reserved_now).max(1);
     if cfg.status.band
         && menu.is_none()
         && let Some(c) = chat
@@ -470,10 +473,22 @@ fn compose_rows(
     if cfg.status.band
         && let Some(m) = menu
     {
-        // Modal menu: the list scrolls under a fixed cursor inside the
-        // fixed area (TV-menu style — no winsize change, nothing
-        // reflows). Rows: rule (title/filter + keymap), items, chrome.
-        let n_items = (cfg.status.band_rows.clamp(1, 4) + 1) as usize;
+        // Modal menu: the list still scrolls under a fixed cursor, but
+        // the area GROWS to hold a usable number of rows when the
+        // terminal can spare them — two item rows is not a browser.
+        // User-initiated, temporary, and it gives the rows straight
+        // back on close, so the no-surprise-resize rule is intact.
+        let base = cfg.status.band_rows.clamp(1, 4) + 1;
+        let want = cfg.status.menu_rows.clamp(2, 20);
+        // Never squeeze the shell below MENU_MIN_INNER rows: the inner
+        // world matters more than our list.
+        let room = layout
+            .real
+            .rows
+            .saturating_sub(reserved_now + MENU_MIN_INNER);
+        let n_items = want.min(base.saturating_add(room)).max(base) as usize;
+        let reserved = n_items as u16 + 2; // rule + items + chrome
+        let inner = layout.real.rows.saturating_sub(reserved).max(1);
         let filtered = m.filtered();
         let chip = format!(" {} \u{25b8} {}\u{258f} ", m.title, m.filter);
         // Feedback for in-menu actions has nowhere else to go: the rule
@@ -521,8 +536,8 @@ fn compose_rows(
         }
         rows.push(status::chrome_row(
             layout.real,
-            inner_now,
-            reserved_now,
+            inner,
+            reserved,
             shell_name,
             sense::label(st, hook),
         ));
