@@ -410,15 +410,22 @@ session log for cache stability — as far from the question as possible.
 Cache-optimal and attention-optimal point in opposite directions. The
 way out is to stop treating a pin as one blob:
 
-- **A card** — five to ten lines immediately before the question: what
-  this is, the three key invocations, the one constraint that makes
-  commands wrong. Cheap to re-emit at the tail, lands inside the SWA
-  window.
+- **A card** — a few lines immediately before the question: what this
+  is, the key invocations, the one constraint that makes commands wrong.
+  Cheap to re-emit at the tail, lands inside the SWA window.
 - **The bulk** — stays in the stable prefix, cache-warm, for detail.
 
 The card also gives classification something concrete to produce: "what
 kind of document is this" is vague, "write the card for this document"
 is a task a small model does well and a human can eyeball.
+
+**Built** — see [working-context](working-context.md). 400 characters
+shared across pins, newest first, with a deterministic floor (title plus
+the most invocation-like lines) so a card exists before any model
+answers. The remaining question is the one this was meant to settle, and
+only a real session can: **does the near-question card measurably beat
+the prefix-only digest?** If not, the SWA reasoning is wrong and the
+slow lane's whole premise needs re-examining.
 
 ## Budget, and the ceiling
 

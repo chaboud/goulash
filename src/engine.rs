@@ -31,16 +31,12 @@ pub enum Event {
         pins: Vec<String>,
         pinclear: bool,
     },
-    /// A pin's compressed form (None when the model gave nothing usable
-    /// — the pin keeps its outline).
+    /// A pin's compressed form, or its card (None when the model gave
+    /// nothing usable — the pin keeps its deterministic version).
     Digest {
         id: u64,
         text: Option<String>,
-    },
-    /// Background-ingest progress for the chrome meter.
-    Digesting {
-        done: usize,
-        total: usize,
+        card: bool,
     },
     Error(String),
     Models(Vec<String>),
@@ -69,19 +65,29 @@ pub enum Job {
         /// The `#@` working context block (context.rs), riding in the
         /// stable prefix next to memories.
         pinned: String,
+        /// Pin *cards* — a few lines per pin, emitted next to the
+        /// question instead of in the stable prefix (context.rs). The
+        /// prefix copy is cache-warm but far away; sliding-window models
+        /// attend to what is near, so the payload gets restated where it
+        /// will actually be read.
+        cards: String,
         proactive: bool,
         /// A `#@ <natural language>` request: the model is being asked
         /// to resolve a path and answer in PIN verbs, not to advise.
         pin_ask: bool,
     },
-    /// Background ingest: compress a pinned file to fit its budget
-    /// (context.rs). Always yields to interactive asks — a cook that
-    /// makes the user wait is worse than no cook.
+    /// Background ingest: compress a pinned file to fit its budget, or
+    /// write its card (context.rs). Always yields to interactive asks —
+    /// a cook that makes the user wait is worse than no cook.
     Digest {
         id: u64,
         label: String,
         source: String,
         target: usize,
+        /// A card is the same machinery aimed at a different position:
+        /// a handful of lines for next to the question, rather than a
+        /// compression for the stable prefix.
+        card: bool,
     },
     /// Abandon every queued digest (`#@/cancel`).
     CancelDigests,
@@ -113,12 +119,20 @@ impl Engine {
         })
     }
 
-    pub fn ask(&self, question: String, context: String, memories: String, pinned: String) {
+    pub fn ask(
+        &self,
+        question: String,
+        context: String,
+        memories: String,
+        pinned: String,
+        cards: String,
+    ) {
         let _ = self.job_tx.send(Job::Ask {
             question,
             context,
             memories,
             pinned,
+            cards,
             proactive: false,
             pin_ask: false,
         });
@@ -141,13 +155,20 @@ impl Engine {
             context: String::new(),
             memories: String::new(),
             pinned,
+            cards: String::new(),
             proactive: false,
             pin_ask: true,
         });
     }
 
     /// Unprompted per-turn review; coalescing lets a user ask supersede it.
-    pub fn ask_proactive(&self, context: String, memories: String, pinned: String) {
+    pub fn ask_proactive(
+        &self,
+        context: String,
+        memories: String,
+        pinned: String,
+        cards: String,
+    ) {
         let question = "Without being asked, briefly review the most recent \
                         command and its result — one short observation, \
                         tip, or wry aside is always welcome. Add a CMD: \
@@ -163,6 +184,7 @@ impl Engine {
             context,
             memories,
             pinned,
+            cards,
             proactive: true,
             pin_ask: false,
         });
@@ -186,12 +208,13 @@ impl Engine {
         let _ = self.job_tx.send(Job::ListModels);
     }
 
-    pub fn digest(&self, id: u64, label: String, source: String, target: usize) {
+    pub fn digest(&self, id: u64, label: String, source: String, target: usize, card: bool) {
         let _ = self.job_tx.send(Job::Digest {
             id,
             label,
             source,
             target,
+            card,
         });
     }
 
@@ -326,12 +349,15 @@ fn worker(
                     // Report every abandoned pin so the session can put
                     // their meters away.
                     for j in digest_queue.drain(..) {
-                        if let Job::Digest { id, .. } = j {
-                            let _ = ev.send(Event::Digest { id, text: None });
+                        if let Job::Digest { id, card, .. } = j {
+                            let _ = ev.send(Event::Digest {
+                                id,
+                                text: None,
+                                card,
+                            });
                         }
                     }
                     digest_total = 0;
-                    let _ = ev.send(Event::Digesting { done: 0, total: 0 });
                     notify(&wr);
                 }
                 Job::ListModels => match &state {
@@ -358,6 +384,7 @@ fn worker(
             context,
             memories,
             pinned,
+            cards,
             proactive,
             pin_ask,
         }) = latest_ask
@@ -372,8 +399,8 @@ fn worker(
             });
             notify(&wr);
             let result = generate(
-                &agent, &cfg, &caps, model, &question, &context, &memories, &pinned, &ev, &wr,
-                proactive, pin_ask,
+                &agent, &cfg, &caps, model, &question, &context, &memories, &pinned, &cards,
+                &ev, &wr, proactive, pin_ask,
             );
             let _ = ev.send(Event::Idle);
             let _ = match result {
@@ -459,12 +486,17 @@ fn run_one_digest(
         label,
         source,
         target,
+        card,
     }) = queue.pop_front()
     else {
         return;
     };
     let Some((model, _)) = state else {
-        let _ = ev.send(Event::Digest { id, text: None });
+        let _ = ev.send(Event::Digest {
+            id,
+            text: None,
+            card,
+        });
         notify(wr);
         return;
     };
@@ -473,14 +505,9 @@ fn run_one_digest(
         warm: false,
     });
     notify(wr);
-    let text = digest_once(agent, cfg, caps, model, &label, &source, target).ok();
+    let text = digest_once(agent, cfg, caps, model, &label, &source, target, card).ok();
     let _ = ev.send(Event::Idle);
-    let _ = ev.send(Event::Digest { id, text });
-    let done = total.saturating_sub(queue.len());
-    let _ = ev.send(Event::Digesting {
-        done,
-        total: if queue.is_empty() { 0 } else { *total },
-    });
+    let _ = ev.send(Event::Digest { id, text, card });
     if queue.is_empty() {
         *total = 0;
     }
@@ -490,6 +517,7 @@ fn run_one_digest(
 /// The compression call. No session log, no memories, no working
 /// context: a digest is a pure function of one document, which also
 /// means it never disturbs the prefix cache the asks depend on.
+#[allow(clippy::too_many_arguments)]
 fn digest_once(
     agent: &ureq::Agent,
     cfg: &EngineConfig,
@@ -498,21 +526,39 @@ fn digest_once(
     label: &str,
     source: &str,
     target: usize,
+    card: bool,
 ) -> Result<String, String> {
     // Characters in, tokens out: ~4 chars per token, with headroom so a
     // slightly long answer is still usable rather than cut mid-table.
     let budget = (target / 3).clamp(128, 2048);
-    let prompt = format!(
-        "Compress this reference document to under {target} characters, \
-         for another model to use when suggesting shell commands.\n\
-         KEEP: exact command names, flags, arguments, paths, env vars, \
-         file formats, and any rule or constraint that would make a \
-         command wrong.\nDROP: prose, rationale, history, examples that \
-         repeat a flag already listed.\nWrite terse lines, not \
-         paragraphs. No preamble, no closing remarks \u{2014} output only \
-         the compressed reference.\n\n=== {label} ===\n{source}\n=== end \
-         ===\nCompressed reference:"
-    );
+    // Two positions, two jobs. The digest replaces a document in the
+    // stable prefix and wants completeness within its budget. The card
+    // sits next to the question and wants the two or three things you
+    // would tell someone in a corridor — completeness there is a waste
+    // of the only tokens a sliding-window model reliably attends to.
+    let prompt = if card {
+        format!(
+            "Write a {target}-character crib for this reference, to sit \
+             next to a question as a reminder. ONE line saying what the \
+             tool is, then at most three of its most useful exact \
+             invocations, then any single rule that would make a command \
+             wrong. Nothing else \u{2014} no preamble, no prose, no \
+             closing remark.\n\n=== {label} ===\n{source}\n=== end \
+             ===\nCrib:"
+        )
+    } else {
+        format!(
+            "Compress this reference document to under {target} characters, \
+             for another model to use when suggesting shell commands.\n\
+             KEEP: exact command names, flags, arguments, paths, env vars, \
+             file formats, and any rule or constraint that would make a \
+             command wrong.\nDROP: prose, rationale, history, examples that \
+             repeat a flag already listed.\nWrite terse lines, not \
+             paragraphs. No preamble, no closing remarks \u{2014} output only \
+             the compressed reference.\n\n=== {label} ===\n{source}\n=== end \
+             ===\nCompressed reference:"
+        )
+    };
     let mut body = serde_json::json!({
         "model": model,
         "prompt": prompt,
@@ -720,6 +766,7 @@ fn generate(
     context: &str,
     memories: &str,
     pinned: &str,
+    cards: &str,
     ev: &mpsc::Sender<Event>,
     wr: &OwnedFd,
     proactive: bool,
@@ -764,9 +811,13 @@ fn generate(
     // Stable-prefix order, most stable first: preamble, memories,
     // working context, session log. A pin changes far less often than
     // the log, so it belongs above it in the prefix.
+    // ...and the cards ride at the very end, with the question. That
+    // position is re-prefilled on every ask, which is exactly why they
+    // are kept to a few hundred characters — and it is the only place a
+    // pin lands inside a sliding-window model's attention.
     let prompt = format!(
         "{PREAMBLE}{memories}{pinned}Session log (oldest first):\n{context}\n\
-         Current local time: {}\nQuestion: {question}\n{directive}\nAnswer:",
+         Current local time: {}\n{cards}Question: {question}\n{directive}\nAnswer:",
         local_now()
     );
     // Reasoning models (qwen3+, deepseek-r1) otherwise spend the entire

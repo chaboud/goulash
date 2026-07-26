@@ -1115,7 +1115,13 @@ fn kick_digests(
         return;
     };
     for (id, label, source, target) in work.digest_wanted() {
-        eng.digest(id, label, source, target);
+        eng.digest(id, label, source, target, false);
+    }
+    // Every pin wants a card, not only the oversized ones: even a small
+    // file benefits from having its key lines restated where a
+    // sliding-window model will actually attend to them.
+    for (id, label, source, target) in work.card_wanted() {
+        eng.digest(id, label, source, target, true);
     }
 }
 
@@ -1623,6 +1629,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 ctx_log.clone(),
                                                 memory.context_block(),
                                                 work.context_block(),
+                                            work.cards_block(),
                                             );
                                         }
                                     }
@@ -1660,6 +1667,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 ctx_log.clone(),
                                                 memory.context_block(),
                                                 work.context_block(),
+                                            work.cards_block(),
                                             );
                                             ctx_log.push_str(&format!(
                                                 "# {} [asked {}]\n",
@@ -1704,6 +1712,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             ctx_log.clone(),
                                             memory.context_block(),
                                             work.context_block(),
+                                        work.cards_block(),
                                         );
                                         ctx_log.push_str(&format!(
                                             "# {} [asked {}]\n",
@@ -2198,6 +2207,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 ctx_log.clone(),
                                 memory.context_block(),
                                 work.context_block(),
+                            work.cards_block(),
                             );
                             ctx_log.push_str(&format!("# {} [asked {}]\n", text, engine::hms()));
                         } else if let Some(c) = chat.as_mut() {
@@ -2290,17 +2300,21 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     // A compression landed (or failed, in which case the
                     // pin quietly keeps its outline — which is exactly
                     // why the outline had to exist first).
-                    engine::Event::Digest { id, text } => {
-                        if let Some(msg) = work.set_digest(id, text) {
+                    engine::Event::Digest { id, text, card } => {
+                        let applied = if card {
+                            work.set_card(id, text)
+                        } else {
+                            work.set_digest(id, text)
+                        };
+                        // A card landing is not worth a notice: it is a
+                        // quiet improvement to a pin that was already
+                        // working. A digest changes what the model sees
+                        // enough to say so.
+                        if let Some(msg) = applied
+                            && !card
+                        {
                             notice = Some(msg);
                         }
-                    }
-                    engine::Event::Digesting { done, total } => {
-                        notice = if total > 0 {
-                            Some(format!("@ digesting {done}/{total} \u{2026}"))
-                        } else {
-                            None
-                        };
                     }
                     engine::Event::Partial(text) => {
                         if let Some(c) = chat.as_mut() {

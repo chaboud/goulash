@@ -781,6 +781,15 @@ def test_working_context():
                 return
             p = req["prompt"]
             prompts.append(p)
+            if "crib for this reference" in p:
+                # The card call, once per pin. Only commandRef.md needs a
+                # meaningful answer; the others just have to not crash.
+                if "commandRef.md" in p:
+                    assert "widgetctl" in p, "card source lost the tool"
+                    self._send({"response": "widgetctl: `widgetctl sync --all`  # CARDED"})
+                else:
+                    self._send({"response": "a crib"})
+                return
             if "Compress this reference document" in p:
                 # The background ingest call. Prove it was handed the
                 # OUTLINE (commands kept, prose already dropped), then
@@ -843,6 +852,20 @@ def test_working_context():
     check("pin rides the stable prefix, above the session log",
           asked and asked[-1].index("Working context") < asked[-1].index("Session log"),
           "")
+    # The card is the SECOND emission: a few lines next to the question,
+    # where a sliding-window model actually attends. Cache-warm prefix
+    # copy above, cheap restatement below.
+    check("a card rides next to the question",
+          asked and "Pinned right now" in asked[-1], "")
+    check("the card is below the session log, beside the question",
+          asked and asked[-1].index("Pinned right now") > asked[-1].index("Session log")
+          and asked[-1].index("Pinned right now") < asked[-1].index("how do i sync"),
+          "")
+    check("the card kept the command",
+          asked and "widgetctl sync --all" in
+          asked[-1][asked[-1].index("Pinned right now"):], "")
+    check("a written card replaces the deterministic one",
+          asked and "CARDED" in asked[-1], "")
 
     # The mediated form: words in, PIN verb out, goulash does the read.
     os.write(mfd, b"#@ can you use the other markdown instead\r")

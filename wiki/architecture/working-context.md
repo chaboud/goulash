@@ -95,6 +95,34 @@ The stable prefix is the KV-cache asset; a fat pin destroys the
 latency work. So ingest is **compaction, not concatenation**, chosen by
 size against a hard `context_files_max_chars` budget:
 
+Two *positions*, then three *tiers* within the larger one.
+
+### The card: the same pin, said again where it will be read
+
+A pin lands twice. The bulk sits in the stable prefix, cache-warm and
+far from the question. A **card** — a handful of lines, sharing a 400
+character budget across all pins — is emitted in the volatile suffix,
+immediately before the question.
+
+That second position is re-prefilled on every ask, which is exactly why
+it is kept tiny, and it is the only place a pin reliably lands inside a
+sliding-window model's attention. Cache-optimal (early, stable) and
+attention-optimal (late, near) point in opposite directions; the card is
+how a pin gets both instead of choosing.
+
+Cards are **newest-pin-first until the budget runs out**. A pin the user
+just made is what they are working on; one from twenty minutes ago is
+background, and background is already sitting in the prefix.
+
+Like the digest, a card has a deterministic floor — the document's title
+plus the lines that most resemble invocations — so it exists the instant
+a pin does, with no engine bound. A written card replaces it when one
+lands. Unlike the digest, **every pin wants a card regardless of size**:
+even a small file benefits from having its three key lines restated next
+to the question.
+
+### Tiers, within the prefix copy
+
 | Tier | When | What lands in the prompt |
 |---|---|---|
 | **Verbatim** | fits its share | the text as-is |

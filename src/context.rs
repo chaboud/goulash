@@ -32,6 +32,22 @@ const DIGEST_SOURCE_CAP: usize = 12_000;
 /// ignores the target length would otherwise be re-asked on every emit.
 const MAX_DIGEST_ATTEMPTS: u8 = 2;
 
+/// Total characters all **cards** together may spend, across every pin.
+///
+/// The card rides in the *volatile suffix*, right next to the question,
+/// which is the only place a pin lands inside a sliding-window model's
+/// attention. That position is re-sent on every ask and re-prefilled
+/// every time, so it has to stay tiny — a few hundred characters is
+/// noise against the prompt, five pins' worth of full digests is not.
+/// (wiki: architecture/two-lane-engagement.md)
+const CARD_BUDGET: usize = 400;
+
+/// Per-card ceiling, so one verbose pin cannot eat the whole budget.
+const CARD_MAX: usize = 240;
+
+/// Card attempts per pin, same reasoning as MAX_DIGEST_ATTEMPTS.
+const MAX_CARD_ATTEMPTS: u8 = 2;
+
 /// Directory walk limits. A tree pin is a convenience, not a crawler.
 const WALK_MAX_FILES: usize = 64;
 const WALK_MAX_DEPTH: usize = 3;
@@ -91,13 +107,20 @@ pub struct Pin {
     /// instead of dropping it — but it costs a model call, so it arrives
     /// asynchronously behind a deterministic first pass.
     pub digest: Option<String>,
-    /// A digest has been asked for and has not come back. Drives the
-    /// chrome meter, and stops us asking twice.
+    /// The card: a handful of lines that ride next to the question
+    /// rather than in the stable prefix. None until one is written; the
+    /// deterministic fallback is computed on demand, so a pin always has
+    /// a card even with no engine bound.
+    pub card: Option<String>,
+    /// A digest or card has been asked for and has not come back. Drives
+    /// the chrome meter, and stops us asking twice.
     pub cooking: bool,
+    pub card_cooking: bool,
     /// Digest attempts spent. A model that ignores the target would
     /// otherwise be re-asked forever, since the trigger is "the digest
     /// still doesn't fit".
     attempts: u8,
+    card_attempts: u8,
     /// The file changed under us. Goulash does not watch the filesystem
     /// and pounce — this is a marker, and re-cooking is the user's call.
     pub dirty: bool,
@@ -118,6 +141,17 @@ impl Pin {
             return (Tier::Digest, d.clone());
         }
         (Tier::Outline, outline(&self.raw, share))
+    }
+
+    /// The few lines that ride next to the question. Written by a model
+    /// when one has answered; otherwise pulled out of the text
+    /// deterministically, so a card exists from the instant a pin does.
+    pub fn card_text(&self, budget: usize) -> String {
+        let budget = budget.min(CARD_MAX);
+        match &self.card {
+            Some(c) if c.chars().count() <= budget => c.clone(),
+            _ => deterministic_card(&self.raw, budget),
+        }
     }
 
     /// What to hand the model to compress. **Not** the raw text — that
@@ -196,8 +230,11 @@ impl WorkContext {
             mtime: mtime_of(&meta),
             raw,
             digest: None,
+            card: None,
             cooking: false,
+            card_cooking: false,
             attempts: 0,
+            card_attempts: 0,
             dirty: false,
         });
         let (tier, _) = self.pins.last().unwrap().emit(self.share());
@@ -306,11 +343,13 @@ impl WorkContext {
     pub fn cancel_cooking(&mut self) -> usize {
         let mut n = 0;
         for pin in &mut self.pins {
-            if pin.cooking {
+            if pin.cooking || pin.card_cooking {
                 pin.cooking = false;
+                pin.card_cooking = false;
                 // A cancel is a decision, not a failure: don't spend the
                 // attempt, but don't immediately re-queue it either.
                 pin.attempts = MAX_DIGEST_ATTEMPTS;
+                pin.card_attempts = MAX_CARD_ATTEMPTS;
                 n += 1;
             }
         }
@@ -318,7 +357,71 @@ impl WorkContext {
     }
 
     pub fn cooking_count(&self) -> usize {
-        self.pins.iter().filter(|p| p.cooking).count()
+        self.pins
+            .iter()
+            .filter(|p| p.cooking || p.card_cooking)
+            .count()
+    }
+
+    /// The near-question block: a card per pin, newest first, until the
+    /// budget runs out.
+    ///
+    /// Newest-first is the whole ranking. A pin the user just made is
+    /// what they are working on; one from twenty minutes ago is
+    /// background, and background belongs in the stable prefix where it
+    /// is already sitting. Nothing here replaces the prefix copy — this
+    /// is a second, much smaller emission at a position the model
+    /// actually attends to.
+    pub fn cards_block(&self) -> String {
+        if self.pins.is_empty() {
+            return String::new();
+        }
+        let mut left = CARD_BUDGET;
+        let mut body = String::new();
+        for pin in self.pins.iter().rev() {
+            if left == 0 {
+                break;
+            }
+            let card = pin.card_text(left);
+            if card.trim().is_empty() {
+                continue;
+            }
+            body.push_str(&format!("@{}:\n{}", pin.label, card));
+            left = left.saturating_sub(card.chars().count());
+        }
+        if body.trim().is_empty() {
+            return String::new();
+        }
+        format!("Pinned right now (full text is above):\n{body}\n")
+    }
+
+    /// Pins wanting a card written. Every pin wants one — unlike a
+    /// digest, this is not conditional on size, because even a small
+    /// file benefits from having its three key lines restated next to
+    /// the question.
+    pub fn card_wanted(&mut self) -> Vec<(u64, String, String, usize)> {
+        let mut out = Vec::new();
+        for pin in &mut self.pins {
+            if pin.card.is_none() && !pin.card_cooking && pin.card_attempts < MAX_CARD_ATTEMPTS {
+                pin.card_cooking = true;
+                pin.card_attempts += 1;
+                out.push((
+                    pin.id,
+                    pin.label.clone(),
+                    pin.digest_source(CARD_MAX),
+                    CARD_MAX,
+                ));
+            }
+        }
+        out
+    }
+
+    pub fn set_card(&mut self, id: u64, text: Option<String>) -> Option<String> {
+        let pin = self.pins.iter_mut().find(|p| p.id == id)?;
+        pin.card_cooking = false;
+        let text = text.filter(|t| !t.trim().is_empty())?;
+        pin.card = Some(text.chars().take(CARD_MAX).collect());
+        Some(format!("@ {} carded", pin.label))
     }
 
     /// The chrome marker: the active `@` at a glance, `+N` for the rest,
@@ -469,6 +572,41 @@ fn collect(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
+}
+
+/// The card, without a model: the document's own title, then the lines
+/// that look most like invocations. Crude next to a written card, and
+/// it has the two properties that matter — instant, and never absent.
+fn deterministic_card(text: &str, budget: usize) -> String {
+    let mut out = String::new();
+    let push = |line: &str, out: &mut String| -> bool {
+        let line = line.trim();
+        if line.is_empty() || out.chars().count() + line.chars().count() + 1 > budget {
+            return false;
+        }
+        out.push_str(line);
+        out.push('\n');
+        true
+    };
+    // The title, if the document has one.
+    if let Some(h) = text.lines().find(|l| l.trim_start().starts_with('#')) {
+        push(h, &mut out);
+    }
+    // Then whatever most resembles a command: fenced lines, `backticks`,
+    // and flag-bearing lines, in document order.
+    let mut in_fence = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        let command_ish = in_fence || t.starts_with('$') || t.contains('`') || t.contains(" --");
+        if command_ish && !push(line, &mut out) {
+            break;
+        }
+    }
+    out
 }
 
 /// Structure-preserving compression: keep the parts of a document that
@@ -758,6 +896,79 @@ mod tests {
         wc.set_digest(want[1].0, Some("short".into()));
         let tag = wc.chrome_tag().unwrap();
         assert!(!tag.contains('%'), "meter collapses when done: {tag}");
+    }
+
+    /// A card exists from the instant a pin does — no engine required.
+    /// That is the property the whole two-position scheme rests on.
+    #[test]
+    fn a_card_exists_before_any_model_answers() {
+        let d = tmpdir("card");
+        let f = d.join("commandRef.md");
+        std::fs::write(
+            &f,
+            "# widgetctl\n\nSome explanation nobody needs.\n\n\
+             Run `widgetctl sync --all` to sync.\n\
+             Use `widgetctl purge --force` carefully.\n",
+        )
+        .unwrap();
+        let mut wc = WorkContext::new(4000);
+        wc.pin(&f).unwrap();
+        let block = wc.cards_block();
+        assert!(block.contains("# widgetctl"), "title kept: {block}");
+        assert!(block.contains("widgetctl sync --all"), "{block}");
+        assert!(!block.contains("nobody needs"), "prose dropped: {block}");
+        assert!(block.contains("@commandRef.md"), "labelled: {block}");
+    }
+
+    #[test]
+    fn a_written_card_replaces_the_deterministic_one() {
+        let d = tmpdir("card2");
+        let f = d.join("ref.md");
+        std::fs::write(&f, "# tool\n\n`tool run`\n").unwrap();
+        let mut wc = WorkContext::new(4000);
+        wc.pin(&f).unwrap();
+        let want = wc.card_wanted();
+        assert_eq!(want.len(), 1, "every pin wants a card, not just big ones");
+        assert!(wc.card_wanted().is_empty(), "asked once, not twice");
+        wc.set_card(want[0].0, Some("tool: `tool run --now`".into()));
+        assert!(wc.cards_block().contains("--now"));
+        // Failure keeps the floor.
+        let mut wc2 = WorkContext::new(4000);
+        wc2.pin(&f).unwrap();
+        let w2 = wc2.card_wanted();
+        wc2.set_card(w2[0].0, None);
+        assert!(wc2.cards_block().contains("tool run"), "floor survives");
+    }
+
+    /// The card's whole justification is that it is cheap enough to sit
+    /// in the re-prefilled suffix. Several pins must not undo that.
+    #[test]
+    fn cards_share_one_small_budget_newest_first() {
+        let d = tmpdir("card3");
+        let mut wc = WorkContext::new(40_000);
+        for i in 0..6 {
+            let f = d.join(format!("ref{i}.md"));
+            std::fs::write(&f, format!("# tool{i}\n\n`tool{i} run --flag-{i}`\n")).unwrap();
+            wc.pin(&f).unwrap();
+        }
+        let block = wc.cards_block();
+        assert!(
+            block.chars().count() <= CARD_BUDGET + 120,
+            "cards blew the budget: {} chars",
+            block.chars().count()
+        );
+        // Newest first: the pin the user just made is the one they are
+        // working on.
+        assert!(block.contains("tool5"), "newest pin carded: {block}");
+        let p5 = block.find("tool5").unwrap();
+        let p4 = block.find("tool4").unwrap_or(usize::MAX);
+        assert!(p5 < p4, "newest should come first: {block}");
+    }
+
+    #[test]
+    fn no_pins_means_no_card_block_at_all() {
+        let wc = WorkContext::new(4000);
+        assert!(wc.cards_block().is_empty());
     }
 
     #[test]
