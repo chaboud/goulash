@@ -199,14 +199,16 @@ Field-driven, roughly in order of leverage:
    vending fix), and teach `split_answer` both orders so old logs and
    stubborn models still parse. Knob first (`command_first`), default
    once proven.
-3. **Thinking level.** `think:false` is currently hardcoded, from the
-   milestone where reasoning models spent the whole budget invisibly.
-   Make it a dial — `[engine] thinking = off|low|medium|high` plus
-   `#/thinking` — mapping to each provider's field. Two conditions
-   attached: a raised thinking level must raise (or separately
-   account) the token budget, and thinking must be *visible* while it
-   burns time, either as a state label or a dim live line from
-   ollama's separate `thinking` field.
+3. **Thinking level, and a *response-size* budget.** `think:false` is
+   currently hardcoded, from the milestone where reasoning models
+   spent the whole budget invisibly. Make it a dial — `[engine]
+   thinking = off|low|medium|high` plus `#/thinking`. The budget has
+   to split with it: what the user actually cares about is **response
+   size** (what lands in the band), while thinking is masked spend on
+   the same `num_predict` meter. So account them separately —
+   `response_tokens` as the visible contract, a thinking allowance on
+   top — and make thinking *visible* while it burns time (state label,
+   or a dim live line from ollama's separate `thinking` field).
 4. **`--help` worth reading, and `--config`.** Sectioned help (the
    `#` / `##` / `#/` surfaces, config path, key table with defaults),
    plus a `git config`-style CLI: `--config print` (effective values
@@ -219,6 +221,13 @@ Field-driven, roughly in order of leverage:
    chrome indicator and an ingest meter:
    [working-context](../architecture/working-context.md). Design
    session before code.
+6. **Transcript retention.** `~/.goulash/history/session-*.jsonl` is
+   written forever and pruned never — with `record.output` on
+   (default) that is every byte the terminal ever printed. Needs a
+   retention policy (age and/or total-size cap, pruned at startup),
+   and probably a `#/history` surface, since those files are also the
+   only durable record of past conversations: the in-session chat
+   context (`ctx_log`) is memory-only and dies with the shell.
 
 ## Milestone 5 — memory hierarchy + watcher tier
 Rolling cleanup loop (local model if available) setting region markers;

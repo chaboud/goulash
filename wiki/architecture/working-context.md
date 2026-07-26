@@ -14,6 +14,29 @@ whatever the user says matters right now.
 #@ drop 2                 unpin
 ```
 
+## `#@` is LLM-mediated, not a path parser
+
+A literal path resolves directly (fast path, no model call). Anything
+else is **handed to the model**, which decides what to do with it:
+
+```
+#@ eero.md                                        → pin that file
+#@ can we reference the synology guide in my ~/?  → find it, pin it
+#@ let's stop using this @ and go back to blank   → clear the pins
+```
+
+The model answers in the same line protocol that already carries
+`CMD:`/`REMEMBER:` — `PIN: <path>`, `UNPIN: <id>`, `PINCLEAR` — and the
+[chrome](status-rows.md) reports **what it chose**, which doubles as
+the audit trail. Resolution needs candidates, so the model gets a
+cheap directory listing to work from.
+
+**The capability granted is read-only, and goulash performs it, not
+the shell**: list a directory, read a file. No execution, ever — the
+model never gets a shell, and a mis-resolved pin costs a wasted read,
+not a side effect. That is the whole reason this can be
+natural-language without an approval prompt in front of it.
+
 ## Why it's the highest-leverage feature on the list
 
 The killer case is **a vendor-authored command guide**: drop a
@@ -62,6 +85,25 @@ pin registers immediately with an `ingesting …` marker, the session
 stays responsive, and the digest swaps in when it lands. Never block a
 prompt turn on an ingest.
 
+### Partial or atomic? Both — split by cache position
+
+An ask that arrives mid-cook should get the best context available,
+but a digest that dribbles into the **stable prefix** re-prefills the
+whole prompt on every update, and [prefill is the devil](llm-engine.md).
+So the cook is staged:
+
+- **While cooking**, whatever is ready lives in the *volatile suffix*,
+  after the stable prefix. An ask mid-cook sees the partial and pays
+  prefill only for the tail — the "information on the table" model,
+  without the cache thrash.
+- **On completion**, it promotes into the prefix **atomically**, in one
+  epoch. Exactly one cache invalidation per ingest, whatever the file
+  size.
+
+A re-cook (file changed) is just another live ingest: meter shows, old
+digest keeps serving from the prefix, new one promotes atomically when
+done.
+
 ## Freshness
 
 Cheap `stat` per ask; on mtime/size change, re-ingest in the background
@@ -71,20 +113,26 @@ path + mtime + size, so re-pinning across sessions is free.
 
 ## Hazards to settle before writing code
 
-- **Secret sweeping.** A directory pin can inhale `.env`, keys, history
-  files. Needs a skip list, `.gitignore` respect, a size/count cap, and
-  a *visible* list of what was actually ingested — the
-  [privacy invariant](block-history.md) is about typed input; this is a
-  new exposure surface and deserves its own rule.
-- **Cloud egress.** With a local engine a pin never leaves the machine.
-  With a metered/remote provider it does, on every ask. That asymmetry
-  should be explicit at pin time, not buried.
-- **Budget sharing.** Working context + [memories](agent-memory.md) +
-  session log all compete for the same prefix. One accounting, one
-  visible number (`#/status`), and a defined eviction order.
-- **Epoch churn.** Every re-ingest invalidates the prefix cache. Batch
-  and debounce; a file being edited in another pane must not re-cook
-  the prompt on every save.
+- **Secrets: the rule is egress, not content.** On a local engine,
+  reading a file with credentials in it is not a leak — it is the
+  point. "*# can we put my AWS keys in this command?*" is a feature,
+  and filtering it would be paternalistic nonsense on your own
+  machine. So: **local provider → no content filtering**; remote or
+  metered provider → skip-list + explicit confirm, because that is
+  where a pin actually leaves the building, on every ask. The property
+  that matters belongs to the provider, not the file.
+- **Budget shares, not one pot.** Working context +
+  [memories](agent-memory.md) + session log compete for the same
+  prefix, so each gets a percentage of a total derived from `num_ctx`,
+  with a defined eviction order when over: **session log trims first**
+  (it is the most regenerable), then working context degrades a tier
+  (verbatim → digest → outline), and **memories evict last** — they
+  are the smallest and the most deliberately curated. Shares and the
+  live totals visible in `#/status`.
+- **Epoch churn.** Every promotion invalidates the prefix cache. The
+  staged cook above bounds it to one epoch per ingest; a file being
+  saved repeatedly in another pane still needs debouncing so an editor
+  on autosave cannot re-cook the prompt continuously.
 
 ## Open questions (for the design session)
 
