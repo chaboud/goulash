@@ -10,6 +10,16 @@ pub struct Config {
     pub record: RecordConfig,
     pub shell: ShellConfig,
     pub engine: EngineConfig,
+    /// Per-model capability overrides, keyed by model name (with or
+    /// without the `:tag`) — the escape hatch for a model that shipped
+    /// after goulash's table did. See models.rs.
+    ///
+    /// ```toml
+    /// [models."gpt-oss:20b"]
+    /// thinking = "levels"       # none | bool | levels
+    /// reasoning_tokens = 2048
+    /// ```
+    pub models: crate::models::Overrides,
 }
 
 #[derive(Debug, Clone, Deserialize)]

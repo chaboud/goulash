@@ -217,17 +217,19 @@ Field-driven, roughly in order of leverage:
    `--config` walkthrough for first run. Hard constraint: goulash is
    zero-setup and stays that way — the walkthrough is offered, never
    required, and never blocks a shell from starting.
-5. **Per-model capability schema.** Field-proven gap: thinking is not
-   one dial across models. gemma3n rejects it outright; gpt-oss takes
-   `low|medium|high` but will spend an entire budget reasoning and
-   return an empty response; qwen3 uses a boolean. A single
-   `[engine] thinking` value cannot be right for all of them, so
-   goulash needs a small **model schema** — what a model accepts, and
-   what budget its reasoning realistically needs — keyed by name with
-   family fallbacks (`gpt-oss*`, `qwen3*`, `gemma*`) and an escape
-   hatch in config. Until it exists, an empty answer cannot be
-   diagnosed precisely: goulash cannot tell "ignored the level" from
-   "burned the budget", and says so.
+5. ~~**Per-model capability schema.**~~ **Built** —
+   [model-capabilities](../architecture/model-capabilities.md).
+   Field-proven gap: thinking is not one dial across models. gemma3n
+   rejects it outright; gpt-oss takes `low|medium|high` but will spend
+   an entire budget reasoning and return an empty response; qwen3 uses
+   a boolean. `src/models.rs` now resolves each bound model from three
+   sources in increasing authority — a longest-prefix family table
+   (which alone knows the *dialect* and the realistic reasoning cost),
+   ollama's `/api/show` capability list, and a `[models."name"]`
+   override. A non-reasoner is sent no `think` field at all (some
+   providers reject rather than ignore it), the allowance is sized per
+   model, the UI annotates what the dial will actually do, and an empty
+   answer now names one cause instead of two.
 6. **Text-entry settings.** `#/settings` cycles through preset values,
    which is wrong for numbers — `max_tokens` wants a typed figure, not
    a four-stop carousel. The memory browser's compose field already

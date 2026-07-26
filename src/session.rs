@@ -768,6 +768,7 @@ fn slash_command(
     menu: &mut Option<Menu>,
     thinking: &mut String,
     max_tokens: usize,
+    caps: Option<&crate::models::Caps>,
 ) -> Option<String> {
     let mut it = cmdline.splitn(2, char::is_whitespace);
     let cmd = it.next().unwrap_or("");
@@ -856,7 +857,9 @@ fn slash_command(
                         eng.set_option("thinking", level);
                         *thinking = level.to_string();
                         let _ = Config::persist_key("engine", "thinking", level);
-                        Some(format!("thinking {level}"))
+                        // Setting it is honest; pretending it lands is
+                        // not. Say plainly when the model won't oblige.
+                        Some(format!("thinking {level}{}", thinking_note(caps)))
                     }
                     _ => Some("usage: #/thinking off|low|medium|high".to_string()),
                 }
@@ -865,7 +868,7 @@ fn slash_command(
         },
         ("settings", _) | ("config", _) => {
             let mut m = Menu::open("settings", MenuKind::Settings);
-            m.items = settings_items(*commentary, thinking, max_tokens, memory);
+            m.items = settings_items(*commentary, thinking, max_tokens, memory, caps);
             *menu = Some(m);
             None
         }
@@ -877,28 +880,35 @@ fn slash_command(
             None
         }
         ("status", _) => Some(format!(
-            "goulash {} \u{b7} engine: {} \u{b7} {} blocks this session",
+            "goulash {} \u{b7} engine: {} \u{b7} {} \u{b7} {} blocks this session",
             env!("CARGO_PKG_VERSION"),
             engine_model.as_deref().unwrap_or("none"),
+            match caps {
+                Some(c) => c.note(),
+                None => "capabilities unknown",
+            },
             blocks,
         )),
         _ => Some(format!("unknown command /{cmd} \u{2014} try #/help")),
     }
 }
 
-/// `name: value` rows for the settings menu, from live state.
+/// `name: value` rows for the settings menu, from live state. The
+/// thinking row is annotated with what the bound model will actually do
+/// with it — a dial that silently does nothing is worse than no dial.
 fn settings_items(
     commentary: bool,
     thinking: &str,
     max_tokens: usize,
     memory: &MemoryStore,
+    caps: Option<&crate::models::Caps>,
 ) -> Vec<String> {
     SETTINGS
         .iter()
         .map(|(name, _)| {
             let v = match *name {
                 "commentary" => if commentary { "on" } else { "off" }.to_string(),
-                "thinking" => thinking.to_string(),
+                "thinking" => format!("{thinking}{}", thinking_note(caps)),
                 "memory" => if memory.enabled { "on" } else { "off" }.to_string(),
                 "max_tokens" => max_tokens.to_string(),
                 "command_first" => "on".to_string(),
@@ -907,6 +917,21 @@ fn settings_items(
             format!("{name}: {v}")
         })
         .collect()
+}
+
+/// The parenthetical after the thinking value: silent when the model
+/// honours the dial, loud when it cannot or when goulash is guessing.
+fn thinking_note(caps: Option<&crate::models::Caps>) -> String {
+    use crate::models::{Source, Think};
+    let Some(c) = caps else {
+        return String::new();
+    };
+    match (c.think, c.source) {
+        (Think::None, _) => "  (no effect \u{2014} this model doesn't reason)".to_string(),
+        (_, Source::Guess) => "  (unverified for this model)".to_string(),
+        _ if c.always_reasons => "  (this model reasons regardless)".to_string(),
+        _ => String::new(),
+    }
 }
 
 /// The browser's first row: writing a memory should not require
@@ -1068,7 +1093,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut ctx_log = String::new();
     let mut blocks_seen: u64 = 0;
     let mut engine: Option<Engine> = if cfg.engine.provider != "none" {
-        Engine::start(eng_cfg).ok()
+        Engine::start(eng_cfg, cfg.models.clone()).ok()
     } else {
         None
     };
@@ -1082,6 +1107,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // Live copies of engine options the settings menu can turn.
     let mut opt_thinking = cfg.engine.thinking.clone();
     let mut opt_max_tokens = cfg.engine.max_tokens;
+    // What the bound model can actually do (models.rs). None until the
+    // engine reports; the UI hedges rather than lies in that window.
+    let mut model_caps: Option<crate::models::Caps> = None;
     #[allow(unused_assignments)] // initialized by the first redraw! below
     let mut last_rows: Vec<String> = Vec::new();
     // Where the band sat last paint: (top row, height). Drives the
@@ -1390,6 +1418,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             &mut menu,
                                             &mut opt_thinking,
                                             opt_max_tokens,
+                                            model_caps.as_ref(),
                                         );
                                     } else if let Some(eng) = engine.as_ref() {
                                         eng.ask(
@@ -1697,6 +1726,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     &opt_thinking,
                                     opt_max_tokens,
                                     &memory,
+                                    model_caps.as_ref(),
                                 );
                             }
                         }
@@ -1826,6 +1856,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 &mut menu,
                                 &mut opt_thinking,
                                 opt_max_tokens,
+                                model_caps.as_ref(),
                             );
                             if let (Some(c), Some(msg)) = (chat.as_mut(), out) {
                                 c.lines.push(format!("goulash: {msg}"));
@@ -1905,6 +1936,23 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         rec.engine_ready(&provider, &model);
                         notice = Some(format!("engine: {provider} \u{b7} {model}"));
                         engine_model = Some(model);
+                    }
+                    // A new model is bound: its dialect and its reasoning
+                    // appetite may be nothing like the last one's, so the
+                    // settings menu refreshes if it is open.
+                    engine::Event::Caps(caps) => {
+                        model_caps = Some(caps);
+                        if let Some(m) = menu.as_mut()
+                            && m.kind == MenuKind::Settings
+                        {
+                            m.items = settings_items(
+                                commentary,
+                                &opt_thinking,
+                                opt_max_tokens,
+                                &memory,
+                                model_caps.as_ref(),
+                            );
+                        }
                     }
                     engine::Event::Partial(text) => {
                         if let Some(c) = chat.as_mut() {

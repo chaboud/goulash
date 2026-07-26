@@ -62,6 +62,16 @@ def read_until(mfd, pattern, timeout=8.0, acc=b""):
     return acc
 
 
+def show_caps(model):
+    """What the fake /api/show advertises. Real ollama reports a
+    `capabilities` list per model; goulash trusts it over its own table,
+    so the stubs have to speak it too."""
+    caps = ["completion"]
+    if any(f in model for f in ("qwen3", "gpt-oss", "deepseek-r1")):
+        caps.append("thinking")
+    return caps
+
+
 def check(name, cond, detail=""):
     tag = "PASS" if cond else "FAIL"
     print(f"  [{tag}] {name}" + ("" if cond else f"  -- {detail}"))
@@ -329,6 +339,9 @@ def test_engine_ollama():
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
+            if self.path == "/api/show":
+                self._send({"capabilities": show_caps(req.get("model", ""))})
+                return
             if "prompt" not in req:
                 # prewarm/load request: model + keep_alive only
                 assert req.get("keep_alive"), "keep_alive missing from warm"
@@ -339,7 +352,7 @@ def test_engine_ollama():
             opts = req.get("options", {})
             assert opts.get("num_predict"), "token cap missing"
             assert opts.get("num_ctx"), "num_ctx missing"
-            assert req.get("think") is False, "think:false missing"
+            assert "think" not in req, "think sent to a non-reasoning model"
             ans = f"ANS-{req.get('model')}"
             if "goulash:" in req.get("prompt", ""):
                 ans += "-CTX"  # proof the chat history reached the prompt
@@ -455,6 +468,9 @@ def test_model_menu():
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
+            if self.path == "/api/show":
+                self._send({"capabilities": show_caps(req.get("model", ""))})
+                return
             if "prompt" not in req:
                 self._send({"done": True})
                 return
@@ -503,6 +519,98 @@ def test_model_menu():
     check("probation recorded in state.toml", 'probation = "gemma3:4b"' in stat, stat)
 
 
+def test_model_capabilities():
+    print("thinking follows the model's own dialect (fake ollama):")
+    if not shutil.which("zsh"):
+        print("  [SKIP] zsh not installed")
+        return
+    import http.server
+    import threading
+
+    seen = []  # every generate request, in order
+
+    class FakeOllama(http.server.BaseHTTPRequestHandler):
+        def _send(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/api/tags":
+                self._send({"models": [
+                    {"name": "gemma3:4b", "size": 3_000_000_000},
+                    {"name": "qwen3:1.7b", "size": 1_000_000_000},
+                ]})
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            req = json.loads(self.rfile.read(n) or b"{}")
+            if self.path == "/api/show":
+                self._send({"capabilities": show_caps(req.get("model", ""))})
+                return
+            if "prompt" not in req:
+                self._send({"done": True})
+                return
+            seen.append(req)
+            self._send({"response": "PASS"})
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), FakeOllama)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write("[engine]\nprovider = \"ollama\"\n"
+                f"host = \"http://127.0.0.1:{port}\"\nstream = false\n"
+                "model = \"gemma3:4b\"\nmax_tokens = 256\n"
+                "thinking_tokens = 400\ncommentary = false\n")
+    proc, mfd = spawn(["zsh"], home=home)
+    time.sleep(1.5)
+
+    # gemma cannot reason: the dial must say so rather than pretend.
+    os.write(mfd, b"#/thinking high\r")
+    out = read_until(mfd, "doesn't reason".encode(), 6.0)
+    check("dial admits it does nothing here",
+          "doesn't reason".encode() in out, out[-300:])
+    os.write(mfd, b"#is this on\r")
+    read_until(mfd, rb"PASS", 8.0)
+    check("no think field sent to a non-reasoning model",
+          seen and "think" not in seen[-1], seen[-1:] )
+    check("no reasoning allowance either",
+          seen and seen[-1]["options"]["num_predict"] == 256,
+          seen[-1:])
+
+    # qwen3 does, in boolean: same dial, different wire, bigger budget.
+    os.write(mfd, b"#/model qwen3:1.7b\r")
+    read_until(mfd, rb"qwen3:1.7b ready", 8.0)
+    time.sleep(0.5)
+    os.write(mfd, b"#and now\r")
+    read_until(mfd, rb"PASS", 8.0)
+    check("boolean reasoner gets think:true",
+          seen and seen[-1].get("think") is True, seen[-1:])
+    # high = twice the family's 1024, not the configured 400.
+    check("allowance sized from the model, not the config",
+          seen and seen[-1]["options"]["num_predict"] == 256 + 2048,
+          seen[-1:])
+
+    os.write(mfd, b"#/status\r")
+    out = read_until(mfd, rb"reasons", 6.0)
+    check("status reports the resolved capability",
+          b"reasons on/off" in out, out[-300:])
+
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+    srv.shutdown()
+
+
 def test_chat_mode():
     print("## chat focus: multi-turn without #, Up hands command to shell:")
     if not shutil.which("zsh"):
@@ -529,6 +637,9 @@ def test_chat_mode():
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
+            if self.path == "/api/show":
+                self._send({"capabilities": show_caps(req.get("model", ""))})
+                return
             if "prompt" not in req:
                 self._send({"done": True})
                 return
@@ -637,6 +748,9 @@ def test_memory():
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
+            if self.path == "/api/show":
+                self._send({"capabilities": show_caps(req.get("model", ""))})
+                return
             if "prompt" not in req:
                 self._send({"done": True})
                 return
@@ -807,6 +921,7 @@ def main():
         test_zsh_auto_integration,
         test_engine_ollama,
         test_model_menu,
+        test_model_capabilities,
         test_chat_mode,
         test_memory,
         test_resize_hygiene,

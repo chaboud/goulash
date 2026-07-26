@@ -62,10 +62,18 @@ Down past the newest keeps going into the **history of suggested commands** with
 #/memory on        give the model a small pinned memory (REMEMBER/FORGET)
 #/memory           browse the slots: filter, ↑↓, ⏎⏎ to forget one
 #/thinking low     reasoning level: off | low | medium | high
+#/settings         live-tune everything, applied and saved on the spot
 #/commentary off   quiet the per-turn heckling
 #/status
 #/help
 ```
+
+Thinking follows whatever the bound model actually speaks — a level
+string for `gpt-oss`, a boolean for `qwen3`, nothing at all for
+`gemma3`, which is told nothing rather than handed a field it rejects.
+The reasoning budget is the model's own, kept separate from the response
+budget so reasoning can't eat the answer, and the dial says plainly when
+a model will ignore it.
 
 ## Nerd Stuff: Build & modify
 ```
@@ -91,6 +99,15 @@ Config (optional): `~/.goulash/config.toml`
 [status]
 enabled = true
 rows = 1
+
+[engine]
+thinking = "off"       # off | low | medium | high
+max_tokens = 512       # the response budget, separate from reasoning
+
+# Escape hatch for a model newer than goulash's capability table.
+[models."some-new-reasoner:8b"]
+thinking = "levels"    # none | bool | levels
+reasoning_tokens = 2048
 ```
 
 Tests (drives the binary under a real PTY):

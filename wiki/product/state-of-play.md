@@ -38,20 +38,18 @@ owner can do.
 - **`#/settings`** (alias `#/config`): Enter cycles a value, applies it
   live, persists it via the generalized `Config::persist_key`.
 - **`#/help`**: a browsable menu of current commands.
+- **Per-model capabilities** ([model-capabilities](../architecture/model-capabilities.md)):
+  `src/models.rs` resolves what the bound model does with `thinking`
+  from a family table (longest-prefix match), ollama's `/api/show`
+  capability list, and a `[models."name"]` override, in that order of
+  authority. Drives the wire format (a non-reasoner is sent no `think`
+  field at all), the reasoning allowance (the model's number, not one
+  global), the settings/`#/thinking`/`#/status` annotations, and a
+  single-cause empty-answer diagnosis.
 
 ## Next, in order
 
-1. **Per-model capability schema.** Blocking honest thinking config.
-   Thinking is not one dial: gemma3n rejects it, gpt-oss:20b accepts
-   `low|medium|high` *and will spend the whole budget reasoning*,
-   qwen3 wants a boolean. Needs a small table keyed by model name with
-   family fallbacks (`gpt-oss*`, `qwen3*`, `gemma*`) covering: does it
-   accept thinking, in what form, and what reasoning budget is
-   realistic. Config escape hatch for unknown models. Until this
-   lands, an empty answer cannot be diagnosed precisely — goulash
-   cannot distinguish "ignored the level" from "burned the budget",
-   and the error message says exactly that.
-2. **`#@` working context** — design settled enough to argue from, not
+1. **`#@` working context** — design settled enough to argue from, not
    yet built: [working-context](../architecture/working-context.md).
    The user wants a design pass *before* code. Key resolved points:
    LLM-mediated (natural language, `PIN:`/`UNPIN:`/`PINCLEAR` verbs,
@@ -61,11 +59,11 @@ owner can do.
    watching — a `*` dirty marker plus asked-for re-cook; secrets gate
    on a per-provider `trusted` flag, not on content; chrome shows the
    active `@` with a percent meter while cooking.
-3. **Text-entry settings.** `#/settings` cycles presets, which is
+2. **Text-entry settings.** `#/settings` cycles presets, which is
    wrong for numbers. The memory browser's compose field is the
    pattern — generalize it so a setting can declare *entry* over
    *cycle*.
-4. **`#/study`** — background worker mining transcripts into memories
+3. **`#/study`** — background worker mining transcripts into memories
    tuned to coach *this* user. Prerequisites: transcript retention
    (`~/.goulash/history/*.jsonl` grows unbounded today) and
    review/approve for machine-written slots.

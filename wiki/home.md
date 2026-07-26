@@ -61,6 +61,7 @@ mindmap
 - [architecture/block-history.md](architecture/block-history.md) — the block-oriented transcript model
 - [architecture/memory-hierarchy.md](architecture/memory-hierarchy.md) — raw leaves, LLM-set region markers, logarithmic ramp-off retrieval
 - [architecture/llm-engine.md](architecture/llm-engine.md) — provider probe chain, local-first caching, watcher/thinker tiers
+- [architecture/model-capabilities.md](architecture/model-capabilities.md) — thinking is not one dial: per-model schema, provider probe, config escape hatch
 - [architecture/suggestion-vendors.md](architecture/suggestion-vendors.md) — rules (thefuck-style), history/n-gram, LLM vendors behind one interface
 - [architecture/agent-memory.md](architecture/agent-memory.md) — remember-as-a-tool: prime store + searchable bank (backlog)
 - [architecture/working-context.md](architecture/working-context.md) — `#@` pinned files as near-tool-use: async ingest, LLM compression (design)

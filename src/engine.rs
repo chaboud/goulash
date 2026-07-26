@@ -1,4 +1,5 @@
 use crate::config::EngineConfig;
+use crate::models::{Caps, Overrides, Source, Think, caps_for};
 use std::io::BufRead;
 use std::os::fd::OwnedFd;
 use std::sync::mpsc;
@@ -28,6 +29,10 @@ pub enum Event {
     },
     Error(String),
     Models(Vec<String>),
+    /// Resolved capabilities for the newly bound model. The session
+    /// keeps these so the UI can tell the truth about what `thinking`
+    /// will do here instead of offering a dial that goes nowhere.
+    Caps(Caps),
     /// Raw model output, emitted when [engine] debug = true.
     Debug(String),
     /// A load/generation is starting on this model — the dangerous
@@ -64,11 +69,11 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn start(cfg: EngineConfig) -> std::io::Result<Engine> {
+    pub fn start(cfg: EngineConfig, over: Overrides) -> std::io::Result<Engine> {
         let (job_tx, job_rx) = mpsc::channel::<Job>();
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let (rd, wr) = nix::unistd::pipe()?;
-        std::thread::spawn(move || worker(cfg, job_rx, ev_tx, wr));
+        std::thread::spawn(move || worker(cfg, over, job_rx, ev_tx, wr));
         Ok(Engine {
             job_tx,
             events: ev_rx,
@@ -128,7 +133,13 @@ fn notify(wr: &OwnedFd) {
     let _ = nix::unistd::write(wr, b"e");
 }
 
-fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>, wr: OwnedFd) {
+fn worker(
+    mut cfg: EngineConfig,
+    over: Overrides,
+    jobs: mpsc::Receiver<Job>,
+    ev: mpsc::Sender<Event>,
+    wr: OwnedFd,
+) {
     let path_set = crate::vendor::path_executable_set();
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(2))
@@ -138,8 +149,11 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
     // Probe chain, v1: ollama (explicit or auto-detected). "none" was
     // filtered by the caller. (wiki: llm-engine.md probe chain)
     let mut state = probe_ollama(&agent, &cfg);
+    // What the bound model can actually do. Re-resolved on every bind,
+    // never guessed at ask time.
+    let mut caps = caps_for("", None, &over);
     if let Some((model, _)) = &state {
-        announce(&ev, &wr, model);
+        caps = announce(&agent, &cfg, &over, &ev, &wr, model);
         if cfg.prewarm {
             warm_marked(&agent, &cfg, model, &ev, &wr);
         }
@@ -151,7 +165,7 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
         if state.is_none() {
             state = probe_ollama(&agent, &cfg);
             if let Some((model, _)) = &state {
-                announce(&ev, &wr, model);
+                caps = announce(&agent, &cfg, &over, &ev, &wr, model);
                 if cfg.prewarm {
                     warm_marked(&agent, &cfg, model, &ev, &wr);
                 }
@@ -173,7 +187,7 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                     Some((model, _)) => {
                         *model = m.clone();
                         cfg.model = Some(m);
-                        announce(&ev, &wr, model);
+                        caps = announce(&agent, &cfg, &over, &ev, &wr, model);
                         pending_warm = true;
                     }
                     None => unreachable_engine(&ev, &wr, &cfg),
@@ -193,7 +207,7 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                     state = probe_ollama(&agent, &cfg);
                     match &state {
                         Some((model, _)) => {
-                            announce(&ev, &wr, model);
+                            caps = announce(&agent, &cfg, &over, &ev, &wr, model);
                             pending_warm = true;
                         }
                         None => unreachable_engine(&ev, &wr, &cfg),
@@ -235,7 +249,7 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
             });
             notify(&wr);
             let result = generate(
-                &agent, &cfg, model, &question, &context, &memories, &ev, &wr, proactive,
+                &agent, &cfg, &caps, model, &question, &context, &memories, &ev, &wr, proactive,
             );
             let _ = ev.send(Event::Idle);
             let _ = match result {
@@ -258,30 +272,7 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                         if proactive {
                             Ok(()) // silent pass
                         } else {
-                            // Two real causes, in order of likelihood:
-                            // a model that does not support the thinking
-                            // level it was handed, or one that spent the
-                            // whole budget reasoning.
-                            ev.send(Event::Error(if cfg.thinking != "off" {
-                                // Two causes and we cannot tell them
-                                // apart from here: the model may not
-                                // accept this level, or it spent the
-                                // whole budget reasoning. Name both.
-                                format!(
-                                    "empty answer from {model} at \
-                                     thinking={} \u{2014} it either burned \
-                                     the budget reasoning or ignores the \
-                                     level; '#/thinking off' or a bigger \
-                                     budget (#/settings)",
-                                    cfg.thinking
-                                )
-                            } else {
-                                format!(
-                                    "empty answer from {model} \u{2014} try \
-                                     another model (#/model) or a bigger \
-                                     response budget (#/settings)"
-                                )
-                            }))
+                            ev.send(Event::Error(empty_answer_reason(&cfg, &caps)))
                         }
                     } else {
                         ev.send(Event::Answer {
@@ -307,12 +298,71 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
     drop(wr);
 }
 
-fn announce(ev: &mpsc::Sender<Event>, wr: &OwnedFd, model: &str) {
+/// Bind: tell the session what model it has, and what that model can
+/// do. Capability resolution is metadata only (`/api/show` does not load
+/// weights), so this stays off the slow path that once pinned the worker.
+fn announce(
+    agent: &ureq::Agent,
+    cfg: &EngineConfig,
+    over: &Overrides,
+    ev: &mpsc::Sender<Event>,
+    wr: &OwnedFd,
+    model: &str,
+) -> Caps {
     let _ = ev.send(Event::Ready {
         provider: "ollama".to_string(),
         model: model.to_string(),
     });
+    let caps = caps_for(model, show_thinks(agent, cfg, model), over);
+    let _ = ev.send(Event::Caps(caps.clone()));
     notify(wr);
+    caps
+}
+
+/// Does the provider itself say this model reasons? ollama's `/api/show`
+/// carries a `capabilities` list on recent servers. None means it
+/// wouldn't say (old server, or the call failed) — the table decides.
+fn show_thinks(agent: &ureq::Agent, cfg: &EngineConfig, model: &str) -> Option<bool> {
+    let resp = agent
+        .post(&format!("{}/api/show", cfg.host))
+        .timeout(Duration::from_secs(2))
+        .send_string(&serde_json::json!({"model": model}).to_string())
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_str(&resp.into_string().ok()?).ok()?;
+    let caps = v["capabilities"].as_array()?;
+    Some(caps.iter().any(|c| c.as_str() == Some("thinking")))
+}
+
+/// The model returned nothing. With capabilities resolved we can name
+/// the actual cause instead of listing suspects.
+fn empty_answer_reason(cfg: &EngineConfig, caps: &Caps) -> String {
+    let asked = cfg.thinking != "off" && !cfg.thinking.is_empty();
+    let model = &caps.model;
+    match caps.think {
+        // It reasons and was asked to (or does anyway): the budget is
+        // the suspect, and it is the one thing the user can raise.
+        Think::Levels | Think::Bool if asked || caps.always_reasons => format!(
+            "empty answer from {model} \u{2014} it spent the budget \
+             reasoning; raise thinking_tokens (#/settings) or \
+             '#/thinking off'"
+        ),
+        // Asked to think, cannot. We should not have sent the field at
+        // all, so this is a plain short-budget or bad-prompt answer.
+        Think::None if asked => format!(
+            "empty answer from {model} \u{2014} it does not reason \
+             (thinking has no effect here); try another model (#/model) \
+             or a bigger response budget (#/settings)"
+        ),
+        _ if caps.source == Source::Guess => format!(
+            "empty answer from {model} \u{2014} unknown model, so goulash \
+             is guessing at its reasoning support; see [models] in \
+             config.toml, or try another model (#/model)"
+        ),
+        _ => format!(
+            "empty answer from {model} \u{2014} try another model \
+             (#/model) or a bigger response budget (#/settings)"
+        ),
+    }
 }
 
 fn unreachable_engine(ev: &mpsc::Sender<Event>, wr: &OwnedFd, cfg: &EngineConfig) {
@@ -414,6 +464,7 @@ to them.\n\n";
 fn generate(
     agent: &ureq::Agent,
     cfg: &EngineConfig,
+    caps: &Caps,
     model: &str,
     question: &str,
     context: &str,
@@ -459,23 +510,27 @@ fn generate(
          Current local time: {}\nQuestion: {question}\n{directive}\nAnswer:",
         local_now()
     );
+    // Reasoning models (qwen3+, deepseek-r1) otherwise spend the entire
+    // token budget in a separate `thinking` field, returning an empty
+    // `response` — a blank bar in the field. The model's own dialect
+    // decides the shape of the request and the size of the top-up
+    // (models.rs); a model that cannot reason is not sent the field at
+    // all, because some providers reject it rather than ignore it.
     let mut body = serde_json::json!({
         "model": model,
         "prompt": prompt,
         "stream": cfg.stream,
-        // Reasoning models (qwen3+, deepseek-r1) otherwise spend the
-        // entire token budget in a separate `thinking` field, returning
-        // an empty `response` — a blank bar in the field. When thinking
-        // IS wanted, the budget grows to cover it (below) so the answer
-        // still fits.
-        "think": think_field(&cfg.thinking),
         "options": {
             "temperature": 0.2,
-            "num_predict": (cfg.max_tokens + thinking_allowance(cfg)) as i64,
+            "num_predict": (cfg.max_tokens
+                + caps.allowance(&cfg.thinking, cfg.thinking_tokens)) as i64,
             "num_ctx": cfg.num_ctx as i64,
             "stop": ["\n\n"],
         },
     });
+    if let Some(think) = caps.think_field(&cfg.thinking) {
+        body["think"] = think;
+    }
     if !cfg.keep_alive.is_empty() {
         body["keep_alive"] = serde_json::json!(cfg.keep_alive);
     }
@@ -546,26 +601,6 @@ fn complete_cmd_line(acc: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// ollama's `think` field: `false`, `true`, or a level string for models
-/// that accept one (gpt-oss and friends). Unknown values read as off.
-fn think_field(level: &str) -> serde_json::Value {
-    match level {
-        "low" | "medium" | "high" => serde_json::json!(level),
-        "on" | "true" => serde_json::json!(true),
-        _ => serde_json::json!(false),
-    }
-}
-
-/// Tokens added to the response budget to cover masked reasoning spend.
-fn thinking_allowance(cfg: &EngineConfig) -> usize {
-    match cfg.thinking.as_str() {
-        "off" | "false" | "" => 0,
-        "low" => cfg.thinking_tokens / 2,
-        "high" => cfg.thinking_tokens * 2,
-        _ => cfg.thinking_tokens,
-    }
 }
 
 fn tm_now() -> libc::tm {
@@ -771,8 +806,9 @@ mod pick_tests {
 
 #[cfg(test)]
 mod stream_tests {
-    use super::{complete_cmd_line, think_field, thinking_allowance};
+    use super::{complete_cmd_line, empty_answer_reason};
     use crate::config::EngineConfig;
+    use crate::models::{Overrides, caps_for};
 
     #[test]
     fn cmd_vends_only_once_the_line_is_whole() {
@@ -793,24 +829,38 @@ mod stream_tests {
     }
 
     #[test]
-    fn thinking_maps_to_provider_field_and_budget() {
+    fn empty_answers_are_diagnosed_from_capabilities() {
+        let over = Overrides::new();
         let mut cfg = EngineConfig {
-            thinking_tokens: 400,
+            thinking: "high".into(),
             ..Default::default()
         };
-        assert_eq!(think_field("off"), serde_json::json!(false));
-        assert_eq!(think_field("high"), serde_json::json!("high"));
-        assert_eq!(think_field("on"), serde_json::json!(true));
-        assert_eq!(think_field("nonsense"), serde_json::json!(false));
 
+        // Reasoner asked to reason: the budget is the culprit, and the
+        // advice must be the lever that actually helps.
+        let oss = caps_for("gpt-oss:20b", None, &over);
+        let msg = empty_answer_reason(&cfg, &oss);
+        assert!(msg.contains("spent the budget reasoning"), "{msg}");
+
+        // Non-reasoner: say so, rather than blaming a dial that did
+        // nothing here.
+        let gemma = caps_for("gemma3:4b", None, &over);
+        let msg = empty_answer_reason(&cfg, &gemma);
+        assert!(msg.contains("does not reason"), "{msg}");
+
+        // Thinking off, plain model: no reasoning talk at all.
         cfg.thinking = "off".into();
-        assert_eq!(thinking_allowance(&cfg), 0);
-        cfg.thinking = "low".into();
-        assert_eq!(thinking_allowance(&cfg), 200);
-        cfg.thinking = "medium".into();
-        assert_eq!(thinking_allowance(&cfg), 400);
-        // High reasoning must not eat the answer's own budget.
-        cfg.thinking = "high".into();
-        assert_eq!(thinking_allowance(&cfg), 800);
+        let msg = empty_answer_reason(&cfg, &gemma);
+        assert!(!msg.contains("reason"), "{msg}");
+
+        // A reasoner that always reasons is still the budget's fault
+        // even with the dial off.
+        let msg = empty_answer_reason(&cfg, &oss);
+        assert!(msg.contains("spent the budget reasoning"), "{msg}");
+
+        // Unknown model: admit the guess and point at the escape hatch.
+        let unknown = caps_for("mystery:8b", None, &over);
+        let msg = empty_answer_reason(&cfg, &unknown);
+        assert!(msg.contains("[models]"), "{msg}");
     }
 }
