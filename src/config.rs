@@ -198,6 +198,33 @@ impl Config {
     }
 }
 
+impl Config {
+    /// Surgically set any `[section] key = value` in config.toml. Values
+    /// are typed from the string: `true/false` -> bool, digits -> int,
+    /// everything else -> string.
+    pub fn persist_key(section: &str, key: &str, value: &str) -> Result<(), String> {
+        let path = Self::dir().ok_or("no home dir")?.join("config.toml");
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut doc: toml_edit::DocumentMut =
+            text.parse().map_err(|e| format!("config parse: {e}"))?;
+        if doc.get(section).is_none() {
+            doc[section] = toml_edit::table();
+        }
+        doc[section][key] = match value {
+            "true" => toml_edit::value(true),
+            "false" => toml_edit::value(false),
+            v => match v.parse::<i64>() {
+                Ok(n) => toml_edit::value(n),
+                Err(_) => toml_edit::value(v),
+            },
+        };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())
+    }
+}
+
 fn edit_model(text: &str, name: Option<&str>) -> Result<String, String> {
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("config parse: {e}"))?;
     match name {

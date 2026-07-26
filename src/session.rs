@@ -193,7 +193,37 @@ enum MenuKind {
     /// actions in a modal list need a confirm keystroke, not a
     /// hair-trigger.
     Memory,
+    /// Enter cycles the setting's value in place, applying it live AND
+    /// persisting it — no config-file round trip.
+    Settings,
+    /// A browsable command reference; Enter does nothing.
+    Help,
 }
+
+/// Live-tunable settings and the values Enter cycles through. Everything
+/// here applies immediately and persists; anything that would need a
+/// restart stays in the TOML where it cannot mislead.
+const SETTINGS: &[(&str, &[&str])] = &[
+    ("commentary", &["on", "off"]),
+    ("thinking", &["off", "low", "medium", "high"]),
+    ("memory", &["off", "on"]),
+    ("max_tokens", &["256", "512", "1024", "2048"]),
+    ("command_first", &["on", "off"]),
+];
+
+const HELP_ITEMS: &[&str] = &[
+    "#<question>            ask; the answer lands in the band",
+    "##<question>           chat: follow-ups need no prefix",
+    "\u{2193} / \u{2191}                  suggestions below the prompt, history above",
+    "#/model                pick a model (\u{23ce} saves it as default)",
+    "#/model NAME [save]    switch now; 'save' persists",
+    "#/memory               browse slots; + new to write one",
+    "#/memory on|off|limit  enable, disable, resize the store",
+    "#/settings             live-tune everything below",
+    "#/thinking off|low|medium|high",
+    "#/commentary on|off    per-turn heckling",
+    "#/status               engine, model, blocks this session",
+];
 
 struct Menu {
     title: String,
@@ -203,6 +233,8 @@ struct Menu {
     cursor: usize, // index into the filtered view
     loaded: bool,
     armed: Option<String>,
+    /// Typing a new entry from inside the list (the `+ new` row).
+    composing: Option<String>,
 }
 
 impl Menu {
@@ -215,6 +247,7 @@ impl Menu {
             cursor: 0,
             loaded: kind == MenuKind::Memory,
             armed: None,
+            composing: None,
         }
     }
 
@@ -490,17 +523,23 @@ fn compose_rows(
         let reserved = n_items as u16 + 2; // rule + items + chrome
         let inner = layout.real.rows.saturating_sub(reserved).max(1);
         let filtered = m.filtered();
-        let chip = format!(" {} \u{25b8} {}\u{258f} ", m.title, m.filter);
+        let chip = match &m.composing {
+            Some(text) => format!(" {} \u{25b8} + {}\u{258f} ", m.title, text),
+            None => format!(" {} \u{25b8} {}\u{258f} ", m.title, m.filter),
+        };
         // Feedback for in-menu actions has nowhere else to go: the rule
         // row belongs to the menu while it is open, so a notice takes
         // the keymap's place until the next keystroke.
         let tip = match notice {
             Some(n) => format!(" {n} "),
+            None if m.composing.is_some() => " \u{23ce} save \u{b7} esc cancel ".to_string(),
             None => format!(
                 " \u{2191}\u{2193} \u{b7} {} \u{b7} esc \u{b7} {}/{} ",
                 match m.kind {
                     MenuKind::Model => "\u{23ce} save",
                     MenuKind::Memory => "\u{23ce}\u{23ce} forget",
+                    MenuKind::Settings => "\u{23ce} cycles",
+                    MenuKind::Help => "reference",
                 },
                 (m.cursor + 1).min(filtered.len()),
                 filtered.len()
@@ -727,6 +766,8 @@ fn slash_command(
     memory: &mut MemoryStore,
     fuse: &mut StateFile,
     menu: &mut Option<Menu>,
+    thinking: &mut String,
+    max_tokens: usize,
 ) -> Option<String> {
     let mut it = cmdline.splitn(2, char::is_whitespace);
     let cmd = it.next().unwrap_or("");
@@ -736,7 +777,12 @@ fn slash_command(
         ("memory", None) | ("memory", Some("list")) => {
             // Browsing 50 slots through one bar row is unusable; the
             // menu primitive already solves this.
-            let mut m = Menu::open("memory", MenuKind::Memory);
+            let title = if memory.enabled {
+                "memory"
+            } else {
+                "memory (off)"
+            };
+            let mut m = Menu::open(title, MenuKind::Memory);
             m.items = memory_items(memory);
             *menu = Some(m);
             None
@@ -807,7 +853,9 @@ fn slash_command(
                     .unwrap_or("off");
                 match level {
                     "off" | "on" | "low" | "medium" | "high" => {
-                        eng.set_thinking(level.to_string());
+                        eng.set_option("thinking", level);
+                        *thinking = level.to_string();
+                        let _ = Config::persist_key("engine", "thinking", level);
                         Some(format!("thinking {level}"))
                     }
                     _ => Some("usage: #/thinking off|low|medium|high".to_string()),
@@ -815,27 +863,65 @@ fn slash_command(
             }
             None => Some("no engine running".to_string()),
         },
+        ("settings", _) | ("config", _) => {
+            let mut m = Menu::open("settings", MenuKind::Settings);
+            m.items = settings_items(*commentary, thinking, max_tokens, memory);
+            *menu = Some(m);
+            None
+        }
+        ("help", _) => {
+            let mut m = Menu::open("help", MenuKind::Help);
+            m.items = HELP_ITEMS.iter().map(|s| s.to_string()).collect();
+            m.loaded = true;
+            *menu = Some(m);
+            None
+        }
         ("status", _) => Some(format!(
             "goulash {} \u{b7} engine: {} \u{b7} {} blocks this session",
             env!("CARGO_PKG_VERSION"),
             engine_model.as_deref().unwrap_or("none"),
             blocks,
         )),
-        ("help", _) => Some(
-            "#/model [name [save]] \u{b7} #/commentary [on|off] \u{b7} #/memory \u{2026} \u{b7} \
-             #/status"
-                .to_string(),
-        ),
         _ => Some(format!("unknown command /{cmd} \u{2014} try #/help")),
     }
 }
 
-/// Slot lines for the memory browser: `[id] text`.
-fn memory_items(memory: &MemoryStore) -> Vec<String> {
-    memory
-        .find("")
+/// `name: value` rows for the settings menu, from live state.
+fn settings_items(
+    commentary: bool,
+    thinking: &str,
+    max_tokens: usize,
+    memory: &MemoryStore,
+) -> Vec<String> {
+    SETTINGS
         .iter()
-        .map(|s| format!("[{}] {}", s.id, s.text))
+        .map(|(name, _)| {
+            let v = match *name {
+                "commentary" => if commentary { "on" } else { "off" }.to_string(),
+                "thinking" => thinking.to_string(),
+                "memory" => if memory.enabled { "on" } else { "off" }.to_string(),
+                "max_tokens" => max_tokens.to_string(),
+                "command_first" => "on".to_string(),
+                _ => String::new(),
+            };
+            format!("{name}: {v}")
+        })
+        .collect()
+}
+
+/// The browser's first row: writing a memory should not require
+/// remembering the `#/memory add` incantation.
+const NEW_MEMORY: &str = "+ new memory \u{2026}";
+
+/// Slot lines for the memory browser: `[id] text`, after the `+ new` row.
+fn memory_items(memory: &MemoryStore) -> Vec<String> {
+    std::iter::once(NEW_MEMORY.to_string())
+        .chain(
+            memory
+                .find("")
+                .iter()
+                .map(|s| format!("[{}] {}", s.id, s.text)),
+        )
         .collect()
 }
 
@@ -993,6 +1079,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut menu: Option<Menu> = None;
     let mut chat: Option<Chat> = None;
     let mut warming: Option<String> = None;
+    // Live copies of engine options the settings menu can turn.
+    let mut opt_thinking = cfg.engine.thinking.clone();
+    let mut opt_max_tokens = cfg.engine.max_tokens;
     #[allow(unused_assignments)] // initialized by the first redraw! below
     let mut last_rows: Vec<String> = Vec::new();
     // Where the band sat last paint: (top row, height). Drives the
@@ -1299,6 +1388,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             &mut memory,
                                             &mut fuse,
                                             &mut menu,
+                                            &mut opt_thinking,
+                                            opt_max_tokens,
                                         );
                                     } else if let Some(eng) = engine.as_ref() {
                                         eng.ask(
@@ -1457,10 +1548,31 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     let mut committed: Option<String> = None;
                     let mut close = false;
                     let mut kind = MenuKind::Model;
+                    let mut new_memory: Option<String> = None;
                     notice = None; // a keystroke supersedes the last outcome
                     if let Some(m) = menu.as_mut() {
                         kind = m.kind;
                         for key in parse_keys(&buf[..len]) {
+                            // Composing a new entry is its own little text
+                            // field: it owns every key until Enter or Esc,
+                            // so typing cannot leak into the filter or
+                            // move the cursor.
+                            if let Some(text) = m.composing.as_mut() {
+                                match key {
+                                    Key::Char(c) => text.push(c),
+                                    Key::Backspace => {
+                                        text.pop();
+                                    }
+                                    Key::KillLine => text.clear(),
+                                    Key::Enter => {
+                                        new_memory = Some(std::mem::take(text));
+                                        m.composing = None;
+                                    }
+                                    Key::Esc | Key::CtrlC => m.composing = None,
+                                    _ => {}
+                                }
+                                continue;
+                            }
                             match key {
                                 // Esc disarms first, then closes.
                                 Key::Esc | Key::CtrlC => {
@@ -1474,6 +1586,12 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         MenuKind::Model => {
                                             committed = sel;
                                             close = true;
+                                        }
+                                        MenuKind::Help => {}
+                                        MenuKind::Settings => committed = sel,
+                                        MenuKind::Memory if sel.as_deref() == Some(NEW_MEMORY) => {
+                                            m.composing = Some(String::new());
+                                            m.armed = None;
                                         }
                                         MenuKind::Memory => {
                                             if sel.is_some() && m.armed == sel {
@@ -1509,6 +1627,77 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     m.filter.push(c);
                                     m.cursor = 0;
                                 }
+                            }
+                        }
+                    }
+                    if let Some(text) = new_memory {
+                        notice = Some(match memory.add(&text, "user") {
+                            Ok(id) => {
+                                rec.memory("add", id, &text);
+                                format!("remembered [{id}]")
+                            }
+                            Err(e) => e,
+                        });
+                        if let Some(m) = menu.as_mut() {
+                            m.items = memory_items(&memory);
+                            m.clamp();
+                        }
+                    }
+                    if kind == MenuKind::Settings
+                        && let Some(item) = committed.take()
+                    {
+                        // Enter cycles the value in place: apply live,
+                        // persist, refresh the list under the cursor.
+                        let mut parts = item.splitn(2, ':');
+                        let name = parts.next().unwrap_or("").trim().to_string();
+                        let cur = parts.next().unwrap_or("").trim().to_string();
+                        if let Some((_, vals)) = SETTINGS.iter().find(|(n, _)| *n == name) {
+                            let idx = vals.iter().position(|v| *v == cur).unwrap_or(0);
+                            let next = vals[(idx + 1) % vals.len()];
+                            notice = Some(format!("{name}: {next}"));
+                            match name.as_str() {
+                                "commentary" => {
+                                    commentary = next == "on";
+                                    let _ = Config::persist_key(
+                                        "engine",
+                                        "commentary",
+                                        &commentary.to_string(),
+                                    );
+                                }
+                                "memory" => memory.set_enabled(next == "on"),
+                                "thinking" => {
+                                    opt_thinking = next.to_string();
+                                    if let Some(eng) = engine.as_ref() {
+                                        eng.set_option("thinking", next);
+                                    }
+                                    let _ = Config::persist_key("engine", "thinking", next);
+                                }
+                                "max_tokens" => {
+                                    opt_max_tokens = next.parse().unwrap_or(opt_max_tokens);
+                                    if let Some(eng) = engine.as_ref() {
+                                        eng.set_option("max_tokens", next);
+                                    }
+                                    let _ = Config::persist_key("engine", "max_tokens", next);
+                                }
+                                "command_first" => {
+                                    if let Some(eng) = engine.as_ref() {
+                                        eng.set_option("command_first", next);
+                                    }
+                                    let _ = Config::persist_key(
+                                        "engine",
+                                        "command_first",
+                                        &(next == "on").to_string(),
+                                    );
+                                }
+                                _ => {}
+                            }
+                            if let Some(m) = menu.as_mut() {
+                                m.items = settings_items(
+                                    commentary,
+                                    &opt_thinking,
+                                    opt_max_tokens,
+                                    &memory,
+                                );
                             }
                         }
                     }
@@ -1635,6 +1824,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 &mut memory,
                                 &mut fuse,
                                 &mut menu,
+                                &mut opt_thinking,
+                                opt_max_tokens,
                             );
                             if let (Some(c), Some(msg)) = (chat.as_mut(), out) {
                                 c.lines.push(format!("goulash: {msg}"));

@@ -378,6 +378,23 @@ def test_engine_ollama():
     out = read_until(mfd, rb"ANS-bigmodel-CTX", 8.0)
     check("#/model switch took effect", b"ANS-bigmodel" in out, out[-300:])
     check("follow-up ask carries chat history", b"ANS-bigmodel-CTX" in out, out[-300:])
+    # #/settings: Enter cycles a value live and persists it.
+    os.write(mfd, b"#/settings\r")
+    out = read_until(mfd, rb"commentary: on", 5.0)
+    check("#/settings lists live values", b"commentary: on" in out, out[-300:])
+    os.write(mfd, b"\r")            # cycle commentary on -> off
+    out = read_until(mfd, rb"commentary: off", 4.0)
+    check("Enter cycles a setting", b"commentary: off" in out, out[-300:])
+    os.write(mfd, b"\r")            # ... and back on, so later checks stand
+    out = read_until(mfd, rb"commentary: on", 4.0)
+    check("cycling wraps around", b"commentary: on" in out, out[-300:])
+    os.write(mfd, b"\x1b")
+    time.sleep(0.4)
+    os.write(mfd, b"#/help\r")
+    out = read_until(mfd, rb"#/settings", 4.0)
+    check("#/help lists current commands", b"#/settings" in out, out[-300:])
+    os.write(mfd, b"\x1b")
+    time.sleep(0.4)
     os.write(mfd, b"#/status\r")
     out = read_until(mfd, rb"blocks this session", 5.0)
     check("#/status shows engine", b"bigmodel" in out, out[-300:])
@@ -677,6 +694,17 @@ def test_memory():
     check("#/memory opens the browser", "memory \u25b8".encode() in out, out[-300:])
     out = read_until(mfd, rb"\[1\] deploy", 3.0, out)
     check("slots listed in the browser", b"[1] deploy" in out, out[-300:])
+    check("+ new row offered", "+ new memory".encode() in out, out[-300:])
+    # Compose a memory from inside the browser: Enter on "+ new", type, Enter.
+    os.write(mfd, b"\r")
+    out = read_until(mfd, "esc cancel".encode(), 4.0)
+    check("compose mode entered", "esc cancel".encode() in out, out[-300:])
+    os.write(mfd, b"typed from the browser")
+    time.sleep(0.4)
+    os.write(mfd, b"\r")
+    out = read_until(mfd, rb"remembered \[", 4.0)
+    check("composed memory saved", b"remembered [" in out, out[-300:])
+    time.sleep(0.3)
     os.write(mfd, b"deploy")          # type-to-filter
     time.sleep(0.4)
     os.write(mfd, b"\r")              # arm
@@ -696,6 +724,8 @@ def test_memory():
     mpath = os.path.join(home, "memory.toml")
     check("memory.toml durable", os.path.exists(mpath))
     mt = open(mpath).read() if os.path.exists(mpath) else ""
+    check("browser-composed memory persisted",
+          "typed from the browser" in mt, mt[-300:])
     check("model note persisted", "model saved this note" in mt, mt[-300:])
     check("deleted slot gone from toml", "TARGET=prod" not in mt, mt[-300:])
     check("enabled persists in toml", "enabled = true" in mt, mt[:120])
@@ -731,7 +761,11 @@ def test_resize_hygiene():
     for cols in (78, 76, 75):
         set_winsize(mfd, 24, cols)
         os.killpg(os.getpgid(proc.pid), signal.SIGWINCH)
-        out = read_until(mfd, rb"goulash", 1.5)
+        # Paints are suspended until the drag settles, so let it settle
+        # and drain, then measure only a FRESH paint at the new width.
+        time.sleep(0.6)
+        read_until(mfd, rb"$^", 0.3)
+        out = read_until(mfd, rb"goulash", 2.5)
         wide = [(r, w) for r, w in painted_rows(out) if w > cols - 1]
         check(f"no row fills the last column at {cols} cols", not wide, f"{wide}")
 

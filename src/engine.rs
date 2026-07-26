@@ -49,8 +49,8 @@ pub enum Job {
         proactive: bool,
     },
     SetModel(String),
-    /// off | low | medium | high — masked reasoning spend.
-    SetThinking(String),
+    /// Live tuning: key/value applied to the worker's own config copy.
+    SetOption(String, String),
     /// Forget any pinned model and re-run the probe chain (auto).
     Rebind,
     ListModels,
@@ -109,8 +109,10 @@ impl Engine {
         let _ = self.job_tx.send(Job::SetModel(model));
     }
 
-    pub fn set_thinking(&self, level: String) {
-        let _ = self.job_tx.send(Job::SetThinking(level));
+    pub fn set_option(&self, key: &str, value: &str) {
+        let _ = self
+            .job_tx
+            .send(Job::SetOption(key.to_string(), value.to_string()));
     }
 
     pub fn rebind(&self) {
@@ -176,7 +178,16 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                     }
                     None => unreachable_engine(&ev, &wr, &cfg),
                 },
-                Job::SetThinking(level) => cfg.thinking = level,
+                Job::SetOption(k, v) => match k.as_str() {
+                    "thinking" => cfg.thinking = v,
+                    "command_first" => cfg.command_first = v == "true" || v == "on",
+                    "max_tokens" => {
+                        if let Ok(n) = v.parse() {
+                            cfg.max_tokens = n;
+                        }
+                    }
+                    _ => {}
+                },
                 Job::Rebind => {
                     cfg.model = None;
                     state = probe_ollama(&agent, &cfg);
@@ -247,10 +258,24 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                         if proactive {
                             Ok(()) // silent pass
                         } else {
-                            ev.send(Event::Error(format!(
-                                "empty answer from {model} (thinking model? try \
-                                 #/model or raise max_tokens)"
-                            )))
+                            // Two real causes, in order of likelihood:
+                            // a model that does not support the thinking
+                            // level it was handed, or one that spent the
+                            // whole budget reasoning.
+                            ev.send(Event::Error(if cfg.thinking != "off" {
+                                format!(
+                                    "empty answer from {model} \u{2014} try \
+                                     '#/thinking off' ({} does not take \
+                                     thinking={})",
+                                    model, cfg.thinking
+                                )
+                            } else {
+                                format!(
+                                    "empty answer from {model} \u{2014} try \
+                                     another model (#/model) or a bigger \
+                                     response budget (#/settings)"
+                                )
+                            }))
                         }
                     } else {
                         ev.send(Event::Answer {
