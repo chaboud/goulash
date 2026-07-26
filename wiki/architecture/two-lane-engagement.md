@@ -133,6 +133,20 @@ work is bounded and user-triggered. `volunteer` is where the GPU burns
 continuously for questions that already had a good answer — opt-in, and
 honest about why.
 
+### Scheduling: fast first, current first
+
+Interactive work always outranks research, and research for the turn the
+user is *on* outranks research for a turn they have left.
+
+Which leaves the question of what happens to work that goes stale
+mid-flight, and both answers are defensible: **abandon** it and keep the
+GPU, or service it **lazily** and let the finding land in its lineage
+whenever it arrives. Lazy costs nothing in attention — an amendment for
+an old turn never intrudes, by the rule above — but it does cost compute
+for something nobody may look at. So it is a setting; at minimum a
+[`#/debug`](../interaction/settings-and-nav.md) one, since it is exactly
+the kind of thing whose right answer only shows up in use.
+
 One hard rule at every setting: **slow never touches the proactive
 commentary path.** Heckling every command turn through a research lane
 is the most expensive possible version of the least important feature.
@@ -307,6 +321,14 @@ user already pulled and ran the original. It cannot mislead, because the
 superseded command stays visible in the lineage; it is unambiguous which
 one was run.
 
+**Amend by reference, never by rewrite.** The session log is
+append-only and fast reads it as its own memory of the conversation, so
+an amendment that silently replaced a `CMD:` line would leave fast's
+context disagreeing with what the user is looking at. Turns carry
+identity and the amendment names the one it revises. That is harder for
+a small model to follow than a clean overwrite would be — and survivable,
+which a divergence between fast's memory and the screen is not.
+
 **Lineage is a DAG; the walk is flat.** Internally a turn can carry its
 origin and its amendment. For display that graph flattens into the same
 single up/down axis it always was — an *insert* into a flat lineage, not
@@ -334,6 +356,18 @@ attention.
 
 The unfreeze points are the ones that already exist: edit, Enter,
 Ctrl-C, return to neutral. Nothing new to learn, nothing new to teach.
+
+### Solo findings need no marker
+
+When fast has no command and slow does, the result is simply a turn with
+one suggestion in it. That already happens without slow in the picture —
+fast often has nothing worth vending — so it needs no new treatment, and
+`#?` is just that case made explicit by the user rather than arrived at.
+
+Which fixes what the blue actually means: **superseded, not researched.**
+It marks that something was replaced, not where an answer came from. A
+solo finding is the primary and wears the orange like any other. Less
+chrome, and a sharper signal for the one case that needs one.
 
 ### Rendering a pair
 
@@ -477,15 +511,21 @@ Two consequences to accept knowingly:
    does slow need its own?
 4. **Is a card per pin, or a card per pin *per question*?** The second
    is better and destroys the cache.
-5. **Does a stale amendment still amend?** Suggestions clear on cwd
-   change today. A finding landing after a `cd` should be dropped or
-   marked by that same rule rather than inventing a new one — but
-   "dropped" throws away work that may still be right.
+5. **Does a `cd` invalidate a finding in flight?** Suggestions clear on
+   cwd change today. Staleness-by-time is settled (abandon or lazy, a
+   setting); staleness-by-*place* may want the existing rule instead,
+   since a command researched for another directory is more likely to
+   be wrong than merely late.
 
 Settled in conversation, recorded so they are not re-opened: `##?` is an
-ingress rather than a mode; amendments insert at their origin and never
-jump the queue; a pair renders only within one turn; artifacts belong to
-their slot; classification is the model's call except for `directive`.
+ingress rather than a mode; amendments insert at their origin, by
+reference, and never jump the queue; a pair renders only within one turn
+and the blue means *superseded*, not *researched*; solo findings need no
+marker; slow gets pin **paths** and reads sources itself, so the
+card/digest layer exists purely for fast; `#?` with slow off answers via
+fast and says so; retention is a content-hashed cache that survives
+unpinning ([working-context](working-context.md)); classification is the
+model's call except for `directive`.
 
 ## Related
 

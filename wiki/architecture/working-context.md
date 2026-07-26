@@ -232,6 +232,43 @@ epoch-churn hazard mostly evaporates because every promotion is
 user-initiated. An `auto_recook` toggle is a later convenience, not
 the default.
 
+## Retention is a cache, not a record
+
+`.goulash` does not archive pins. It **caches the cook**, and the
+distinction decides the whole design.
+
+The use it exists for is **mode toggling**: pin the deploy runbook, work
+for an hour, swap to the vendor CLI reference, come back. Coming back
+should cost nothing. So the store is keyed by **path + content hash**,
+and **unpinning does not evict** — the artifacts outlive the pin that
+made them, and re-pinning an unchanged file is instant.
+
+Content hash rather than mtime: a `touch`, a checkout, a rebuild all
+move mtime without changing a byte, and each one would otherwise throw
+away a cook that was still perfectly good. Hashing half a megabyte is
+free next to a model call. A hash **mismatch on reload rebuilds**, which
+is what makes staleness structural rather than a policy anyone has to
+remember.
+
+This is also why pins can stay session-scoped without the cache being
+pointless: the *pin* is ephemeral, the *cook* is not, and the two were
+only ever conflated because they arrived together.
+
+```
+#@/rebuild        re-cook everything pinned, ignoring the cache
+#@/rebuild 2      just that one
+```
+
+`#@/rebuild` is the escape hatch for when the hash is right and the cook
+is wrong — a model that did a bad job, or a digest written before a
+prompt improved. Nothing else invalidates on identical content, so
+without it a bad cook would be sticky forever.
+
+Slot-owned artifacts, then, are a *reference* rather than ownership: the
+[pin browser](#the-pin-browser) shows what a slot is using and can drop
+it, and the cache underneath is evicted by its own LRU (50 entries,
+~10 MB) with anything currently pinned held back.
+
 ## Freshness
 
 Cheap `stat` at prompt turns marks a pin dirty; the old digest keeps
