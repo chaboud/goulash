@@ -26,6 +26,10 @@ pub enum Event {
         proactive: bool,
         remembers: Vec<String>,
         forgets: Vec<u64>,
+        /// Paths the model asked to pin, and whether it asked to drop
+        /// everything (context.rs line protocol).
+        pins: Vec<String>,
+        pinclear: bool,
     },
     Error(String),
     Models(Vec<String>),
@@ -51,7 +55,13 @@ pub enum Job {
         question: String,
         context: String,
         memories: String,
+        /// The `#@` working context block (context.rs), riding in the
+        /// stable prefix next to memories.
+        pinned: String,
         proactive: bool,
+        /// A `#@ <natural language>` request: the model is being asked
+        /// to resolve a path and answer in PIN verbs, not to advise.
+        pin_ask: bool,
     },
     SetModel(String),
     /// Live tuning: key/value applied to the worker's own config copy.
@@ -81,17 +91,41 @@ impl Engine {
         })
     }
 
-    pub fn ask(&self, question: String, context: String, memories: String) {
+    pub fn ask(&self, question: String, context: String, memories: String, pinned: String) {
         let _ = self.job_tx.send(Job::Ask {
             question,
             context,
             memories,
+            pinned,
             proactive: false,
+            pin_ask: false,
+        });
+    }
+
+    /// `#@ <natural language>`: resolve what the user means against a
+    /// listing of candidates and answer in PIN verbs. Read-only, and
+    /// goulash performs the read — the model never gets a shell.
+    pub fn ask_pin(&self, request: String, candidates: String, pinned: String) {
+        let question = format!(
+            "The user wants to change the pinned working context. Their \
+             request: {request}\nFiles in the current directory: \
+             {candidates}\nAnswer with 'PIN: <path>' for each file or \
+             directory to pin (relative paths are fine), or 'PINCLEAR' to \
+             unpin everything. Add at most ONE short line of prose. If \
+             nothing plausibly matches, say so and pin nothing."
+        );
+        let _ = self.job_tx.send(Job::Ask {
+            question,
+            context: String::new(),
+            memories: String::new(),
+            pinned,
+            proactive: false,
+            pin_ask: true,
         });
     }
 
     /// Unprompted per-turn review; coalescing lets a user ask supersede it.
-    pub fn ask_proactive(&self, context: String, memories: String) {
+    pub fn ask_proactive(&self, context: String, memories: String, pinned: String) {
         let question = "Without being asked, briefly review the most recent \
                         command and its result — one short observation, \
                         tip, or wry aside is always welcome. Add a CMD: \
@@ -106,7 +140,9 @@ impl Engine {
             question,
             context,
             memories,
+            pinned,
             proactive: true,
+            pin_ask: false,
         });
     }
 
@@ -236,7 +272,9 @@ fn worker(
             question,
             context,
             memories,
+            pinned,
             proactive,
+            pin_ask,
         }) = latest_ask
         {
             let Some((model, _)) = &state else {
@@ -249,7 +287,8 @@ fn worker(
             });
             notify(&wr);
             let result = generate(
-                &agent, &cfg, &caps, model, &question, &context, &memories, &ev, &wr, proactive,
+                &agent, &cfg, &caps, model, &question, &context, &memories, &pinned, &ev, &wr,
+                proactive, pin_ask,
             );
             let _ = ev.send(Event::Idle);
             let _ = match result {
@@ -258,6 +297,7 @@ fn worker(
                         let _ = ev.send(Event::Debug(ans.clone()));
                     }
                     let (rest, remembers, forgets) = extract_memory_ops(&ans);
+                    let (rest, pins, pinclear) = crate::context::extract_pin_ops(&rest);
                     let (text, mut command) = split_answer(&rest, &path_set);
                     // Already vended mid-stream: don't hand it over twice.
                     if command.is_some() && command == early {
@@ -268,6 +308,8 @@ fn worker(
                         && early.is_none()
                         && remembers.is_empty()
                         && forgets.is_empty()
+                        && pins.is_empty()
+                        && !pinclear
                     {
                         if proactive {
                             Ok(()) // silent pass
@@ -281,6 +323,8 @@ fn worker(
                             proactive,
                             remembers,
                             forgets,
+                            pins,
+                            pinclear,
                         })
                     }
                 }
@@ -458,7 +502,11 @@ markdown. Each command carries the local time it ran; treat old output as \
 stale. The log also contains the running conversation: '#' lines are \
 earlier user questions, 'goulash:' lines are your earlier replies, and \
 'CMD:' lines are commands you suggested — follow-up questions refer back \
-to them.\n\n";
+to them.\n\
+When a file would let you answer better — a command reference, a runbook, \
+a config — you may suggest that the user pin it, with a normal command \
+line: 'CMD: #@/path <file>'. Goulash reads it into your working context. \
+Suggest it; never assume it happened.\n\n";
 
 #[allow(clippy::too_many_arguments)]
 fn generate(
@@ -469,9 +517,11 @@ fn generate(
     question: &str,
     context: &str,
     memories: &str,
+    pinned: &str,
     ev: &mpsc::Sender<Event>,
     wr: &OwnedFd,
     proactive: bool,
+    pin_ask: bool,
 ) -> Result<(String, Option<String>), String> {
     // Volatile parts (current time, question) go AFTER the stable prefix.
     // The command directive is repeated at point-of-use: small models
@@ -483,6 +533,10 @@ fn generate(
     // Command-first puts the payload where truncation cannot reach it —
     // and lets the suggestion vend before the prose finishes.
     let directive = match (cfg.command_first, proactive) {
+        _ if pin_ask => {
+            "Answer ONLY with PIN: / PINCLEAR lines plus at most one short \
+             prose line. No CMD: line."
+        }
         (true, false) => {
             "Reply with the command FIRST, on its own line, formatted \
              exactly as: CMD: <command> — required whenever any shell \
@@ -505,8 +559,11 @@ fn generate(
              command exists."
         }
     };
+    // Stable-prefix order, most stable first: preamble, memories,
+    // working context, session log. A pin changes far less often than
+    // the log, so it belongs above it in the prefix.
     let prompt = format!(
-        "{PREAMBLE}{memories}Session log (oldest first):\n{context}\n\
+        "{PREAMBLE}{memories}{pinned}Session log (oldest first):\n{context}\n\
          Current local time: {}\nQuestion: {question}\n{directive}\nAnswer:",
         local_now()
     );

@@ -10,6 +10,7 @@ pub struct Config {
     pub record: RecordConfig,
     pub shell: ShellConfig,
     pub engine: EngineConfig,
+    pub debug: DebugConfig,
     /// Per-model capability overrides, keyed by model name (with or
     /// without the `:tag`) — the escape hatch for a model that shipped
     /// after goulash's table did. See models.rs.
@@ -60,6 +61,10 @@ pub struct EngineConfig {
     /// putting it first means truncation eats the explanation instead of
     /// the command, and the suggestion can vend mid-stream.
     pub command_first: bool,
+    /// Total characters all `#@` pinned files together may spend in the
+    /// stable prefix. Shared equally between pins; anything over its
+    /// share is outlined rather than truncated (context.rs).
+    pub context_files_max_chars: usize,
     /// Context window requested from the provider; bounds KV memory
     /// (ollama may otherwise load models at huge default contexts).
     pub num_ctx: usize,
@@ -90,10 +95,50 @@ impl Default for EngineConfig {
             thinking_tokens: 512,
             thinking: "off".to_string(),
             command_first: true,
+            context_files_max_chars: 6000,
             num_ctx: 8192,
             prewarm: true,
             debug: false,
             commentary: true,
+        }
+    }
+}
+
+/// Terminal hackery, behind `#/debug` — the drawer for behaviours that
+/// are real levers on how goulash talks to the emulator, but which most
+/// people should never have to think about. Defaults are the shipped
+/// behaviour; every one of these exists so a field problem can be
+/// bisected live instead of by rebuilding.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DebugConfig {
+    /// How the cursor is put back after painting the reserved rows.
+    ///
+    /// `decsc` uses the terminal's own save/restore (ESC 7 / ESC 8),
+    /// which is the only form that preserves **deferred wrap** — the
+    /// state a terminal is in after a glyph lands in the last column,
+    /// where the cursor reads as "still on this row" but the next glyph
+    /// wraps. `absolute` re-homes with CUP from our mirror, which cannot
+    /// express that flag and so silently cancels it. (wiki:
+    /// architecture/status-rows.md)
+    pub cursor_save: String,
+    /// The unprovoked repaint every few idle ticks: insurance against
+    /// output we mis-parsed, paid for with a write into a stream the
+    /// line editor believes it owns. Turn it off to find out whether it
+    /// is buying anything.
+    pub idle_repaint: bool,
+    /// Skip a paint while the inner cursor sits in the last column,
+    /// deferring it to the next tick. Belt-and-braces on top of
+    /// `cursor_save = "decsc"`, and a way to isolate wrap effects.
+    pub wrap_guard: bool,
+}
+
+impl Default for DebugConfig {
+    fn default() -> Self {
+        Self {
+            cursor_save: "decsc".to_string(),
+            idle_repaint: true,
+            wrap_guard: false,
         }
     }
 }

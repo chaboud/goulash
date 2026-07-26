@@ -403,9 +403,26 @@ def test_engine_ollama():
     check("cycling wraps around", b"commentary: on" in out, out[-300:])
     os.write(mfd, b"\x1b")
     time.sleep(0.4)
+    # #/debug: the terminal-hackery drawer, same cycle mechanic.
+    os.write(mfd, b"#/debug\r")
+    out = read_until(mfd, rb"cursor_save: decsc", 5.0)
+    check("#/debug lists the esoteric knobs",
+          b"cursor_save: decsc" in out and b"idle_repaint: on" in out, out[-400:])
+    os.write(mfd, b"\r")            # decsc -> absolute
+    out = read_until(mfd, rb"cursor_save: absolute", 4.0)
+    check("Enter cycles a debug knob", b"cursor_save: absolute" in out, out[-300:])
+    os.write(mfd, b"\r")            # ... and back, so the fix stays on
+    out = read_until(mfd, rb"cursor_save: decsc", 4.0)
+    check("debug knob wraps back", b"cursor_save: decsc" in out, out[-300:])
+    os.write(mfd, b"\x1b")
+    time.sleep(0.4)
     os.write(mfd, b"#/help\r")
+    out = read_until(mfd, rb"#@/path", 4.0)
+    check("#/help lists current commands", b"#@/path" in out, out[-300:])
+    # The reference outgrew one screen, so it filters like any menu.
+    os.write(mfd, b"settings")
     out = read_until(mfd, rb"#/settings", 4.0)
-    check("#/help lists current commands", b"#/settings" in out, out[-300:])
+    check("#/help filters to a command", b"#/settings" in out, out[-300:])
     os.write(mfd, b"\x1b")
     time.sleep(0.4)
     os.write(mfd, b"#/status\r")
@@ -712,11 +729,149 @@ def test_chat_mode():
     time.sleep(0.5)
     os.write(mfd, b"## \r")  # reopen ...
     time.sleep(0.8)
+    # goulash's own controls keep their sigils inside chat: "pin that
+    # file" is a thing you say mid-conversation.
+    os.write(mfd, b"@\r")
+    out = read_until(mfd, rb"nothing pinned", 5.0)
+    check("@ commands work from inside chat", b"nothing pinned" in out, out[-300:])
+    time.sleep(0.4)
     os.write(mfd, b"\x1b")  # ... and Esc backs out
     time.sleep(0.4)
     os.write(mfd, b"echo bye-$((2*2))\r")
     out = read_until(mfd, rb"bye-4", 5.0)
     check("esc exits chat, shell keys flow again", b"bye-4" in out, out[-300:])
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+    srv.shutdown()
+
+
+def test_working_context():
+    print("#@ pins files into the model's context (fake ollama):")
+    if not shutil.which("zsh"):
+        print("  [SKIP] zsh not installed")
+        return
+    import http.server
+    import threading
+
+    prompts = []
+
+    class FakeOllama(http.server.BaseHTTPRequestHandler):
+        def _send(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/api/tags":
+                self._send({"models": [{"name": "pinmodel", "size": 1}]})
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            req = json.loads(self.rfile.read(n) or b"{}")
+            if self.path == "/api/show":
+                self._send({"capabilities": show_caps(req.get("model", ""))})
+                return
+            if "prompt" not in req:
+                self._send({"done": True})
+                return
+            p = req["prompt"]
+            prompts.append(p)
+            if "change the pinned working context" in p:
+                # The mediated form: resolve to a path, answer in verbs.
+                if "OTHER.md" in p:      # got a candidate listing
+                    self._send({"response": "pinning that\nPIN: ./OTHER.md"})
+                else:
+                    self._send({"response": "NOCANDIDATES"})
+                return
+            self._send({"response": "PASS"})
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), FakeOllama)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    work = tempfile.mkdtemp(prefix="goulash-work-")
+    with open(os.path.join(work, "commandRef.md"), "w") as f:
+        f.write("# widgetctl\n\nRun `widgetctl sync --all` to sync.\n")
+    with open(os.path.join(work, "OTHER.md"), "w") as f:
+        f.write("# other\n\nMENTIONS-OTHER\n")
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write("[engine]\nprovider = \"ollama\"\n"
+                f"host = \"http://127.0.0.1:{port}\"\nstream = false\n"
+                "commentary = false\n")
+    proc, mfd = spawn(["zsh"], home=home)
+    time.sleep(1.2)
+    os.write(mfd, f"cd {work}\r".encode())
+    read_until(mfd, rb"\$", 4.0)
+
+    # Nothing pinned: say so, and don't spend a byte of prompt on it.
+    os.write(mfd, b"#@\r")
+    out = read_until(mfd, rb"nothing pinned", 5.0)
+    check("bare #@ reports an empty context", b"nothing pinned" in out, out[-200:])
+
+    # The deterministic form: no model involved at all.
+    os.write(mfd, b"#@/path commandRef.md\r")
+    out = read_until(mfd, rb"verbatim", 5.0)
+    check("#@/path pins without the LLM",
+          b"commandRef.md" in out and b"verbatim" in out, out[-300:])
+    check("pin shows in the chrome", b"@commandRef.md" in out, out[-300:])
+
+    # ...and the file's content is actually in front of the model.
+    os.write(mfd, b"#how do i sync\r")
+    read_until(mfd, rb"PASS", 8.0)
+    asked = [p for p in prompts if "how do i sync" in p]
+    check("pinned text reaches the prompt",
+          asked and "widgetctl sync --all" in asked[-1], "")
+    check("pin rides the stable prefix, above the session log",
+          asked and asked[-1].index("Working context") < asked[-1].index("Session log"),
+          "")
+
+    # The mediated form: words in, PIN verb out, goulash does the read.
+    os.write(mfd, b"#@ can you use the other markdown instead\r")
+    # The chrome is the durable evidence: a second pin appeared, chosen
+    # by the model from a listing goulash gave it.
+    out = read_until(mfd, rb"@commandRef.md\+1", 8.0)
+    check("#@ <words> resolves through the model",
+          b"@commandRef.md+1" in out, out[-300:])
+    os.write(mfd, b"#and now\r")
+    read_until(mfd, rb"PASS", 8.0)
+    asked = [p for p in prompts if "and now" in p]
+    check("model-chosen pin reaches the prompt too",
+          asked and "MENTIONS-OTHER" in asked[-1], "")
+
+    # Changed on disk: marked, never silently reloaded.
+    with open(os.path.join(work, "commandRef.md"), "a") as f:
+        f.write("\nNEW LINE ADDED LATER\n")
+    os.write(mfd, b"true\r")
+    read_until(mfd, rb"\$", 4.0)
+    time.sleep(0.4)
+    out = read_until(mfd, rb"@commandRef.md\+1\*", 5.0)
+    check("a changed pin is marked in the chrome",
+          b"@commandRef.md+1*" in out, out[-300:])
+    os.write(mfd, b"#still here\r")
+    read_until(mfd, rb"PASS", 8.0)
+    asked = [p for p in prompts if "still here" in p]
+    check("stale text keeps serving until asked to re-cook",
+          asked and "NEW LINE ADDED LATER" not in asked[-1], "")
+
+    # Unset really unsets, and the block goes back to costing nothing.
+    os.write(mfd, b"#@/unset\r")
+    out = read_until(mfd, rb"cleared", 5.0)
+    check("#@/unset drops every pin", b"cleared" in out, out[-200:])
+    os.write(mfd, b"#gone now\r")
+    read_until(mfd, rb"PASS", 8.0)
+    asked = [p for p in prompts if "gone now" in p]
+    check("an empty context costs zero prompt bytes",
+          asked and "Working context" not in asked[-1], "")
+
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
     srv.shutdown()
@@ -852,12 +1007,16 @@ def test_memory():
 def painted_rows(chunk):
     """[(row, printable_width)] for each band row goulash painted."""
     out = []
-    # Body runs to the next cursor move or the cursor-restore that ends
-    # goulash's paint -- anything past that is the shell's own output.
+    # Body runs to the next cursor move, the DECRC that ends goulash's
+    # paint, or the visibility restore after it -- anything past that is
+    # the shell's own output.
     for m in re.finditer(
-            rb"\x1b\[(\d+);1H\x1b\[0m\x1b\[K((?:(?!\x1b\[\d+;\d*H|\x1b\[\?25).)*)",
+            rb"\x1b\[(\d+);1H\x1b\[0m\x1b\[K"
+            rb"((?:(?!\x1b\[\d+;\d*H|\x1b\[\?25|\x1b[78]).)*)",
             chunk, re.S):
-        body = re.sub(rb"\x1b\[[0-9;?]*[a-zA-Z]", b"", m.group(2))
+        # Strip CSI sequences AND the two-byte DECSC/DECRC pair, which
+        # print nothing but would otherwise count as two cells.
+        body = re.sub(rb"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[78]", b"", m.group(2))
         out.append((int(m.group(1)), len(body.decode("utf-8", "replace"))))
     return out
 
@@ -923,6 +1082,7 @@ def main():
         test_model_menu,
         test_model_capabilities,
         test_chat_mode,
+        test_working_context,
         test_memory,
         test_resize_hygiene,
         test_non_tty,

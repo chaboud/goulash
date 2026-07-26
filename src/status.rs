@@ -49,12 +49,19 @@ pub fn chrome_row(
     reserved: u16,
     shell_name: &str,
     state: &str,
+    pin: Option<&str>,
 ) -> String {
     // Width stops one cell short of the real edge (compose_rows explains
     // why); the geometry text still reports the true column count.
     let cols = (real.cols as usize).saturating_sub(1);
+    // The active `#@` sits next to the shell name: it changes what the
+    // model knows, so it has to be visible without asking.
+    let at = match pin {
+        Some(p) => format!(" \u{2502} {p}"),
+        None => String::new(),
+    };
     let chrome = format!(
-        " goulash \u{2502} {shell_name} \u{2502} {state} # {}x{inner_rows}+{reserved} ",
+        " goulash \u{2502} {shell_name}{at} \u{2502} {state} # {}x{inner_rows}+{reserved} ",
         real.cols
     );
     let clipped: String = chrome.chars().take(cols).collect();

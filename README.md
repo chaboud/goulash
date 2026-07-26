@@ -55,6 +55,25 @@ Down past the newest keeps going into the **history of suggested commands** with
 ### `##` longer chat
 `##` (or `## question`) flips into a chat panel; follow-ups need no prefix. The shell keeps running above.  When you select a command to copy to the prompt, you're back in your shell.
 
+### `#@` anchor it on a file
+Point the model at a file and it knows *your* tools, not just common Unix:
+
+```text
+#@/path commandRef.md    pin a file (or a directory) — no LLM involved
+#@ use the synology doc  say it in words; goulash finds and pins it
+#@                       what's pinned, how big, how fresh
+#@/unset                 drop it
+```
+
+The pinned text rides in every ask, and the chrome shows what's anchored
+(`@commandRef.md`, with a `*` when it changed on disk — goulash marks it,
+never silently re-reads). Drop a vendor's command reference next to their
+CLI and suggestions start coming out right for a tool the model has never
+seen. It still only ever *suggests*; you still run it.
+
+Because `#@/path …` is a plain command, the model can suggest one back at
+you — `CMD: #@/path commandRef.md` arrives as a normal pullable chip.
+
 ### `#/` goulash's menu controls
 ```text
 #/model            modal model picker: type to filter, ⏎ selects & saves
@@ -63,6 +82,7 @@ Down past the newest keeps going into the **history of suggested commands** with
 #/memory           browse the slots: filter, ↑↓, ⏎⏎ to forget one
 #/thinking low     reasoning level: off | low | medium | high
 #/settings         live-tune everything, applied and saved on the spot
+#/debug            terminal-hackery toggles (you probably don't need these)
 #/commentary off   quiet the per-turn heckling
 #/status
 #/help

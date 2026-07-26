@@ -46,24 +46,30 @@ owner can do.
   field at all), the reasoning allowance (the model's number, not one
   global), the settings/`#/thinking`/`#/status` annotations, and a
   single-cause empty-answer diagnosis.
+- **Deferred-wrap fix**: the cursor is restored with DECSC/DECRC
+  (`ESC 7`/`ESC 8`) instead of an absolute CUP rebuilt from the mirror,
+  because CUP cannot carry the wrap flag and silently cancelled it —
+  the tab-completion listing that cleared one row short. Full mechanism
+  in [status-rows](../architecture/status-rows.md).
+- **`#/debug`**: `[debug]` config + menu for terminal hackery —
+  `cursor_save` (A/B the fix above), `idle_repaint` (is the unprovoked
+  paint buying anything?), `wrap_guard`. Defaults are the shipped
+  behaviour.
+- **`#@` working context v1** (`src/context.rs`): `#@/path <p>` pins
+  deterministically, `#@/unset` / `#@/drop` / `#@/list`, bare `#@`
+  lists, and `#@ <words>` goes to the model, which answers in
+  `PIN:`/`PINCLEAR` verbs. Verbatim or deterministic outline against a
+  shared budget, `*` dirty marker set by a stat at prompt turns, chrome
+  shows the active `@`. Session-scoped — persisting a pin would force
+  the per-cwd-vs-global call that is still open.
 
 ## Next, in order
 
-1. **`#@` working context** — design settled enough to argue from, not
-   yet built: [working-context](../architecture/working-context.md).
-   The user wants a design pass *before* code. Key resolved points:
-   LLM-mediated (natural language, `PIN:`/`UNPIN:`/`PINCLEAR` verbs,
-   read-only capability performed by goulash not the shell); atomic
-   promotion for a file, **checkpointed** for a tree (a directory cook
-   can take hours and must be useful while incomplete); no file
-   watching — a `*` dirty marker plus asked-for re-cook; secrets gate
-   on a per-provider `trusted` flag, not on content; chrome shows the
-   active `@` with a percent meter while cooking.
-2. **Text-entry settings.** `#/settings` cycles presets, which is
+1. **Text-entry settings.** `#/settings` cycles presets, which is
    wrong for numbers. The memory browser's compose field is the
    pattern — generalize it so a setting can declare *entry* over
    *cycle*.
-3. **`#/study`** — background worker mining transcripts into memories
+2. **`#/study`** — background worker mining transcripts into memories
    tuned to coach *this* user. Prerequisites: transcript retention
    (`~/.goulash/history/*.jsonl` grows unbounded today) and
    review/approve for machine-written slots.
@@ -93,6 +99,14 @@ owner can do.
 - **Never blank-erase inner rows.** The shell only rebuilds its screen
   at a prompt turn, so anything erased between turns leaves a hole
   nothing repairs. Restore from the vt100 mirror instead.
+- **Rows that fill the last cell are a hazard family, not one bug.**
+  Two distinct failures so far: soft-wrap reflow on resize, and
+  deferred-wrap cancellation by an absolute cursor restore. Suspect the
+  final column whenever the artifact is off by one row.
+- **Relative paths belong to the SHELL, not to goulash.** goulash's own
+  cwd is wherever it was launched; the shell has been `cd`-ing ever
+  since. Anything path-shaped resolves against the cwd from the OSC
+  wire. (Caught by `#@/path` silently failing in a `cd`-ed directory.)
 
 ## Test sweep before promoting `dev`
 
@@ -103,3 +117,23 @@ on a model that supports it; memory at volume (browse/filter/delete/
 compose); a drag-resize; and the regression sweep — vim/less
 (alt-screen suspends chat), Ctrl-C mid-generation, long output with
 commentary firing, `##` chat with CMD-first.
+
+Added by this round, and needing a **real emulator** (e2e drives a PTY
+with nothing interpreting the other end, so it cannot see these):
+
+- **Tab-complete, then keep typing.** The original report. Listing
+  should clear completely. A/B it with `#/debug` →
+  `cursor_save = absolute`, which should bring the orphan row back.
+- **`idle_repaint = off`** for a while: does anything actually go
+  stale, or was the unprovoked paint buying nothing?
+- **`#@/path` on a real command reference**, then ask something only
+  that file could answer. Also: pin a directory, watch the outline
+  tier, edit a pinned file and confirm the `*`.
+
+## Backlog note: virtual terminal, and scrollback
+
+Full alt-screen containment (tmux-style virtual terminal operation) is
+the end state that makes every artifact in the hazard family impossible
+— we would own every cell. It also makes **scrollback our problem**,
+since the native buffer that makes goulash feel like a normal terminal
+would no longer exist. Not now; noted so the trade is remembered.

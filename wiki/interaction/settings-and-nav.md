@@ -176,3 +176,26 @@ Whether the left-edge gesture wants a chord alternative (for terminals
 or users where arrow semantics feel overloaded), and how much of the
 settings tree is worth exposing in-UI vs. file-only —
 [open-questions](../product/open-questions.md).
+
+## `#/debug`: the terminal-hackery drawer
+
+Some knobs are not preferences. They are levers on how goulash drives
+the emulator, and getting one wrong shows up as artifacts on screen
+rather than as a different answer. Those live in `#/debug`, cycled with
+Enter like any other menu, applied to the very next paint — the point is
+to watch an artifact appear and vanish while the shell keeps running,
+instead of bisecting by rebuild.
+
+| Knob | Values | What it decides |
+|---|---|---|
+| `cursor_save` | `decsc` \| `absolute` | how the cursor is put back after a paint. `decsc` is the fix for [deferred wrap](../architecture/status-rows.md); `absolute` is the old behaviour, kept so the fix can be A/B'd in place |
+| `idle_repaint` | on \| off | the unprovoked repaint every few idle ticks. Insurance against output we mis-parsed, paid for with a write into a stream the line editor believes it owns |
+| `wrap_guard` | off \| on | skip a paint while the inner cursor sits in the last column, deferring it a tick. Belt-and-braces above `decsc` |
+
+Defaults are the shipped behaviour, so opening the menu never changes
+anything by itself. They persist to `[debug]` in config.toml.
+
+This is also where terminal work lands as it arrives — full alt-screen
+containment, tmux-style virtual terminal operation, and the scrollback
+ownership that would come with it, are all *backlog*, but they belong in
+this drawer when they exist.

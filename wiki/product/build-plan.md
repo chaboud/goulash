@@ -235,10 +235,27 @@ Field-driven, roughly in order of leverage:
    a four-stop carousel. The memory browser's compose field already
    solves this (a modal text input inside a menu row); generalize it
    so a setting can declare *entry* instead of *cycle*.
-7. **`#@` working context** — pinned files as near-tool-use, with a
-   chrome indicator and an ingest meter:
-   [working-context](../architecture/working-context.md). Design
-   session before code.
+7. ~~**`#@` working context**~~ **v1 built** (`src/context.rs`) —
+   [working-context](../architecture/working-context.md). Two dialects:
+   `#@/path <p>` is a deterministic path API (no model, exactly
+   testable, and *suggestible* — `CMD: #@/path ref.md` is a normal
+   pullable chip), while `#@ <words>` goes to the model, which answers
+   in `PIN:`/`PINCLEAR` verbs against a directory listing goulash
+   supplies. Verbatim or deterministic outline against a shared budget;
+   `*` dirty marker from a stat at prompt turns; the active `@` in the
+   chrome. Still ahead: the **LLM digest tier** for large documents,
+   the **percent meter** that goes with it (nothing is async yet, so
+   there is nothing to meter), scope persistence, and the per-provider
+   `trusted` flag for the untrusted-egress case.
+
+9. **Deferred wrap, and the terminal-hackery drawer.** Built: the
+   cursor is restored with DECSC/DECRC rather than an absolute CUP,
+   because CUP cannot carry the deferred-wrap flag —
+   [status-rows](../architecture/status-rows.md). `#/debug` is the
+   drawer those levers live in. **Backlog, explicitly not now**:
+   full alt-screen containment / tmux-style virtual terminal
+   operation, which would make the whole hazard family impossible and
+   would make **scrollback goulash's problem** in exchange.
 8. **Transcript retention, and `#/study`.**
    `~/.goulash/history/session-*.jsonl` is written forever and pruned
    never — with `record.output` on (default) that is every byte the

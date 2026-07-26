@@ -106,3 +106,45 @@ Options if it ever becomes intolerable:
 - **Suppress painting while a resize is in flight** and repaint once
   the geometry has been stable for longer than the current 60 ms
   settle. Cheap to try; trades a briefly-empty band for less residue.
+
+## Deferred wrap: why the cursor restore is DECSC, not CUP
+
+A second, unrelated bug lived in the same family — *rows that fill the
+last cell* — and it produced a much stranger symptom: a tab-completion
+listing that cleared **one row short**, leaving an orphan row of
+filenames under the prompt.
+
+The mechanism. When a glyph lands in the terminal's final column the
+cursor enters **deferred wrap**: it reads as still on that row, but the
+next glyph moves to the next line. No escape sequence can name that
+state. Goulash used to end each paint with an absolute `CUP` rebuilt
+from its vt100 mirror — which restores the *position* and silently
+cancels the *flag*. The shell's next character then overwrote the last
+cell instead of wrapping, every row below shifted by one, and ZLE's own
+line accounting — which still assumed the wrap happened — cleared one
+row too few.
+
+Two things made this reachable in ordinary use: goulash paints on an
+**idle tick** whether or not anything changed, so it interrupts a line
+editor at arbitrary moments; and nothing tells ZLE it happened.
+
+The fix is to stop describing the cursor and let the terminal remember
+it: `ESC 7` / `ESC 8` (DECSC/DECRC) save and restore position,
+attributes, **and the wrap flag**. The one cost is that the emulator has
+a single save slot, shared with the child — a child that saves, gets
+painted over, then restores would get our cursor back. Line editors do
+not use DECSC, and full-screen apps that do live on the alternate
+screen where the band is suspended, so the window is narrow. DECSC does
+not carry cursor *visibility*, which is re-asserted from the mirror
+either way.
+
+Both levers are live under [`#/debug`](../interaction/settings-and-nav.md):
+`cursor_save = decsc|absolute` to A/B the fix itself, `idle_repaint` to
+find out whether the unprovoked paint is buying anything, and
+`wrap_guard` to defer a paint whenever the inner cursor is parked in the
+last column — belt-and-braces above the real fix.
+
+**Verified in code and by unit test** (byte shape: DECSC first, no CUP
+after DECRC). The behavioural half needs a real emulator — e2e drives a
+PTY with nothing interpreting the other end — so confirmation that the
+completion residue is gone is a hands-on check.

@@ -1,6 +1,8 @@
 # `#@` Working Context: Pinned Files as Near-Tool-Use
 
-**Status: design, to be worked through together before building.**
+**Status: v1 built** (`src/context.rs`). This page is both the design
+and the record of what shipped; sections marked *(not yet)* are the
+parts still ahead. See [state-of-play](../product/state-of-play.md).
 
 `#@ <path>` pins a file (or a directory) into a **working context** that
 rides in the prompt's [stable prefix](llm-engine.md), next to
@@ -8,11 +10,34 @@ rides in the prompt's [stable prefix](llm-engine.md), next to
 whatever the user says matters right now.
 
 ```
-#@ commandRef.md          pin a file
-#@ ./deploy/              pin a tree (walked, capped, compacted)
-#@                        list what's pinned, with sizes and freshness
-#@ drop 2                 unpin
+#@/path commandRef.md     pin a file          — deterministic, no model
+#@/path ./deploy/         pin a tree          — walked, capped, outlined
+#@/path                   (blank) unset       — stop anchoring on anything
+#@/unset                  drop every pin
+#@/drop 2                 unpin one
+#@/list                   what's pinned, with sizes and freshness
+#@                        same as /list
+#@ <anything else>        hand it to the model (below)
 ```
+
+## Two dialects, and why the pure one earns its keep
+
+The `/` forms are a **deterministic path API**: no model, no ambiguity.
+That buys three things at once. They work with no engine bound. They are
+exactly testable, which the natural-language form can never be. And —
+because `#@/path ref.md` is an ordinary shell comment line that goulash
+intercepts — **the model can suggest one**:
+
+```
+CMD: #@/path commandRef.md
+```
+
+That arrives as a normal pullable suggestion: Down puts it on your
+prompt, Enter runs it, goulash reads the file. The model asking for
+context is just another suggestion the user accepts or ignores — no new
+protocol, no new trust boundary, and the same "goulash suggests, you
+run" rule as everything else. The preamble tells the model the verb
+exists.
 
 ## `#@` is LLM-mediated, not a path parser
 
@@ -63,17 +88,32 @@ silent multi-second cook is exactly the "am I frozen?" failure we hit
 with model loads. Done cooking, the meter collapses back to the plain
 `@ name` marker.
 
-## Ingest tiers (the budget is the design)
+## Ingest tiers (the budget is the design) *(digest tier: not yet)*
 
 The stable prefix is the KV-cache asset; a fat pin destroys the
 latency work. So ingest is **compaction, not concatenation**, chosen by
 size against a hard `context_files_max_chars` budget:
 
-| Tier | When | What lands in the prompt |
-|---|---|---|
-| **Verbatim** | fits the budget | the text as-is |
-| **Digest** | over budget | **LLM compression** — the model rewrites it down, biased toward commands, flags, invariants |
-| **Outline** | tree, or still over after compression | structure + headings + per-file one-liners, drillable later |
+| Tier | When | What lands in the prompt | Built |
+|---|---|---|---|
+| **Verbatim** | fits its share | the text as-is | yes |
+| **Outline** | over its share | structure kept, prose dropped — headings, fences, tables, flag-bearing lines | yes, deterministic |
+| **Digest** | large documents | **LLM compression**, biased toward commands and invariants | not yet |
+
+v1 ships Verbatim and a **deterministic** Outline. That ordering is
+deliberate rather than lazy: the extraction is instant, it works with no
+engine bound, and it gives a pin something useful to say the moment it
+is made — which is the same "useful while incomplete" rule the tree
+checkpointing follows, applied to one file. The LLM digest is strictly
+better for a large document and is the next tier; it swaps in *behind* a
+deterministic first pass rather than replacing it.
+
+The budget (`[engine] context_files_max_chars`, default 6000) is a
+**total**, split equally between pins. Equal shares beat clever
+weighting: the user picked these files deliberately, and a scheme that
+quietly starves one is worse than one that outlines both. Tier is
+computed at emit time from the live share, never stored, so the label
+can never disagree with what was actually sent.
 
 The trigger is mechanical: if the content exceeds the share of the
 context window the pin is allowed, it gets compressed rather than
@@ -137,6 +177,22 @@ stalled, and stale-and-labelled beats both. Digests cache under
 `~/.goulash/context/` keyed by path + mtime + size, so re-pinning
 across sessions is free.
 
+## What v1 actually reads, and what it refuses
+
+- **Relative paths resolve against the SHELL's cwd**, learned from the
+  OSC wire — not goulash's own process directory, which is wherever the
+  binary was launched an hour ago. `~/` is expanded; nothing else is,
+  because this is a path, not a command line.
+- **Binaries are refused**, not pasted: a NUL in the first 8 KB and the
+  pin fails with a reason. A hard 512 KB read cap sits above that.
+- **A tree is bounded** — 64 files, 3 levels, with `.git`, `target`,
+  `node_modules`, `.venv` and friends skipped, and dotfiles ignored. It
+  is a convenience, not a crawler; the note says when the cap was hit.
+- **A failed pin changes nothing.** Missing path, unreadable file,
+  binary: the error is reported and the context is untouched.
+- **Re-pinning the same path replaces it** and keeps its id — that *is*
+  the re-cook — rather than stacking a duplicate.
+
 ## Hazards to settle before writing code
 
 - **Secrets: the rule is egress, not content.** Reading a file with
@@ -166,10 +222,13 @@ across sessions is free.
 
 ## Open questions (for the design session)
 
-1. **Scope**: per-cwd (project-local pins, auto-restored on `cd` into
-   the tree) or global? Per-cwd feels right for `commandRef.md`, global
-   for a personal style guide — possibly both, with the list showing
-   which is which.
+1. **Scope** *(v1: session-only, deliberately)*: per-cwd (project-local
+   pins, auto-restored on `cd` into the tree) or global? Per-cwd feels
+   right for `commandRef.md`, global for a personal style guide —
+   possibly both, with the list showing which is which. v1 persists
+   nothing, which is the one choice that does not pre-empt this: pins
+   are deliberate and cheap to re-make, and a stored pin would have to
+   pick a scope before the question was settled.
 2. **Digest authorship**: model-written (better, costs a call, needs a
    model that's up) or deterministic extraction (headings, code
    fences, first-N-lines — instant, dumber)? Deterministic as the

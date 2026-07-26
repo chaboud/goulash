@@ -198,6 +198,10 @@ enum MenuKind {
     Settings,
     /// A browsable command reference; Enter does nothing.
     Help,
+    /// Terminal-hackery toggles. Same cycle-on-Enter mechanic as
+    /// Settings, kept separate because these are levers on how goulash
+    /// talks to the emulator, not preferences.
+    Debug,
 }
 
 /// Live-tunable settings and the values Enter cycles through. Everything
@@ -211,6 +215,15 @@ const SETTINGS: &[(&str, &[&str])] = &[
     ("command_first", &["on", "off"]),
 ];
 
+/// `#/debug`: the drawer for behaviours that change how goulash drives
+/// the terminal. Anything here can be turned live so a field problem can
+/// be bisected in place instead of by rebuilding.
+const DEBUG_SETTINGS: &[(&str, &[&str])] = &[
+    ("cursor_save", &["decsc", "absolute"]),
+    ("idle_repaint", &["on", "off"]),
+    ("wrap_guard", &["off", "on"]),
+];
+
 const HELP_ITEMS: &[&str] = &[
     "#<question>            ask; the answer lands in the band",
     "##<question>           chat: follow-ups need no prefix",
@@ -219,7 +232,11 @@ const HELP_ITEMS: &[&str] = &[
     "#/model NAME [save]    switch now; 'save' persists",
     "#/memory               browse slots; + new to write one",
     "#/memory on|off|limit  enable, disable, resize the store",
+    "#@/path FILE           pin a file (or dir) into the model's context",
+    "#@ <request>           pin/unpin in words; #@ alone lists",
+    "#@/unset               drop every pin",
     "#/settings             live-tune everything below",
+    "#/debug                terminal-hackery toggles (esoteric)",
     "#/thinking off|low|medium|high",
     "#/commentary on|off    per-turn heckling",
     "#/status               engine, model, blocks this session",
@@ -419,6 +436,7 @@ fn compose_rows(
     menu: &Option<Menu>,
     engine_model: &Option<String>,
     chat: &Option<Chat>,
+    pin: Option<&str>,
 ) -> Vec<String> {
     // Never write the terminal's LAST cell. A row that fills the final
     // column is flagged as continued/soft-wrapped, and a width change
@@ -500,6 +518,7 @@ fn compose_rows(
             reserved,
             shell_name,
             sense::label(st, hook),
+            pin,
         ));
         return rows;
     }
@@ -538,7 +557,7 @@ fn compose_rows(
                 match m.kind {
                     MenuKind::Model => "\u{23ce} save",
                     MenuKind::Memory => "\u{23ce}\u{23ce} forget",
-                    MenuKind::Settings => "\u{23ce} cycles",
+                    MenuKind::Settings | MenuKind::Debug => "\u{23ce} cycles",
                     MenuKind::Help => "reference",
                 },
                 (m.cursor + 1).min(filtered.len()),
@@ -579,6 +598,7 @@ fn compose_rows(
             reserved,
             shell_name,
             sense::label(st, hook),
+            pin,
         ));
         return rows;
     }
@@ -607,6 +627,7 @@ fn compose_rows(
             reserved,
             shell_name,
             label,
+            pin,
         )];
     }
 
@@ -664,6 +685,7 @@ fn compose_rows(
         reserved,
         shell_name,
         label,
+        pin,
     ));
     rows
 }
@@ -694,10 +716,41 @@ fn sync_reserved(
 }
 
 /// Scroll-region assertion + reserved-row redraw + cursor/attribute
-/// restore, derived from the tracked inner-screen state.
-fn fixup_bytes(layout: &Layout, screen: &vt100::Screen, rows: &[String]) -> Vec<u8> {
+/// restore.
+///
+/// The restore is the subtle part. We interrupt a line editor that
+/// believes it owns the cursor, so whatever we put back has to be
+/// **exactly** what was there — including the state no escape sequence
+/// can name. After a glyph lands in the terminal's last column the
+/// cursor is in *deferred wrap*: it reads as still on that row, but the
+/// next glyph moves to the next line. `CUP` cannot express that, so
+/// restoring by absolute position silently cancels it, the shell's next
+/// character overwrites the last cell instead of wrapping, and every row
+/// below shifts by one while the editor's own line accounting does not.
+/// Field signature: a tab-completion listing that clears one row short.
+///
+/// `ESC 7` / `ESC 8` (DECSC/DECRC) is the terminal's own save/restore and
+/// carries the wrap flag with it. Its one cost is that the emulator has a
+/// single save slot, shared with the child — so a child that saves,
+/// gets painted over, then restores would get our cursor back. Line
+/// editors do not use DECSC, and full-screen apps that do are painted
+/// over only in the alt screen, where the band is suspended anyway.
+/// `[debug] cursor_save = "absolute"` reverts to the old behaviour.
+///
+/// DECSC does not cover cursor *visibility*, so that is re-asserted from
+/// the mirror afterwards either way.
+fn fixup_bytes(
+    layout: &Layout,
+    screen: &vt100::Screen,
+    rows: &[String],
+    cursor_save: &str,
+) -> Vec<u8> {
+    let decsc = cursor_save != "absolute";
     let mut out: Vec<u8> = Vec::with_capacity(512);
     let inner = layout.inner();
+    if decsc {
+        out.extend_from_slice(b"\x1b7"); // DECSC, before we disturb anything
+    }
     out.extend_from_slice(b"\x1b[?25l"); // hide cursor while we work
     out.extend_from_slice(format!("\x1b[1;{}r", inner.rows).as_bytes());
     for (i, row) in rows.iter().enumerate() {
@@ -708,9 +761,27 @@ fn fixup_bytes(layout: &Layout, screen: &vt100::Screen, rows: &[String]) -> Vec<
         out.extend_from_slice(b"\x1b[0m\x1b[K");
         out.extend_from_slice(row.as_bytes());
     }
-    out.extend_from_slice(&screen.attributes_formatted());
-    out.extend_from_slice(&screen.cursor_state_formatted());
+    if decsc {
+        out.extend_from_slice(b"\x1b8"); // DECRC: position, attrs, wrap flag
+    } else {
+        out.extend_from_slice(&screen.attributes_formatted());
+        out.extend_from_slice(&screen.cursor_state_formatted());
+    }
+    out.extend_from_slice(if screen.hide_cursor() {
+        b"\x1b[?25l".as_slice()
+    } else {
+        b"\x1b[?25h".as_slice()
+    });
     out
+}
+
+/// Is the inner cursor parked in the last column — i.e. is the terminal
+/// (probably) holding a deferred wrap right now? The mirror tracks the
+/// column but not the flag itself, so this is the closest proxy we have,
+/// and it is only ever used to *defer* a paint, never to change one.
+fn at_last_column(screen: &vt100::Screen, layout: &Layout) -> bool {
+    let (_, col) = screen.cursor_position();
+    col + 1 >= layout.inner().cols
 }
 
 /// Hand back the rows the band occupied last paint but no longer does.
@@ -769,6 +840,7 @@ fn slash_command(
     thinking: &mut String,
     max_tokens: usize,
     caps: Option<&crate::models::Caps>,
+    dbg: &crate::config::DebugConfig,
 ) -> Option<String> {
     let mut it = cmdline.splitn(2, char::is_whitespace);
     let cmd = it.next().unwrap_or("");
@@ -872,6 +944,13 @@ fn slash_command(
             *menu = Some(m);
             None
         }
+        ("debug", _) => {
+            let mut m = Menu::open("debug", MenuKind::Debug);
+            m.items = debug_items(dbg);
+            m.loaded = true;
+            *menu = Some(m);
+            None
+        }
         ("help", _) => {
             let mut m = Menu::open("help", MenuKind::Help);
             m.items = HELP_ITEMS.iter().map(|s| s.to_string()).collect();
@@ -912,6 +991,112 @@ fn settings_items(
                 "memory" => if memory.enabled { "on" } else { "off" }.to_string(),
                 "max_tokens" => max_tokens.to_string(),
                 "command_first" => "on".to_string(),
+                _ => String::new(),
+            };
+            format!("{name}: {v}")
+        })
+        .collect()
+}
+
+/// `#@` — the working context surface.
+///
+/// Two dialects on purpose. The `/` forms are a pure, deterministic
+/// path API: no model involved, so they work with no engine bound, they
+/// are exactly testable, and — because a `#@/path …` line is an ordinary
+/// shell comment goulash intercepts — the model can *suggest* one as a
+/// `CMD:` line that the user pulls with Down like any other. Everything
+/// else is handed to the model, which answers in PIN verbs (context.rs).
+fn at_command(
+    rest: &str,
+    work: &mut crate::context::WorkContext,
+    engine: Option<&Engine>,
+    cwd: &str,
+) -> Option<String> {
+    let rest = rest.trim();
+    // Paths are the USER's, so they resolve against the shell's cwd —
+    // which goulash learns from the OSC wire, not from its own process.
+    // goulash was launched wherever it was launched; the shell has been
+    // cd-ing around ever since.
+    let base = std::path::Path::new(if cwd.is_empty() { "." } else { cwd });
+    let resolve = |p: &str| base.join(shellexpand(p));
+    if let Some(sub) = rest.strip_prefix('/') {
+        let mut it = sub.splitn(2, char::is_whitespace);
+        let verb = it.next().unwrap_or("");
+        let arg = it.next().unwrap_or("").trim();
+        return Some(match (verb, arg) {
+            // A blank path is the unset: `#@/path ` with nothing after
+            // it reads as "stop anchoring on anything".
+            ("path", "") | ("unset", _) | ("clear", _) => match work.clear() {
+                0 => "@ nothing pinned".to_string(),
+                n => format!("@ cleared ({n})"),
+            },
+            ("path", p) => match work.pin(&resolve(p)) {
+                Ok(msg) => msg,
+                Err(e) => format!("@ {e}"),
+            },
+            ("drop", a) => match a.trim_start_matches('[').trim_end_matches(']').parse::<u64>() {
+                Ok(id) => match work.drop_id(id) {
+                    Some(label) => format!("@ dropped {label}"),
+                    None => format!("@ no pin [{id}]"),
+                },
+                Err(_) => "usage: #@/drop <id>".to_string(),
+            },
+            ("list", _) => list_pins(work),
+            _ => "usage: #@/path <file> \u{b7} #@/unset \u{b7} #@/drop <id> \u{b7} #@/list"
+                .to_string(),
+        });
+    }
+    if rest.is_empty() {
+        return Some(list_pins(work));
+    }
+    // Natural language: the model resolves it against a listing of
+    // candidates and answers in PIN verbs. Read-only, and goulash does
+    // the reading — a mis-resolved pin costs a wasted read, not a side
+    // effect, which is why this needs no approval prompt in front of it.
+    match engine {
+        Some(eng) => {
+            eng.ask_pin(
+                rest.to_string(),
+                crate::context::WorkContext::candidates(base),
+                work.context_block(),
+            );
+            None
+        }
+        None => Some("no engine running \u{2014} try #@/path <file>".to_string()),
+    }
+}
+
+/// `~` is the one expansion a comment line never gets from the shell,
+/// and the one a user will absolutely type. Nothing else is expanded —
+/// this is a path, not a command line.
+fn shellexpand(p: &str) -> String {
+    match p.strip_prefix("~/") {
+        Some(rest) => match std::env::var_os("HOME") {
+            Some(h) => format!("{}/{rest}", h.to_string_lossy()),
+            None => p.to_string(),
+        },
+        None => p.to_string(),
+    }
+}
+
+fn list_pins(work: &crate::context::WorkContext) -> String {
+    let pins = work.list();
+    if pins.is_empty() {
+        "@ nothing pinned \u{2014} '#@/path <file>' to anchor on one".to_string()
+    } else {
+        pins.join("  \u{b7}  ")
+    }
+}
+
+/// `name: value` rows for the debug menu, from the live knobs.
+fn debug_items(dbg: &crate::config::DebugConfig) -> Vec<String> {
+    DEBUG_SETTINGS
+        .iter()
+        .map(|(name, _)| {
+            let v = match *name {
+                "cursor_save" => dbg.cursor_save.clone(),
+                "idle_repaint" => if dbg.idle_repaint { "on" } else { "off" }.to_string(),
+                "wrap_guard" => if dbg.wrap_guard { "on" } else { "off" }.to_string(),
                 _ => String::new(),
             };
             format!("{name}: {v}")
@@ -1100,6 +1285,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut engine_model: Option<String> = None;
     let mut commentary = cfg.engine.commentary;
     let mut memory = MemoryStore::load(Config::dir());
+    // `#@` working context: session-scoped for v1. Pins are deliberate
+    // and cheap to re-make; persisting them raises the per-cwd vs global
+    // scope question, which is still open (wiki: working-context.md).
+    let mut work = crate::context::WorkContext::new(cfg.engine.context_files_max_chars);
     let mut band: Option<Band> = None;
     let mut menu: Option<Menu> = None;
     let mut chat: Option<Chat> = None;
@@ -1120,6 +1309,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // screen fills with half-drawn bands. Settle first, then draw once.
     let mut winch_at: Option<std::time::Instant> = None;
     const WINCH_SETTLE_MS: u64 = 60;
+    // A paint the wrap guard skipped: the idle tick retries it. Declared
+    // ahead of the macro so the macro body can reach it (hygiene binds
+    // identifiers at the definition site).
+    let mut paint_deferred = false;
+    // Terminal-hackery knobs, live-tunable from #/debug. Copied out of
+    // cfg because the menu turns them mid-session.
+    let mut dbg = cfg.debug.clone();
     macro_rules! redraw {
         () => {{
             // Painting is SUSPENDED while a resize is in flight: the
@@ -1129,6 +1325,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
             // happens per resize — after the geometry holds still.
             if winch_at.is_some() {
                 // fall through; the settle repaint covers it
+            } else if dbg.wrap_guard && at_last_column(parser.screen(), &layout) {
+                // Deferred-wrap guard: the inner cursor is sitting in
+                // the last column, the one position where interrupting
+                // the line editor is provably lossy. Skip; the idle
+                // repaint or the next event picks it up. Belt-and-braces
+                // over cursor_save = decsc, and off by default.
+                paint_deferred = true;
             } else {
                 let rows = compose_rows(
                     cfg,
@@ -1144,6 +1347,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     &menu,
                     &engine_model,
                     &chat,
+                    work.chrome_tag().as_deref(),
                 );
                 let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);
                 if !pre.is_empty() {
@@ -1161,8 +1365,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     write_all(STDOUT, &vacated)?;
                 }
                 last_band = (top, rows.len() as u16);
-                write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &rows))?;
+                write_all(STDOUT, &fixup_bytes(
+                    &layout, parser.screen(), &rows, &dbg.cursor_save,
+                ))?;
                 last_rows = rows;
+                paint_deferred = false;
             }
         }};
     }
@@ -1282,6 +1489,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 Mark::Prompt => {
                                     hook = Some(HookPhase::Prompt);
                                     rec.prompt();
+                                    // A cheap stat per pin. Goulash does
+                                    // not watch the filesystem and pounce
+                                    // — this only sets the `*` marker, and
+                                    // re-cooking stays the user's call.
+                                    work.refresh_dirty();
                                 }
                                 Mark::CmdStart(cmd) => {
                                     hook = Some(HookPhase::Command);
@@ -1357,6 +1569,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             eng.ask_proactive(
                                                 ctx_log.clone(),
                                                 memory.context_block(),
+                                                work.context_block(),
                                             );
                                         }
                                     }
@@ -1393,6 +1606,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 body.to_string(),
                                                 ctx_log.clone(),
                                                 memory.context_block(),
+                                                work.context_block(),
                                             );
                                             ctx_log.push_str(&format!(
                                                 "# {} [asked {}]\n",
@@ -1403,6 +1617,16 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         band = None;
                                         notice = None;
                                         chat = Some(c);
+                                    } else if let Some(rest) = body.strip_prefix('@') {
+                                        // `#@` working context. The `/`
+                                        // forms are deterministic — no
+                                        // model, no ambiguity — which is
+                                        // what makes them testable AND
+                                        // what makes them suggestible:
+                                        // `CMD: #@/path ref.md` is a
+                                        // normal pullable suggestion.
+                                        notice = at_command(rest, &mut work, engine.as_ref(), &last_cwd);
+                                        band = None;
                                     } else if let Some(cmdline) = body.strip_prefix('/') {
                                         // #/ commands: goulash controls, not
                                         // LLM asides. One arg max — the
@@ -1419,12 +1643,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             &mut opt_thinking,
                                             opt_max_tokens,
                                             model_caps.as_ref(),
+                                            &dbg,
                                         );
                                     } else if let Some(eng) = engine.as_ref() {
                                         eng.ask(
                                             body.to_string(),
                                             ctx_log.clone(),
                                             memory.context_block(),
+                                            work.context_block(),
                                         );
                                         ctx_log.push_str(&format!(
                                             "# {} [asked {}]\n",
@@ -1617,7 +1843,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             close = true;
                                         }
                                         MenuKind::Help => {}
-                                        MenuKind::Settings => committed = sel,
+                                        MenuKind::Settings | MenuKind::Debug => committed = sel,
                                         MenuKind::Memory if sel.as_deref() == Some(NEW_MEMORY) => {
                                             m.composing = Some(String::new());
                                             m.armed = None;
@@ -1728,6 +1954,45 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     &memory,
                                     model_caps.as_ref(),
                                 );
+                            }
+                        }
+                    }
+                    if kind == MenuKind::Debug
+                        && let Some(item) = committed.take()
+                    {
+                        // Same cycle-in-place as Settings. These apply to
+                        // the very next paint — the point is to be able
+                        // to watch a terminal artifact appear and vanish
+                        // while the shell keeps running.
+                        let mut parts = item.splitn(2, ':');
+                        let name = parts.next().unwrap_or("").trim().to_string();
+                        let cur = parts.next().unwrap_or("").trim().to_string();
+                        if let Some((_, vals)) = DEBUG_SETTINGS.iter().find(|(n, _)| *n == name) {
+                            let idx = vals.iter().position(|v| *v == cur).unwrap_or(0);
+                            let next = vals[(idx + 1) % vals.len()];
+                            notice = Some(format!("{name}: {next}"));
+                            match name.as_str() {
+                                "cursor_save" => dbg.cursor_save = next.to_string(),
+                                "idle_repaint" => dbg.idle_repaint = next == "on",
+                                "wrap_guard" => dbg.wrap_guard = next == "on",
+                                _ => {}
+                            }
+                            let _ = Config::persist_key(
+                                "debug",
+                                &name,
+                                match name.as_str() {
+                                    "cursor_save" => next,
+                                    _ => {
+                                        if next == "on" {
+                                            "true"
+                                        } else {
+                                            "false"
+                                        }
+                                    }
+                                },
+                            );
+                            if let Some(m) = menu.as_mut() {
+                                m.items = debug_items(&dbg);
                             }
                         }
                     }
@@ -1844,7 +2109,16 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     }
                     if let Some(text) = submit {
                         rec.aside(&format!("## {text}"));
-                        if let Some(cmdline) = text.strip_prefix('/') {
+                        // `@` works in chat too: "pin that file" is
+                        // exactly the kind of thing you say mid-
+                        // conversation, and having to leave chat to do
+                        // it would be the wrong seam.
+                        if let Some(rest) = text.strip_prefix('@') {
+                            let out = at_command(rest, &mut work, engine.as_ref(), &last_cwd);
+                            if let (Some(c), Some(msg)) = (chat.as_mut(), out) {
+                                c.lines.push(format!("goulash: {msg}"));
+                            }
+                        } else if let Some(cmdline) = text.strip_prefix('/') {
                             let out = slash_command(
                                 cmdline,
                                 engine.as_ref(),
@@ -1857,6 +2131,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 &mut opt_thinking,
                                 opt_max_tokens,
                                 model_caps.as_ref(),
+                                &dbg,
                             );
                             if let (Some(c), Some(msg)) = (chat.as_mut(), out) {
                                 c.lines.push(format!("goulash: {msg}"));
@@ -1865,7 +2140,12 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             if let Some(c) = chat.as_mut() {
                                 c.lines.push(format!("# {text}"));
                             }
-                            eng.ask(text.clone(), ctx_log.clone(), memory.context_block());
+                            eng.ask(
+                                text.clone(),
+                                ctx_log.clone(),
+                                memory.context_block(),
+                                work.context_block(),
+                            );
                             ctx_log.push_str(&format!("# {} [asked {}]\n", text, engine::hms()));
                         } else if let Some(c) = chat.as_mut() {
                             c.lines
@@ -1996,11 +2276,32 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         proactive,
                         remembers,
                         forgets,
+                        pins,
+                        pinclear,
                     } => {
                         // The generation completed: the bound model earned
                         // its trust (ends probation, clears any distrust).
                         if let Some(m) = engine_model.as_ref() {
                             fuse.promote(m);
+                        }
+                        // Working-context verbs. Clear first, for the same
+                        // reason forgets precede remembers below: a
+                        // "swap to that file" answer is PINCLEAR + PIN.
+                        if pinclear && work.clear() > 0 {
+                            notice = Some("@ cleared".to_string());
+                        }
+                        for path in &pins {
+                            // Same rule as the typed form: the model's
+                            // relative path means the SHELL's cwd.
+                            let base = std::path::Path::new(if last_cwd.is_empty() {
+                                "."
+                            } else {
+                                last_cwd.as_str()
+                            });
+                            notice = Some(match work.pin(&base.join(shellexpand(path))) {
+                                Ok(msg) => msg,
+                                Err(e) => format!("@ {e}"),
+                            });
                         }
                         if memory.enabled {
                             // Forgets first: a modify is FORGET + REMEMBER in
@@ -2160,7 +2461,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         // a second — overwriting an intact bar with identical content is
         // invisible, so this costs nothing visually.
         if n == 0 {
-            if dirty {
+            if dirty || paint_deferred {
                 let rows = compose_rows(
                     cfg,
                     &layout,
@@ -2175,6 +2476,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     &menu,
                     &engine_model,
                     &chat,
+                    work.chrome_tag().as_deref(),
                 );
                 if rows != last_rows {
                     // Same paint as redraw!, which also erases wherever
@@ -2185,9 +2487,15 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 idle_ticks = 0;
             } else {
                 idle_ticks += 1;
-                if idle_ticks >= 4 && winch_at.is_none() {
+                // Unprovoked insurance repaint: it rescues a bar we lost
+                // to output we mis-parsed, but it also writes into a
+                // stream the line editor believes it owns, at a moment
+                // nothing asked for. `#/debug` turns it off.
+                if dbg.idle_repaint && idle_ticks >= 4 && winch_at.is_none() {
                     idle_ticks = 0;
-                    write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_rows))?;
+                    write_all(STDOUT, &fixup_bytes(
+                        &layout, parser.screen(), &last_rows, &dbg.cursor_save,
+                    ))?;
                 }
             }
         }
@@ -2250,7 +2558,7 @@ mod key_tests {
 }
 #[cfg(test)]
 mod band_tests {
-    use super::{Layout, reclaim_rows};
+    use super::{Layout, at_last_column, fixup_bytes, reclaim_rows};
     use crate::term::Size;
 
     fn layout(rows: u16, cols: u16, reserved: u16) -> Layout {
@@ -2267,6 +2575,39 @@ mod band_tests {
             .filter_map(|s| s.strip_suffix(";1H"))
             .filter_map(|s| s.parse().ok())
             .collect()
+    }
+
+    /// The restore has to be DECSC/DECRC, not CUP. An absolute move is
+    /// the one thing that cannot carry deferred wrap across our paint,
+    /// and the shell is mid-line every time we interrupt it.
+    #[test]
+    fn paint_saves_and_restores_with_the_terminals_own_cursor() {
+        let l = layout(24, 80, 4);
+        let p = vt100::Parser::new(l.inner().rows, l.inner().cols, 0);
+        let out = fixup_bytes(&l, p.screen(), &["bar".to_string()], "decsc");
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.starts_with("\x1b7"), "DECSC must come first: {s:?}");
+        // No absolute cursor move survives the restore — that would
+        // re-cancel the wrap flag DECRC just handed back.
+        let after = s.rsplit("\x1b8").next().unwrap();
+        assert!(!after.contains(";1H"), "CUP after DECRC: {after:?}");
+        // Visibility is the one thing DECSC does not carry.
+        assert!(after.contains("\x1b[?25h"), "visibility not restored: {after:?}");
+
+        // The escape hatch really does revert to the old shape.
+        let old = fixup_bytes(&l, p.screen(), &["bar".to_string()], "absolute");
+        let s = String::from_utf8_lossy(&old);
+        assert!(!s.contains("\x1b7") && !s.contains("\x1b8"), "{s:?}");
+    }
+
+    #[test]
+    fn wrap_guard_only_fires_in_the_final_column() {
+        let l = layout(24, 80, 4);
+        let mut p = vt100::Parser::new(l.inner().rows, l.inner().cols, 0);
+        assert!(!at_last_column(p.screen(), &l));
+        // 79 glyphs: cursor sits in column 80 of 80, deferred wrap.
+        p.process("x".repeat(79).as_bytes());
+        assert!(at_last_column(p.screen(), &l));
     }
 
     #[test]

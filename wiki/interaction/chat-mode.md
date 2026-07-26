@@ -124,3 +124,24 @@ is harmless. For users who genuinely want a comment at the prompt, the
 escape is **`\#`** — goulash strips the backslash and passes a literal
 `#…` line through to the shell untouched
 ([interaction model](model.md)).
+
+## `#/` and `#@` from inside chat
+
+Chat drops the `#` prefix, so goulash's own controls keep their sigils
+without it: a line starting with `/` is a [`#/` command](settings-and-nav.md)
+and a line starting with `@` is a
+[working-context](../architecture/working-context.md) action. Both answer
+into the transcript rather than the band.
+
+`@` earns its place here more than anywhere: "pin that file" is exactly
+what you say mid-conversation, and having to leave chat to do it would
+be the wrong seam.
+
+```text
+## how do I sync widgets?
+> I don't know that tool.
+@/path commandRef.md
+> @ commandRef.md · 812 chars · verbatim
+try again
+> `widgetctl sync --all` …
+```
