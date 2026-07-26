@@ -76,7 +76,15 @@ owner can do.
    wrong for numbers. The memory browser's compose field is the
    pattern — generalize it so a setting can declare *entry* over
    *cycle*.
-2. **`#/study`** — background worker mining transcripts into memories
+2. **Two-lane engagement** — designed, not built:
+   [two-lane-engagement](two-lane-engagement.md). Fast stays the sole
+   voice; slow researches with tools and contributes suggestions fast
+   relays. Start with **the card** (a few lines emitted near the
+   question, testing the SWA thesis) — if that does not beat a
+   prefix-only digest, the rest is built on sand. Do not build a lane
+   scheduler before measuring: ollama slots or two separately-cached
+   models may simply do the job.
+3. **`#/study`** — background worker mining transcripts into memories
    tuned to coach *this* user. Prerequisites: transcript retention
    (`~/.goulash/history/*.jsonl` grows unbounded today) and
    review/approve for machine-written slots.

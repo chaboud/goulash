@@ -278,3 +278,10 @@ across sessions is free.
    Nice, but goulash never acts unasked — a one-line notice at most.
 5. **Globs and URLs**: `#@ docs/*.md`, `#@ https://…`? Both plausible,
    both widen the hazard surface.
+
+## Where this goes next
+
+Ingest becomes *classification* rather than only compression, and a
+second, slower engagement works the artifact properly with tools while
+fast keeps the microphone:
+[two-lane-engagement](two-lane-engagement.md).
