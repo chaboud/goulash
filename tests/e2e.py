@@ -1082,12 +1082,22 @@ def test_resize_hygiene():
     for cols in (78, 76, 75):
         set_winsize(mfd, 24, cols)
         os.killpg(os.getpgid(proc.pid), signal.SIGWINCH)
-        # Paints are suspended until the drag settles, so let it settle
-        # and drain, then measure only a FRESH paint at the new width.
+        # Paints are suspended until the drag settles. Waiting on a
+        # clock is not enough -- a paint made at the OLD width can still
+        # be in the pipe, and measuring it reports rows one cell too
+        # wide. The chrome row prints the live geometry, so wait for one
+        # that says the NEW width and measure only from there.
         time.sleep(0.6)
         read_until(mfd, rb"$^", 0.3)
-        out = read_until(mfd, rb"goulash", 2.5)
-        wide = [(r, w) for r, w in painted_rows(out) if w > cols - 1]
+        marker = f"# {cols}x".encode()
+        out = read_until(mfd, re.escape(marker), 3.0)
+        out = out[out.find(marker):] if marker in out else out
+        out += read_until(mfd, rb"goulash", 2.0)
+        rows = painted_rows(out)
+        # A window that captured no paint at all would pass this check
+        # vacuously, which is the failure mode of anchoring on a marker.
+        check(f"band measured at {cols} cols", rows, "no paint in the window")
+        wide = [(r, w) for r, w in rows if w > cols - 1]
         check(f"no row fills the last column at {cols} cols", not wide, f"{wide}")
 
     # Grow taller: the rows the band just left must be erased, or a
