@@ -217,11 +217,27 @@ Field-driven, roughly in order of leverage:
    `--config` walkthrough for first run. Hard constraint: goulash is
    zero-setup and stays that way — the walkthrough is offered, never
    required, and never blocks a shell from starting.
-5. **`#@` working context** — pinned files as near-tool-use, with a
+5. **Per-model capability schema.** Field-proven gap: thinking is not
+   one dial across models. gemma3n rejects it outright; gpt-oss takes
+   `low|medium|high` but will spend an entire budget reasoning and
+   return an empty response; qwen3 uses a boolean. A single
+   `[engine] thinking` value cannot be right for all of them, so
+   goulash needs a small **model schema** — what a model accepts, and
+   what budget its reasoning realistically needs — keyed by name with
+   family fallbacks (`gpt-oss*`, `qwen3*`, `gemma*`) and an escape
+   hatch in config. Until it exists, an empty answer cannot be
+   diagnosed precisely: goulash cannot tell "ignored the level" from
+   "burned the budget", and says so.
+6. **Text-entry settings.** `#/settings` cycles through preset values,
+   which is wrong for numbers — `max_tokens` wants a typed figure, not
+   a four-stop carousel. The memory browser's compose field already
+   solves this (a modal text input inside a menu row); generalize it
+   so a setting can declare *entry* instead of *cycle*.
+7. **`#@` working context** — pinned files as near-tool-use, with a
    chrome indicator and an ingest meter:
    [working-context](../architecture/working-context.md). Design
    session before code.
-6. **Transcript retention, and `#/study`.**
+8. **Transcript retention, and `#/study`.**
    `~/.goulash/history/session-*.jsonl` is written forever and pruned
    never — with `record.output` on (default) that is every byte the
    terminal ever printed. It needs a retention policy (age and/or

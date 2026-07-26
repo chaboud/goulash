@@ -263,11 +263,17 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                             // level it was handed, or one that spent the
                             // whole budget reasoning.
                             ev.send(Event::Error(if cfg.thinking != "off" {
+                                // Two causes and we cannot tell them
+                                // apart from here: the model may not
+                                // accept this level, or it spent the
+                                // whole budget reasoning. Name both.
                                 format!(
-                                    "empty answer from {model} \u{2014} try \
-                                     '#/thinking off' ({} does not take \
-                                     thinking={})",
-                                    model, cfg.thinking
+                                    "empty answer from {model} at \
+                                     thinking={} \u{2014} it either burned \
+                                     the budget reasoning or ignores the \
+                                     level; '#/thinking off' or a bigger \
+                                     budget (#/settings)",
+                                    cfg.thinking
                                 )
                             } else {
                                 format!(
