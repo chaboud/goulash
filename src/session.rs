@@ -932,38 +932,48 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     const WINCH_SETTLE_MS: u64 = 60;
     macro_rules! redraw {
         () => {{
-            let rows = compose_rows(
-                cfg,
-                &layout,
-                &shell_name,
-                &cur_state,
-                hook,
-                &suggestions,
-                &notice,
-                &band,
-                browse,
-                &sug_hist,
-                &menu,
-                &engine_model,
-                &chat,
-            );
-            let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);
-            if !pre.is_empty() {
-                write_all(STDOUT, &pre)?;
+            // Painting is SUSPENDED while a resize is in flight: the
+            // emulator is reflowing underneath us, so anything we draw
+            // lands where the band *was* a moment ago. The settle path
+            // clears winch_at before repainting, so exactly one paint
+            // happens per resize — after the geometry holds still.
+            if winch_at.is_some() {
+                // fall through; the settle repaint covers it
+            } else {
+                let rows = compose_rows(
+                    cfg,
+                    &layout,
+                    &shell_name,
+                    &cur_state,
+                    hook,
+                    &suggestions,
+                    &notice,
+                    &band,
+                    browse,
+                    &sug_hist,
+                    &menu,
+                    &engine_model,
+                    &chat,
+                );
+                let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);
+                if !pre.is_empty() {
+                    write_all(STDOUT, &pre)?;
+                }
+                // Hand back wherever the band USED to be. sync_reserved only
+                // covers rows released when the band's height changes; a
+                // terminal resize moves the whole band, and the rows it
+                // vacated would otherwise keep showing a stale copy that the
+                // shell has no reason to overwrite.
+                let top = layout.status_row();
+                let vacated =
+                    reclaim_rows(last_band, top, rows.len() as u16, &layout, parser.screen());
+                if !vacated.is_empty() {
+                    write_all(STDOUT, &vacated)?;
+                }
+                last_band = (top, rows.len() as u16);
+                write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &rows))?;
+                last_rows = rows;
             }
-            // Hand back wherever the band USED to be. sync_reserved only
-            // covers rows released when the band's height changes; a
-            // terminal resize moves the whole band, and the rows it
-            // vacated would otherwise keep showing a stale copy that the
-            // shell has no reason to overwrite.
-            let top = layout.status_row();
-            let vacated = reclaim_rows(last_band, top, rows.len() as u16, &layout, parser.screen());
-            if !vacated.is_empty() {
-                write_all(STDOUT, &vacated)?;
-            }
-            last_band = (top, rows.len() as u16);
-            write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &rows))?;
-            last_rows = rows;
         }};
     }
     redraw!();
@@ -1059,12 +1069,19 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     let (pre, post) = rest.split_at(end);
                                     parser.process(pre);
                                     write_all(STDOUT, pre)?;
-                                    let mut fix =
-                                        format!("\x1b[1;{}r", layout.inner().rows).into_bytes();
-                                    fix.extend_from_slice(
-                                        &parser.screen().cursor_state_formatted(),
-                                    );
-                                    write_all(STDOUT, &fix)?;
+                                    // Mid-resize, layout.inner() is still the
+                                    // OLD geometry — re-pinning a stale scroll
+                                    // region into a terminal that just changed
+                                    // size garbles it. The settle repaint pins
+                                    // the correct region.
+                                    if winch_at.is_none() {
+                                        let mut fix =
+                                            format!("\x1b[1;{}r", layout.inner().rows).into_bytes();
+                                        fix.extend_from_slice(
+                                            &parser.screen().cursor_state_formatted(),
+                                        );
+                                        write_all(STDOUT, &fix)?;
+                                    }
                                     trigger_seen = true;
                                     rest = post;
                                 }
@@ -1773,7 +1790,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 idle_ticks = 0;
             } else {
                 idle_ticks += 1;
-                if idle_ticks >= 4 {
+                if idle_ticks >= 4 && winch_at.is_none() {
                     idle_ticks = 0;
                     write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_rows))?;
                 }
