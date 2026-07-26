@@ -34,9 +34,22 @@ pub struct EngineConfig {
     pub context_max_chars: usize,
     /// Per-block output-tail chars kept in the session log.
     pub tail_chars: usize,
-    /// Hard cap on generated tokens per answer (the one-line contract is
-    /// otherwise unenforced and small models will ramble on your GPU).
+    /// Cap on the *response* — the part that lands in the band. Streaming
+    /// means a longer tail costs nothing until it is actually generated,
+    /// so this is a runaway backstop, not a latency lever.
     pub max_tokens: usize,
+    /// Extra allowance for masked reasoning spend, added to `max_tokens`
+    /// when `thinking` is on. Thinking shares the provider's single
+    /// token meter, so without this a thinking model eats the answer.
+    pub thinking_tokens: usize,
+    /// off | low | medium | high. Reasoning models put these tokens in a
+    /// separate field and can spend the whole budget invisibly, which is
+    /// why the default is off.
+    pub thinking: String,
+    /// Emit the `CMD:` line BEFORE the prose. The command is the payload:
+    /// putting it first means truncation eats the explanation instead of
+    /// the command, and the suggestion can vend mid-stream.
+    pub command_first: bool,
     /// Context window requested from the provider; bounds KV memory
     /// (ollama may otherwise load models at huge default contexts).
     pub num_ctx: usize,
@@ -63,7 +76,10 @@ impl Default for EngineConfig {
             stream: true,
             context_max_chars: 12_000,
             tail_chars: 800,
-            max_tokens: 256,
+            max_tokens: 512,
+            thinking_tokens: 512,
+            thinking: "off".to_string(),
+            command_first: true,
             num_ctx: 8192,
             prewarm: true,
             debug: false,

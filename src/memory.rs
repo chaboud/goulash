@@ -30,7 +30,10 @@ impl Default for MemoryStore {
     fn default() -> Self {
         Self {
             enabled: false,
-            limit: 25,
+            // Sized for machine volume, not hand-curation: #/study writes
+            // far more than a person would. Still the user's to set
+            // (`#/memory limit N`, persisted).
+            limit: 50,
             max_chars: 240,
             next_id: 1,
             slots: Vec::new(),

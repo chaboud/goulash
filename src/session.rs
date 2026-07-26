@@ -181,22 +181,36 @@ const SUG_HIST_CAP: usize = 50;
 /// a fixed cursor inside the fixed goulash area — no winsize change.
 /// Only ever opened by the user, by name (bare `#/model`); Esc and
 /// Ctrl-C always close it.
+#[derive(Clone, Copy, PartialEq)]
+enum MenuKind {
+    /// Enter binds the model and persists it.
+    Model,
+    /// Enter arms a slot; a second Enter forgets it. Destructive
+    /// actions in a modal list need a confirm keystroke, not a
+    /// hair-trigger.
+    Memory,
+}
+
 struct Menu {
     title: String,
+    kind: MenuKind,
     items: Vec<String>,
     filter: String,
     cursor: usize, // index into the filtered view
     loaded: bool,
+    armed: Option<String>,
 }
 
 impl Menu {
-    fn open(title: &str) -> Menu {
+    fn open(title: &str, kind: MenuKind) -> Menu {
         Menu {
             title: title.to_string(),
+            kind,
             items: Vec::new(),
             filter: String::new(),
             cursor: 0,
-            loaded: false,
+            loaded: kind == MenuKind::Memory,
+            armed: None,
         }
     }
 
@@ -462,11 +476,21 @@ fn compose_rows(
         let n_items = (cfg.status.band_rows.clamp(1, 4) + 1) as usize;
         let filtered = m.filtered();
         let chip = format!(" {} \u{25b8} {}\u{258f} ", m.title, m.filter);
-        let tip = format!(
-            " \u{2191}\u{2193} \u{b7} \u{23ce} save \u{b7} esc \u{b7} {}/{} ",
-            (m.cursor + 1).min(filtered.len()),
-            filtered.len()
-        );
+        // Feedback for in-menu actions has nowhere else to go: the rule
+        // row belongs to the menu while it is open, so a notice takes
+        // the keymap's place until the next keystroke.
+        let tip = match notice {
+            Some(n) => format!(" {n} "),
+            None => format!(
+                " \u{2191}\u{2193} \u{b7} {} \u{b7} esc \u{b7} {}/{} ",
+                match m.kind {
+                    MenuKind::Model => "\u{23ce} save",
+                    MenuKind::Memory => "\u{23ce}\u{23ce} forget",
+                },
+                (m.cursor + 1).min(filtered.len()),
+                filtered.len()
+            ),
+        };
         let mut rows = Vec::new();
         rows.push(status::rule_row(Some(&chip), true, Some(&tip), cols));
         // Cursor pinned near the bottom of the window; list slides.
@@ -475,12 +499,14 @@ fn compose_rows(
             let idx = top + row;
             let line = match filtered.get(idx) {
                 Some(name) => {
-                    let star = if Some(*name) == engine_model.as_deref() {
+                    let tag = if m.armed.as_deref() == Some(*name) {
+                        " \u{2190} \u{23ce} again to forget"
+                    } else if m.kind == MenuKind::Model && Some(*name) == engine_model.as_deref() {
                         "*"
                     } else {
                         ""
                     };
-                    format!(" {name}{star}")
+                    format!(" {name}{tag}")
                 }
                 None if idx == 0 && !m.loaded => " probing \u{2026} (esc backs out)".to_string(),
                 None if idx == 0 => " (no matches)".to_string(),
@@ -692,6 +718,14 @@ fn slash_command(
     let rest = it.next().unwrap_or("").trim();
     let arg = if rest.is_empty() { None } else { Some(rest) };
     match (cmd, arg) {
+        ("memory", None) | ("memory", Some("list")) => {
+            // Browsing 50 slots through one bar row is unusable; the
+            // menu primitive already solves this.
+            let mut m = Menu::open("memory", MenuKind::Memory);
+            m.items = memory_items(memory);
+            *menu = Some(m);
+            None
+        }
         ("memory", sub) => Some(memory_command(sub, memory)),
         ("commentary", arg) => {
             let arg = arg.map(|a| a.split_whitespace().next().unwrap_or(a));
@@ -746,8 +780,23 @@ fn slash_command(
                 // Bare form opens the modal selector; the list fills in
                 // async when the probe answers (never block the shell).
                 eng.list_models();
-                *menu = Some(Menu::open("model"));
+                *menu = Some(Menu::open("model", MenuKind::Model));
                 None
+            }
+            None => Some("no engine running".to_string()),
+        },
+        ("thinking", arg) => match engine {
+            Some(eng) => {
+                let level = arg
+                    .map(|a| a.split_whitespace().next().unwrap_or(a))
+                    .unwrap_or("off");
+                match level {
+                    "off" | "on" | "low" | "medium" | "high" => {
+                        eng.set_thinking(level.to_string());
+                        Some(format!("thinking {level}"))
+                    }
+                    _ => Some("usage: #/thinking off|low|medium|high".to_string()),
+                }
             }
             None => Some("no engine running".to_string()),
         },
@@ -766,6 +815,15 @@ fn slash_command(
     }
 }
 
+/// Slot lines for the memory browser: `[id] text`.
+fn memory_items(memory: &MemoryStore) -> Vec<String> {
+    memory
+        .find("")
+        .iter()
+        .map(|s| format!("[{}] {}", s.id, s.text))
+        .collect()
+}
+
 /// `#/memory on|off|limit N|add TEXT|delete ID|modify ID TEXT|find Q`
 fn memory_command(sub: Option<&str>, memory: &mut MemoryStore) -> String {
     let sub = sub.unwrap_or("");
@@ -773,7 +831,7 @@ fn memory_command(sub: Option<&str>, memory: &mut MemoryStore) -> String {
     let verb = it.next().unwrap_or("");
     let rest = it.next().unwrap_or("").trim();
     match verb {
-        "" => memory.status_line(),
+        "" | "status" => memory.status_line(),
         "on" | "true" => {
             memory.set_enabled(true);
             memory.status_line()
@@ -1383,32 +1441,81 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     // Enter commits AND persists; Esc/Ctrl-C always out.
                     let mut committed: Option<String> = None;
                     let mut close = false;
+                    let mut kind = MenuKind::Model;
+                    notice = None; // a keystroke supersedes the last outcome
                     if let Some(m) = menu.as_mut() {
+                        kind = m.kind;
                         for key in parse_keys(&buf[..len]) {
                             match key {
-                                Key::Esc | Key::CtrlC => close = true,
-                                Key::Enter => {
-                                    committed = m.filtered().get(m.cursor).map(|s| s.to_string());
-                                    close = true;
+                                // Esc disarms first, then closes.
+                                Key::Esc | Key::CtrlC => {
+                                    if m.armed.take().is_none() {
+                                        close = true;
+                                    }
                                 }
-                                Key::Up => m.cursor = m.cursor.saturating_sub(1),
+                                Key::Enter => {
+                                    let sel = m.filtered().get(m.cursor).map(|s| s.to_string());
+                                    match m.kind {
+                                        MenuKind::Model => {
+                                            committed = sel;
+                                            close = true;
+                                        }
+                                        MenuKind::Memory => {
+                                            if sel.is_some() && m.armed == sel {
+                                                committed = sel;
+                                                m.armed = None;
+                                            } else {
+                                                m.armed = sel;
+                                            }
+                                        }
+                                    }
+                                }
+                                Key::Up => {
+                                    m.armed = None;
+                                    m.cursor = m.cursor.saturating_sub(1);
+                                }
                                 Key::Down => {
+                                    m.armed = None;
                                     m.cursor += 1;
                                     m.clamp();
                                 }
                                 Key::Backspace => {
+                                    m.armed = None;
                                     m.filter.pop();
                                     m.clamp();
                                 }
                                 Key::KillLine => {
+                                    m.armed = None;
                                     m.filter.clear();
                                     m.cursor = 0;
                                 }
                                 Key::Char(c) => {
+                                    m.armed = None;
                                     m.filter.push(c);
                                     m.cursor = 0;
                                 }
                             }
+                        }
+                    }
+                    if kind == MenuKind::Memory
+                        && let Some(item) = committed.take()
+                    {
+                        // "[7] text" -> 7
+                        let id = item
+                            .trim_start_matches('[')
+                            .split(']')
+                            .next()
+                            .and_then(|s| s.parse::<u64>().ok());
+                        notice = match id {
+                            Some(id) if memory.delete(id) => {
+                                rec.memory("forget", id, "");
+                                Some(format!("forgot [{id}]"))
+                            }
+                            _ => Some("could not forget that slot".to_string()),
+                        };
+                        if let Some(m) = menu.as_mut() {
+                            m.items = memory_items(&memory);
+                            m.clamp();
                         }
                     }
                     if let Some(name) = committed
@@ -1607,6 +1714,28 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             }
                         }
                     }
+                    // Command-first: the CMD line lands before the prose
+                    // finishes, so the suggestion is pullable while the
+                    // explanation is still streaming in.
+                    engine::Event::Command(cmd) => {
+                        let id = next_sid;
+                        next_sid += 1;
+                        rec.suggest(id, &cmd, "from # ask", "engine");
+                        hist_push(
+                            &mut sug_hist,
+                            SugTurn {
+                                id,
+                                cmd: cmd.clone(),
+                                text: band
+                                    .as_ref()
+                                    .and_then(|b| b.question.clone())
+                                    .unwrap_or_default(),
+                            },
+                        );
+                        suggestions.insert(0, (id, cmd.clone(), "from # ask".to_string()));
+                        suggestions.truncate(8);
+                        ctx_log.push_str(&format!("CMD: {cmd}\n"));
+                    }
                     engine::Event::Answer {
                         text,
                         command,
@@ -1646,6 +1775,16 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             rec.aside_answer(&one_line, true);
                         } else {
                             rec.aside_answer(&one_line, true);
+                            // History mirrors the directive's shape: the
+                            // model learns the format by mimicry, so a
+                            // command-first contract needs command-first
+                            // history. (Mid-stream vends already logged
+                            // their CMD line before this point.)
+                            if let Some(cmd) = &command
+                                && cfg.engine.command_first
+                            {
+                                ctx_log.push_str(&format!("CMD: {cmd}\n"));
+                            }
                             ctx_log.push_str(&format!("goulash: {one_line}\n"));
                             if let Some(cmd) = command {
                                 let id = next_sid;
@@ -1666,7 +1805,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 );
                                 suggestions.insert(0, (id, cmd.clone(), why.to_string()));
                                 suggestions.truncate(8);
-                                ctx_log.push_str(&format!("CMD: {cmd}\n"));
+                                if !cfg.engine.command_first {
+                                    ctx_log.push_str(&format!("CMD: {cmd}\n"));
+                                }
                             }
                             if let Some(c) = chat.as_mut() {
                                 c.stream = None;

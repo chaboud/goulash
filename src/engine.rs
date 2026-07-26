@@ -14,6 +14,9 @@ pub enum Event {
     },
     /// Streaming partial: accumulated answer text so far.
     Partial(String),
+    /// A `CMD:` line arrived mid-stream — vend it now, before the prose
+    /// finishes. The matching Answer carries `command: None`.
+    Command(String),
     /// Final answer: prose plus an optional candidate command, which the
     /// session vends into the suggestion list (pullable with Down).
     Answer {
@@ -46,6 +49,8 @@ pub enum Job {
         proactive: bool,
     },
     SetModel(String),
+    /// off | low | medium | high — masked reasoning spend.
+    SetThinking(String),
     /// Forget any pinned model and re-run the probe chain (auto).
     Rebind,
     ListModels,
@@ -102,6 +107,10 @@ impl Engine {
 
     pub fn set_model(&self, model: String) {
         let _ = self.job_tx.send(Job::SetModel(model));
+    }
+
+    pub fn set_thinking(&self, level: String) {
+        let _ = self.job_tx.send(Job::SetThinking(level));
     }
 
     pub fn rebind(&self) {
@@ -167,6 +176,7 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                     }
                     None => unreachable_engine(&ev, &wr, &cfg),
                 },
+                Job::SetThinking(level) => cfg.thinking = level,
                 Job::Rebind => {
                     cfg.model = None;
                     state = probe_ollama(&agent, &cfg);
@@ -218,14 +228,19 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
             );
             let _ = ev.send(Event::Idle);
             let _ = match result {
-                Ok(ans) => {
+                Ok((ans, early)) => {
                     if cfg.debug {
                         let _ = ev.send(Event::Debug(ans.clone()));
                     }
                     let (rest, remembers, forgets) = extract_memory_ops(&ans);
-                    let (text, command) = split_answer(&rest, &path_set);
+                    let (text, mut command) = split_answer(&rest, &path_set);
+                    // Already vended mid-stream: don't hand it over twice.
+                    if command.is_some() && command == early {
+                        command = None;
+                    }
                     if text.is_empty()
                         && command.is_none()
+                        && early.is_none()
                         && remembers.is_empty()
                         && forgets.is_empty()
                     {
@@ -375,7 +390,7 @@ fn generate(
     ev: &mpsc::Sender<Event>,
     wr: &OwnedFd,
     proactive: bool,
-) -> Result<String, String> {
+) -> Result<(String, Option<String>), String> {
     // Volatile parts (current time, question) go AFTER the stable prefix.
     // The command directive is repeated at point-of-use: small models
     // lose instructions that only appear at the top of a long prompt.
@@ -383,14 +398,30 @@ fn generate(
     // session log, then the volatile time/question/directive suffix.
     // Two modes of ingress, two contracts: a `#` ask is usually fishing
     // for a runnable command; unprompted commentary earns its CMD line.
-    let directive = if proactive {
-        "Reply with ONE short prose line. Add a second line formatted \
-         exactly as: CMD: <command> ONLY if a genuinely useful next \
-         command exists."
-    } else {
-        "Reply with ONE short prose line. If any shell command could \
-         accomplish, fix, or demonstrate what was asked, you MUST add a \
-         second line formatted exactly as: CMD: <command>"
+    // Command-first puts the payload where truncation cannot reach it —
+    // and lets the suggestion vend before the prose finishes.
+    let directive = match (cfg.command_first, proactive) {
+        (true, false) => {
+            "Reply with the command FIRST, on its own line, formatted \
+             exactly as: CMD: <command> — required whenever any shell \
+             command could accomplish, fix, or demonstrate what was \
+             asked. Then ONE short prose line explaining it."
+        }
+        (true, true) => {
+            "If a genuinely useful next command exists, put it FIRST on \
+             its own line, formatted exactly as: CMD: <command>. Then \
+             ONE short prose line."
+        }
+        (false, false) => {
+            "Reply with ONE short prose line. If any shell command could \
+             accomplish, fix, or demonstrate what was asked, you MUST add \
+             a second line formatted exactly as: CMD: <command>"
+        }
+        (false, true) => {
+            "Reply with ONE short prose line. Add a second line formatted \
+             exactly as: CMD: <command> ONLY if a genuinely useful next \
+             command exists."
+        }
     };
     let prompt = format!(
         "{PREAMBLE}{memories}Session log (oldest first):\n{context}\n\
@@ -403,11 +434,13 @@ fn generate(
         "stream": cfg.stream,
         // Reasoning models (qwen3+, deepseek-r1) otherwise spend the
         // entire token budget in a separate `thinking` field, returning
-        // an empty `response` — a blank bar in the field.
-        "think": false,
+        // an empty `response` — a blank bar in the field. When thinking
+        // IS wanted, the budget grows to cover it (below) so the answer
+        // still fits.
+        "think": think_field(&cfg.thinking),
         "options": {
             "temperature": 0.2,
-            "num_predict": cfg.max_tokens as i64,
+            "num_predict": (cfg.max_tokens + thinking_allowance(cfg)) as i64,
             "num_ctx": cfg.num_ctx as i64,
             "stop": ["\n\n"],
         },
@@ -425,7 +458,7 @@ fn generate(
         let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
         return v["response"]
             .as_str()
-            .map(|s| s.trim().to_string())
+            .map(|s| (s.trim().to_string(), None))
             .ok_or_else(|| "malformed engine response".to_string());
     }
 
@@ -434,6 +467,7 @@ fn generate(
     let reader = std::io::BufReader::new(resp.into_reader());
     let mut acc = String::new();
     let mut last_emit = Instant::now();
+    let mut early: Option<String> = None;
     for line in reader.lines() {
         let line = line.map_err(|e| e.to_string())?;
         if line.trim().is_empty() {
@@ -442,6 +476,18 @@ fn generate(
         let v: serde_json::Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
         if let Some(tok) = v["response"].as_str() {
             acc.push_str(tok);
+        }
+        // The payoff of command-first: the CMD line completes long
+        // before the prose does, so the suggestion can be pullable
+        // while the explanation is still arriving. Proactive turns wait
+        // for the end — a PASS must not leave a command behind.
+        if !proactive
+            && early.is_none()
+            && let Some(cmd) = complete_cmd_line(&acc)
+        {
+            early = Some(cmd.clone());
+            let _ = ev.send(Event::Command(cmd));
+            notify(wr);
         }
         if v["done"].as_bool() == Some(true) {
             break;
@@ -452,7 +498,43 @@ fn generate(
             last_emit = Instant::now();
         }
     }
-    Ok(acc.trim().to_string())
+    Ok((acc.trim().to_string(), early))
+}
+
+/// A `CMD:` line that has been fully received (its newline has arrived),
+/// so it is safe to vend before the rest of the answer streams in.
+fn complete_cmd_line(acc: &str) -> Option<String> {
+    for line in acc.lines() {
+        if (!acc.ends_with(line) || acc.ends_with('\n'))
+            && let Some(c) = line.trim().strip_prefix("CMD:")
+        {
+            let c = c.trim();
+            if !c.is_empty() {
+                return Some(c.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// ollama's `think` field: `false`, `true`, or a level string for models
+/// that accept one (gpt-oss and friends). Unknown values read as off.
+fn think_field(level: &str) -> serde_json::Value {
+    match level {
+        "low" | "medium" | "high" => serde_json::json!(level),
+        "on" | "true" => serde_json::json!(true),
+        _ => serde_json::json!(false),
+    }
+}
+
+/// Tokens added to the response budget to cover masked reasoning spend.
+fn thinking_allowance(cfg: &EngineConfig) -> usize {
+    match cfg.thinking.as_str() {
+        "off" | "false" | "" => 0,
+        "low" => cfg.thinking_tokens / 2,
+        "high" => cfg.thinking_tokens * 2,
+        _ => cfg.thinking_tokens,
+    }
 }
 
 fn tm_now() -> libc::tm {
@@ -653,5 +735,51 @@ mod pick_tests {
             pick_model(&tags, None, &no_favs()).as_deref(),
             Some("mystery")
         );
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::{complete_cmd_line, think_field, thinking_allowance};
+    use crate::config::EngineConfig;
+
+    #[test]
+    fn cmd_vends_only_once_the_line_is_whole() {
+        // Still arriving: the command may yet gain more characters.
+        assert_eq!(complete_cmd_line("CMD: ls -l"), None);
+        // Newline landed: safe to hand over.
+        assert_eq!(
+            complete_cmd_line("CMD: ls -lh\n"),
+            Some("ls -lh".to_string())
+        );
+        // Prose already following it is equally conclusive.
+        assert_eq!(
+            complete_cmd_line("CMD: du -sh *\nThat sums each entry."),
+            Some("du -sh *".to_string())
+        );
+        assert_eq!(complete_cmd_line("no command here\n"), None);
+        assert_eq!(complete_cmd_line("CMD:   \n"), None);
+    }
+
+    #[test]
+    fn thinking_maps_to_provider_field_and_budget() {
+        let mut cfg = EngineConfig {
+            thinking_tokens: 400,
+            ..Default::default()
+        };
+        assert_eq!(think_field("off"), serde_json::json!(false));
+        assert_eq!(think_field("high"), serde_json::json!("high"));
+        assert_eq!(think_field("on"), serde_json::json!(true));
+        assert_eq!(think_field("nonsense"), serde_json::json!(false));
+
+        cfg.thinking = "off".into();
+        assert_eq!(thinking_allowance(&cfg), 0);
+        cfg.thinking = "low".into();
+        assert_eq!(thinking_allowance(&cfg), 200);
+        cfg.thinking = "medium".into();
+        assert_eq!(thinking_allowance(&cfg), 400);
+        // High reasoning must not eat the answer's own budget.
+        cfg.thinking = "high".into();
+        assert_eq!(thinking_allowance(&cfg), 800);
     }
 }

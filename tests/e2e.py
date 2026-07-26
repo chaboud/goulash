@@ -651,7 +651,7 @@ def test_memory():
         f.write(f'[engine]\nprovider = "ollama"\nhost = "http://127.0.0.1:{port}"\n')
     proc, mfd = spawn(["zsh"], home=home)
     time.sleep(1.5)
-    os.write(mfd, b"#/memory\r")
+    os.write(mfd, b"#/memory status\r")
     out = read_until(mfd, rb"memory off", 5.0)
     check("memory defaults off", b"memory off" in out, out[-300:])
     os.write(mfd, b"#/memory on\r")
@@ -667,9 +667,24 @@ def test_memory():
     os.write(mfd, b"#/memory find saved\r")
     out = read_until(mfd, rb"model saved this note", 5.0)
     check("model REMEMBER stored", b"model saved this note" in out, out[-300:])
-    os.write(mfd, b"#/memory delete 1\r")
-    out = read_until(mfd, rb"forgot \[1\]", 5.0)
-    check("#/memory delete", b"forgot [1]" in out, out[-300:])
+    # Bare #/memory opens the browser: filter, then arm-and-confirm.
+    os.write(mfd, b"#/memory\r")
+    out = read_until(mfd, "memory \u25b8".encode(), 5.0)
+    check("#/memory opens the browser", "memory \u25b8".encode() in out, out[-300:])
+    out = read_until(mfd, rb"\[1\] deploy", 3.0, out)
+    check("slots listed in the browser", b"[1] deploy" in out, out[-300:])
+    os.write(mfd, b"deploy")          # type-to-filter
+    time.sleep(0.4)
+    os.write(mfd, b"\r")              # arm
+    out = read_until(mfd, "again to forget".encode(), 4.0)
+    check("first Enter arms, does not delete",
+          "again to forget".encode() in out, out[-300:])
+    os.write(mfd, b"\r")              # confirm
+    out = read_until(mfd, rb"forgot \[1\]", 4.0)
+    check("second Enter forgets the slot", b"forgot [1]" in out, out[-300:])
+    time.sleep(0.3)
+    os.write(mfd, b"\x1b")            # close the browser
+    time.sleep(0.4)
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
     srv.shutdown()
