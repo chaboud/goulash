@@ -158,6 +158,11 @@ honest about why.
 Interactive work always outranks research, and research for the turn the
 user is *on* outranks research for a turn they have left.
 
+Staleness here is about **lineage, not place**. A finding amends the
+turn it came from; that the user has since `cd`-ed, or simply moved on,
+does not make it wrong where it sits. Landing late is invisible to the
+user by construction — it costs service load and nothing else.
+
 Which leaves the question of what happens to work that goes stale
 mid-flight, and both answers are defensible: **abandon** it and keep the
 GPU, or service it **lazily** and let the finding land in its lineage
@@ -448,11 +453,11 @@ chrome, and a sharper signal for the one case that needs one.
 
 ### Rendering a pair
 
-- The researched command takes the chip, in the usual
-  [orange](status-rows.md). Fast's original **insets below it**, in
-  blue — secondary reads as secondary at a glance.
-- Down walks into the inset before moving on: depth-first within a turn,
-  then the next turn. One axis, still.
+- Fast's answer keeps the chip, in the usual
+  [orange](status-rows.md). The researched finding **insets below it**,
+  in blue — an addition to the record, not a replacement of it.
+- Right descends into the inset; Down stays purely "older". (Or Down
+  walks in depth-first, if Right cannot be claimed.)
 - **A pair only ever exists within a single turn.** That constraint is
   what stops this becoming a general tree.
 - Lineage is intact, so the explanation can say what changed and why.
@@ -479,10 +484,16 @@ the dim question row, indented, in its own colour**, and the question
 truncates to a few characters and an ellipsis — it was not doing much
 work there anyway.
 
-Both stay on the table; the second is the one to try if we can pull it
-off. **Which of the pair is primary — the researched one on top, or
-fast's original — is also still open**, and probably only answerable by
-living with each.
+Both stay on the table; the second is the one to build first, with
+depth-first-on-Down as the fallback if the gate below turns out to feel
+like a trick.
+
+**Fast is primary.** The researched finding *fills in* beneath it rather
+than taking its place. That keeps the stack reading as a clean
+transcript of what actually happened, instead of a bait-and-switch where
+the thing you were about to pull becomes a different thing — and
+freeze-on-focus makes it simple besides, since nothing mutates while the
+user is looking at it.
 
 #### The hazard: Right is already spoken for
 
@@ -631,27 +642,17 @@ Two consequences to accept knowingly:
 
 ## Open questions
 
-1. **Which of a pair is primary** — the researched finding on top, or
-   fast's original? Probably only answerable by living with each.
-2. **Can Right actually be claimed?** The gate is narrow by
+1. **Can Right actually be claimed?** The gate is narrow by
    construction (unedited buffer, cursor at end, alternative exists).
    Whether that window is wide enough to feel like an affordance rather
-   than a trick is a hands-on question.
-3. **How does a follow-up reach slow's transcript?** Fast decides — but
-   it needs a handle to name and slow needs its thread alive. Threaded
-   state is new; the session log is flat and append-only. A line verb
-   (`ASK-SLOW: <turn> <question>`) would match the existing protocol,
-   and transcripts could live exactly as long as their turn survives in
-   the slot history, which bounds them with machinery already present.
-4. **Is a card per pin, or a card per pin *per question*?** The second
-   is better and destroys the cache. A middle path worth trying first:
-   keep cards per-pin, but *choose which pins get carded* per question
-   by cheap keyword overlap — no model call, no cache churn.
-5. **Does a `cd` invalidate a finding in flight?** This may dissolve
-   rather than need a rule: amendments land at their **origin**, and
-   that turn happened in the old directory, so the finding is correct
-   where it sits. The cwd rule governs what is *current*; the lineage
-   keeps its own history. Worth confirming rather than assuming.
+   than a trick is a hands-on question — build it, try it, fall back to
+   depth-first-on-Down if it does not land.
+2. **Card selection per question.** Cards stay per-pin and cached; which
+   pins get one is chosen per ask by **word overlap with the question**
+   — ask about deploying and the deploy runbook's card rides along while
+   an unrelated vendor reference's does not. Plain string matching, no
+   model call, no cache churn. Whether it picks well enough in practice
+   is the open part.
 
 Settled in conversation, recorded so they are not re-opened: `##?` is an
 ingress rather than a mode, and `##` from inside chat leaves *with* a
