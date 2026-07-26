@@ -633,21 +633,42 @@ fn fixup_bytes(layout: &Layout, screen: &vt100::Screen, rows: &[String]) -> Vec<
     out
 }
 
-/// Erase-bytes for rows the band occupied last paint but no longer
-/// does. `last` is the previous (top row, height); rows still covered by
-/// the new band, or now off-screen, need no erase.
-fn vacated_rows(last: (u16, u16), top: u16, height: u16, real_rows: u16) -> Vec<u8> {
+/// Hand back the rows the band occupied last paint but no longer does.
+///
+/// A resize gives those rows to the inner world, and the inner world
+/// only rebuilds itself at the next **prompt turn** — so blank-erasing
+/// them would punch a hole that nothing repairs until the user presses
+/// Enter. Each row is instead repainted from the vt100 mirror, which is
+/// the shell's own truth about what belongs there: our stale paint goes
+/// away and the shell's content (blank or not) comes back.
+fn reclaim_rows(
+    last: (u16, u16),
+    top: u16,
+    height: u16,
+    layout: &Layout,
+    screen: &vt100::Screen,
+) -> Vec<u8> {
     let (old_top, old_height) = last;
     let mut out = Vec::new();
     if old_height == 0 || (old_top, old_height) == (top, height) {
         return out;
     }
+    let inner_rows = layout.inner().rows;
+    let mut mirror: Option<Vec<Vec<u8>>> = None;
     for r in old_top..old_top.saturating_add(old_height) {
         if r >= top && r < top.saturating_add(height) {
-            continue; // still ours — the repaint covers it
+            continue; // still ours — the band repaint covers it
         }
-        if r >= 1 && r <= real_rows {
-            out.extend_from_slice(format!("\x1b[{r};1H\x1b[0m\x1b[K").as_bytes());
+        if r < 1 || r > layout.real.rows {
+            continue; // scrolled off the screen entirely
+        }
+        out.extend_from_slice(format!("\x1b[{r};1H\x1b[0m\x1b[K").as_bytes());
+        if r <= inner_rows {
+            let rows =
+                mirror.get_or_insert_with(|| screen.rows_formatted(0, layout.real.cols).collect());
+            if let Some(content) = rows.get((r - 1) as usize) {
+                out.extend_from_slice(content);
+            }
         }
     }
     out
@@ -930,13 +951,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
             if !pre.is_empty() {
                 write_all(STDOUT, &pre)?;
             }
-            // Erase wherever the band USED to be. sync_reserved only
-            // covers rows handed back when the band's height changes; a
+            // Hand back wherever the band USED to be. sync_reserved only
+            // covers rows released when the band's height changes; a
             // terminal resize moves the whole band, and the rows it
             // vacated would otherwise keep showing a stale copy that the
             // shell has no reason to overwrite.
             let top = layout.status_row();
-            let vacated = vacated_rows(last_band, top, rows.len() as u16, layout.real.rows);
+            let vacated = reclaim_rows(last_band, top, rows.len() as u16, &layout, parser.screen());
             if !vacated.is_empty() {
                 write_all(STDOUT, &vacated)?;
             }
@@ -1815,10 +1836,17 @@ mod key_tests {
         assert_eq!(kinds(b"\x03\r\x7f\x15q"), "C\u{23ce}<Kq");
     }
 }
-
 #[cfg(test)]
 mod band_tests {
-    use super::vacated_rows;
+    use super::{Layout, reclaim_rows};
+    use crate::term::Size;
+
+    fn layout(rows: u16, cols: u16, reserved: u16) -> Layout {
+        Layout {
+            real: Size { rows, cols },
+            reserved,
+        }
+    }
 
     /// Row numbers named by the emitted `ESC[<n>;1H` cursor moves.
     fn rows(bytes: &[u8]) -> Vec<u16> {
@@ -1830,26 +1858,54 @@ mod band_tests {
     }
 
     #[test]
-    fn resize_taller_erases_the_band_left_behind() {
+    fn resize_taller_reclaims_the_band_left_behind() {
         // 24-row terminal, band at 21..24; grow to 30 -> band at 27..30.
+        let l = layout(30, 80, 4);
+        let p = vt100::Parser::new(l.inner().rows, l.inner().cols, 0);
         assert_eq!(
-            rows(&vacated_rows((21, 4), 27, 4, 30)),
+            rows(&reclaim_rows((21, 4), 27, 4, &l, p.screen())),
             vec![21, 22, 23, 24]
         );
     }
 
     #[test]
-    fn overlap_is_not_erased_and_offscreen_is_skipped() {
-        // Band slid up by one: the three shared rows are repainted, so
-        // only the row it no longer covers needs erasing.
-        assert_eq!(rows(&vacated_rows((21, 4), 20, 4, 24)), vec![24]);
-        // Shrunk terminal: the old band is off-screen, nothing to erase.
-        assert!(vacated_rows((27, 4), 17, 4, 20).is_empty());
+    fn overlap_is_untouched_and_offscreen_is_skipped() {
+        let l = layout(24, 80, 4);
+        let p = vt100::Parser::new(l.inner().rows, l.inner().cols, 0);
+        // Band slid up one: the shared rows are repainted anyway, so
+        // only the row it no longer covers is handed back.
+        assert_eq!(
+            rows(&reclaim_rows((21, 4), 20, 4, &l, p.screen())),
+            vec![24]
+        );
+        // Shrunk terminal: the old band is off-screen, nothing to do.
+        let small = layout(20, 80, 4);
+        assert!(reclaim_rows((27, 4), 17, 4, &small, p.screen()).is_empty());
     }
 
     #[test]
     fn unchanged_band_and_first_paint_are_no_ops() {
-        assert!(vacated_rows((21, 4), 21, 4, 24).is_empty());
-        assert!(vacated_rows((0, 0), 21, 4, 24).is_empty());
+        let l = layout(24, 80, 4);
+        let p = vt100::Parser::new(l.inner().rows, l.inner().cols, 0);
+        assert!(reclaim_rows((21, 4), 21, 4, &l, p.screen()).is_empty());
+        assert!(reclaim_rows((0, 0), 21, 4, &l, p.screen()).is_empty());
+    }
+
+    /// The whole point: a reclaimed row gets the SHELL's content back,
+    /// not a blank. The inner world only redraws at a prompt turn, so
+    /// erasing what it believes is on screen leaves a lasting hole.
+    #[test]
+    fn reclaimed_rows_restore_shell_content_from_the_mirror() {
+        let l = layout(30, 80, 4);
+        let mut p = vt100::Parser::new(24, 80, 0); // inner size before the grow
+        p.process(b"\x1b[21;1Hkeep-me");
+        p.screen_mut().set_size(l.inner().rows, l.inner().cols);
+        let mirrored = p.screen().rows_formatted(0, 80).nth(20).unwrap();
+        assert!(
+            String::from_utf8_lossy(&mirrored).contains("keep-me"),
+            "vt100 mirror must survive a resize for reclaim to be safe"
+        );
+        let out = reclaim_rows((21, 4), 27, 4, &l, p.screen());
+        assert!(String::from_utf8_lossy(&out).contains("keep-me"));
     }
 }
