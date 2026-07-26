@@ -99,6 +99,22 @@ If research sessions turn out to be common, stickiness is a small
 addition and the chat chip has room to show it. Cheap to add, awkward to
 remove.
 
+### `##` from *inside* chat: leave, and take a parting shot
+
+`##` is a toggle. From outside it opens chat; from inside it closes it —
+and it can carry a payload on the way out:
+
+```
+## that's great, let's work like that     say it, then back to the prompt
+##? one more deep one                     ask slow, then back to the prompt
+##                                        just leave
+```
+
+That is what makes a conversation end the way conversations do. You
+discuss something, you reach a conclusion, and the last thing you say is
+also the thing that puts you back at your shell — rather than typing a
+final message, then separately hunting for the exit.
+
 ### Bare `#?` asks for help without hardcoding help
 
 `?` reads as "help" to a lot of people, and that instinct should be
@@ -150,6 +166,45 @@ the kind of thing whose right answer only shows up in use.
 One hard rule at every setting: **slow never touches the proactive
 commentary path.** Heckling every command turn through a research lane
 is the most expensive possible version of the least important feature.
+
+### N in a row: supersede, or parallel
+
+A queue was the wrong instinct. **Terminals are overwhelmingly serial
+interfaces** — a patient user backgrounds with Ctrl-Z or interrupts with
+Ctrl-C, and neither is common. Asking three questions in a row is not a
+request for three answers later; it is usually a user changing their
+mind in public.
+
+So the default is **supersede**, the same shape as the existing ask
+coalescer: the newest `#?` wins and the previous one stops. The
+alternative is **parallel**, for someone who really did want all of
+them, and either way **recent priority comes first**. A setting, at
+minimum in `#/debug` — and this is an *N* case, not a two-element one,
+so neither behaviour should be written as a special case for the second
+job.
+
+### Cancel: the sigil scopes it
+
+The same rule that governs destinations governs cancellation, so there
+is nothing extra to learn:
+
+| | Stops |
+|---|---|
+| `#/cancel` | everything goulash has in flight |
+| `#?/cancel` | research only |
+| `#@/cancel` | ingest only |
+
+**Ctrl-C is never taken.** It belongs to the shell, and reaching into
+goulash's background work from it would be a surprise in the one place
+surprises are least acceptable.
+
+### Bounds on the tool loop
+
+Slow tool-calls, so it can spin. Both caps, configurable, and reported
+when hit: a **step cap** (how many tool calls in one job) and a
+**wall-clock cap** (how long the whole job may take). Same discipline as
+`MAX_DIGEST_ATTEMPTS` — a runaway that stops and says why beats one that
+merely stops.
 
 ## Lanes
 
@@ -461,15 +516,48 @@ only a real session can: **does the near-question card measurably beat
 the prefix-only digest?** If not, the SWA reasoning is wrong and the
 slow lane's whole premise needs re-examining.
 
+## The chrome has to give something up
+
+Two lanes and a research indicator do not fit alongside what the chip
+already carries. The order things go, worst-value first:
+
+1. **`goulash` itself goes.** It is the one field that tells the user
+   something they already know — they launched it, and they know how to
+   type `exit`. Self-branding that costs characters on every row is the
+   easiest thing in the chip to lose.
+2. **The pin degrades in steps**: full label → a short slug (written by
+   the same pass that writes the card, which is already reading the
+   document) → bare `@`. Even the last step is worth keeping, because
+   *whether anything is pinned* changes how the model behaves and the
+   user should never have to wonder.
+3. **State becomes a glyph.** A tiny ASCII bar climbing to a full block
+   (`▁▂▃▄▅▆▇█`) says progress in one cell where `50%` takes three, and it
+   reads as motion rather than arithmetic.
+
+## The crash fuse learns about lanes
+
+[`state.rs`](../src/state.rs) marks the dangerous window around a model
+load so an unclean death can distrust the model that caused it. With two
+lanes there are two loads, and an unlaned mark cannot tell which one to
+blame — the likely failure is a big slow model taking the machine down
+and a small fast model getting distrusted for it. The mark carries the
+lane.
+
 ## Budget, and the ceiling
 
 Two consequences to accept knowingly:
 
-- Slow's material is a **fourth claimant** on fast's prompt budget,
-  alongside working context, [memories](agent-memory.md) and the session
-  log — and the only one that arrives unpredictably. The shares and
-  eviction order in [working-context](working-context.md) need an entry
-  for it.
+- **Shares.** Of the prompt budget derived from `num_ctx`: session log
+  **45%**, working context **40%**, [memories](agent-memory.md) **15%**,
+  with the agreed eviction order when over — log trims first (most
+  regenerable), working context degrades a tier, memories evict last
+  (smallest and most deliberately curated).
+
+  Slow's relayed material turns out **not** to be a percentage claimant
+  at all: it is one command and one line, bounded and tiny, riding in
+  the volatile suffix like the cards. So there are three proportional
+  claimants and two small fixed suffix allowances, rather than the five
+  competing shares it first looked like.
 - **Fast is the expressiveness ceiling.** Slow can do excellent work and
   fast is what the user hears. That is not an argument for bypassing
   fast; it is an argument that fast should not be the smallest thing
@@ -507,18 +595,25 @@ Two consequences to accept knowingly:
    fast needs a handle to name, and slow needs its thread to still
    exist. Threaded state is new; the session log is flat and
    append-only.
-3. **What cancels a research job**, and does `#@/cancel` cover it or
-   does slow need its own?
-4. **Is a card per pin, or a card per pin *per question*?** The second
+3. **Is a card per pin, or a card per pin *per question*?** The second
    is better and destroys the cache.
-5. **Does a `cd` invalidate a finding in flight?** Suggestions clear on
+4. **Does a `cd` invalidate a finding in flight?** Suggestions clear on
    cwd change today. Staleness-by-time is settled (abandon or lazy, a
    setting); staleness-by-*place* may want the existing rule instead,
    since a command researched for another directory is more likely to
    be wrong than merely late.
+5. **Band contention.** Exactly one ask is ever in flight today. With
+   research running alongside an ordinary answer there are two things
+   and one band. Proposed but not ruled: the band always belongs to the
+   latest *interactive* turn, and research reports only in the chrome —
+   which keeps "never blocks" visible rather than merely asserted.
 
 Settled in conversation, recorded so they are not re-opened: `##?` is an
-ingress rather than a mode; amendments insert at their origin, by
+ingress rather than a mode, and `##` from inside chat leaves *with* a
+payload; concurrent research supersedes by default (terminals are
+serial), recent first; the sigil scopes cancellation and Ctrl-C is never
+taken; the crash-fuse mark carries its lane; the chrome sheds `goulash`
+first and degrades the pin to a slug then a bare `@`; amendments insert at their origin, by
 reference, and never jump the queue; a pair renders only within one turn
 and the blue means *superseded*, not *researched*; solo findings need no
 marker; slow gets pin **paths** and reads sources itself, so the
