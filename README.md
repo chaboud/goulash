@@ -65,6 +65,12 @@ Point the model at a file and it knows *your* tools, not just common Unix:
 #@/unset                 drop it
 ```
 
+Big files don't get truncated. A pin that overflows its budget serves a
+structure-only outline immediately (commands, flags, tables — prose
+dropped), and if an engine is up, an LLM compression cooks in the
+background and swaps in behind it. The chrome shows a percentage while
+that runs; `#@/cancel` stops it. Nothing ever waits on an ingest.
+
 The pinned text rides in every ask, and the chrome shows what's anchored
 (`@commandRef.md`, with a `*` when it changed on disk — goulash marks it,
 never silently re-reads). Drop a vendor's command reference next to their

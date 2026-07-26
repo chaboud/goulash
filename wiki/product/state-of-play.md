@@ -62,6 +62,13 @@ owner can do.
   shared budget, `*` dirty marker set by a stat at prompt turns, chrome
   shows the active `@`. Session-scoped — persisting a pin would force
   the per-cwd-vs-global call that is still open.
+- **`#@` digest tier**: over-budget pins get an LLM compression behind
+  the deterministic outline, which keeps serving until it lands. Fed
+  the *outline* rather than the raw file (bounded by construction — no
+  local context window would take 512 KB). Second-class work in the
+  worker: one per loop pass, after every interactive job, so an ask
+  waits behind at most one compression. Attempts capped at 2, chrome
+  shows a percent while cooking, `#@/cancel` abandons the batch.
 
 ## Next, in order
 
@@ -129,6 +136,13 @@ with nothing interpreting the other end, so it cannot see these):
 - **`#@/path` on a real command reference**, then ask something only
   that file could answer. Also: pin a directory, watch the outline
   tier, edit a pinned file and confirm the `*`.
+- **A big pin on a real model**: watch the chrome percent while it
+  cooks, confirm asks stay answerable during it, and compare the
+  digest's quality against the outline it replaced (`#@/list` names the
+  tier). `#@/cancel` mid-cook. This is the one where a small local model
+  might simply do a bad job — if the digest is worse than the outline,
+  the tier order is wrong and the fix is a quality gate, not a bigger
+  budget.
 
 ## Backlog note: virtual terminal, and scrollback
 

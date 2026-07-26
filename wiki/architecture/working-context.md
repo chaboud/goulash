@@ -16,6 +16,7 @@ whatever the user says matters right now.
 #@/unset                  drop every pin
 #@/drop 2                 unpin one
 #@/list                   what's pinned, with sizes and freshness
+#@/cancel                 abandon any ingest still cooking
 #@                        same as /list
 #@ <anything else>        hand it to the model (below)
 ```
@@ -88,25 +89,55 @@ silent multi-second cook is exactly the "am I frozen?" failure we hit
 with model loads. Done cooking, the meter collapses back to the plain
 `@ name` marker.
 
-## Ingest tiers (the budget is the design) *(digest tier: not yet)*
+## Ingest tiers (the budget is the design)
 
 The stable prefix is the KV-cache asset; a fat pin destroys the
 latency work. So ingest is **compaction, not concatenation**, chosen by
 size against a hard `context_files_max_chars` budget:
 
-| Tier | When | What lands in the prompt | Built |
-|---|---|---|---|
-| **Verbatim** | fits its share | the text as-is | yes |
-| **Outline** | over its share | structure kept, prose dropped — headings, fences, tables, flag-bearing lines | yes, deterministic |
-| **Digest** | large documents | **LLM compression**, biased toward commands and invariants | not yet |
+| Tier | When | What lands in the prompt |
+|---|---|---|
+| **Verbatim** | fits its share | the text as-is |
+| **Digest** | a compression has landed and fits | **LLM compression** — prose *summarised* rather than dropped, biased toward commands, flags, invariants |
+| **Outline** | otherwise | structure kept, prose dropped — headings, fences, tables, flag-bearing lines |
 
-v1 ships Verbatim and a **deterministic** Outline. That ordering is
-deliberate rather than lazy: the extraction is instant, it works with no
-engine bound, and it gives a pin something useful to say the moment it
-is made — which is the same "useful while incomplete" rule the tree
-checkpointing follows, applied to one file. The LLM digest is strictly
-better for a large document and is the next tier; it swaps in *behind* a
-deterministic first pass rather than replacing it.
+Best available wins, and **there is always something**. The outline is
+computed synchronously at pin time, needs no engine, and cannot fail, so
+a pin is useful the instant it is made and only ever gets better. The
+digest arrives behind it and swaps in. That is the same "useful while
+incomplete" rule the tree checkpointing follows, applied to one file —
+and it is why the deterministic tier had to be built first rather than
+being a fallback bolted on afterwards.
+
+### What the digest is actually handed
+
+**Not the raw file.** A pin can be half a megabyte and `num_ctx`
+defaults to 8192 tokens; a compression request that overflows the window
+is worse than no compression, because it truncates at the wrong end
+silently. The source is the **deterministic outline at a generous
+multiple of the target** (4×, capped at 12k chars): bounded by
+construction, and it has already discarded the least useful material, so
+the model spends its window on the parts worth keeping.
+
+### Not blocking, and not unbounded
+
+Digests are strictly second-class work in the engine worker: queued,
+drained one per loop pass, and only after any interactive job in the
+same pass. A new ask therefore waits behind at most a single
+compression, never a backlog. The request carries no session log, no
+memories and no working context — a digest is a pure function of one
+document, so it never disturbs the prefix cache the asks depend on — and
+it asks for `thinking: off`, since reasoning would spend the budget
+arguing about a document it is only meant to shorten.
+
+Attempts are capped (2 per pin). The re-request trigger is "the digest
+still doesn't fit its share", so a model that ignores the target would
+otherwise be asked forever; after the cap the pin settles for its
+outline, which was never a bad place to be.
+
+`#@/cancel` abandons everything in flight, and a cancel is treated as a
+*decision* rather than a failure: the pin keeps what it has and is not
+immediately re-queued.
 
 The budget (`[engine] context_files_max_chars`, default 6000) is a
 **total**, split equally between pins. Equal shares beat clever
@@ -121,9 +152,13 @@ truncated. Truncation would cut a command guide in half mid-table;
 compression keeps the invocations and drops the prose.
 
 Digesting costs a model call, so it is **async and background**: the
-pin registers immediately with an `ingesting …` marker, the session
-stays responsive, and the digest swaps in when it lands. Never block a
-prompt turn on an ingest.
+pin registers immediately, the session stays responsive, and the digest
+swaps in when it lands. Never block a prompt turn on an ingest.
+
+The chrome carries a **percentage** while any pin is cooking
+(`@ref.md 50%`), collapsing back to the plain marker when the batch
+finishes. A silent multi-second cook is precisely the "am I frozen?"
+failure that model loads taught us about.
 
 ### Promotion: atomic for a file, checkpointed for a tree
 
@@ -229,10 +264,11 @@ across sessions is free.
    nothing, which is the one choice that does not pre-empt this: pins
    are deliberate and cheap to re-make, and a stored pin would have to
    pick a scope before the question was settled.
-2. **Digest authorship**: model-written (better, costs a call, needs a
-   model that's up) or deterministic extraction (headings, code
-   fences, first-N-lines — instant, dumber)? Deterministic as the
-   fallback when no engine is bound, at minimum.
+2. ~~**Digest authorship**~~ **settled: both, layered.** Deterministic
+   extraction is the floor — instant, engine-free, cannot fail — and
+   the model-written digest is an upgrade that swaps in behind it. The
+   question turned out to be a false choice: the deterministic tier is
+   what makes the async one safe to have.
 3. **Retrieval vs pinning**: always-in-prefix (simple, cache-friendly,
    bounded) or top-k retrieval per ask (scales further, breaks the
    stable prefix)? Start pinned; the [memory bank](agent-memory.md)

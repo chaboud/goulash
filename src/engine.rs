@@ -31,6 +31,17 @@ pub enum Event {
         pins: Vec<String>,
         pinclear: bool,
     },
+    /// A pin's compressed form (None when the model gave nothing usable
+    /// — the pin keeps its outline).
+    Digest {
+        id: u64,
+        text: Option<String>,
+    },
+    /// Background-ingest progress for the chrome meter.
+    Digesting {
+        done: usize,
+        total: usize,
+    },
     Error(String),
     Models(Vec<String>),
     /// Resolved capabilities for the newly bound model. The session
@@ -63,6 +74,17 @@ pub enum Job {
         /// to resolve a path and answer in PIN verbs, not to advise.
         pin_ask: bool,
     },
+    /// Background ingest: compress a pinned file to fit its budget
+    /// (context.rs). Always yields to interactive asks — a cook that
+    /// makes the user wait is worse than no cook.
+    Digest {
+        id: u64,
+        label: String,
+        source: String,
+        target: usize,
+    },
+    /// Abandon every queued digest (`#@/cancel`).
+    CancelDigests,
     SetModel(String),
     /// Live tuning: key/value applied to the worker's own config copy.
     SetOption(String, String),
@@ -163,6 +185,19 @@ impl Engine {
     pub fn list_models(&self) {
         let _ = self.job_tx.send(Job::ListModels);
     }
+
+    pub fn digest(&self, id: u64, label: String, source: String, target: usize) {
+        let _ = self.job_tx.send(Job::Digest {
+            id,
+            label,
+            source,
+            target,
+        });
+    }
+
+    pub fn cancel_digests(&self) {
+        let _ = self.job_tx.send(Job::CancelDigests);
+    }
 }
 
 fn notify(wr: &OwnedFd) {
@@ -195,7 +230,41 @@ fn worker(
         }
     }
 
-    while let Ok(first) = jobs.recv() {
+    // Background ingest, strictly second-class: queued here, drained one
+    // per loop pass, and only after any interactive work in the same
+    // pass. `digest_total` is the batch size the meter counts against.
+    let mut digest_queue: std::collections::VecDeque<Job> = std::collections::VecDeque::new();
+    let mut digest_total = 0usize;
+
+    loop {
+        // Blocking recv only when there is no background work waiting —
+        // otherwise poll, so a quiet channel means "get on with the
+        // cooking" rather than "sleep".
+        let first = if digest_queue.is_empty() {
+            match jobs.recv() {
+                Ok(j) => Some(j),
+                Err(_) => break,
+            }
+        } else {
+            match jobs.try_recv() {
+                Ok(j) => Some(j),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => break,
+            }
+        };
+        let Some(first) = first else {
+            run_one_digest(
+                &agent,
+                &cfg,
+                &caps,
+                &state,
+                &mut digest_queue,
+                &mut digest_total,
+                &ev,
+                &wr,
+            );
+            continue;
+        };
         // Late binding: ollama may have started after goulash did, so an
         // unbound engine re-probes whenever work arrives.
         if state.is_none() {
@@ -248,6 +317,22 @@ fn worker(
                         }
                         None => unreachable_engine(&ev, &wr, &cfg),
                     }
+                }
+                Job::Digest { .. } => {
+                    digest_queue.push_back(job);
+                    digest_total = digest_total.max(digest_queue.len());
+                }
+                Job::CancelDigests => {
+                    // Report every abandoned pin so the session can put
+                    // their meters away.
+                    for j in digest_queue.drain(..) {
+                        if let Job::Digest { id, .. } = j {
+                            let _ = ev.send(Event::Digest { id, text: None });
+                        }
+                    }
+                    digest_total = 0;
+                    let _ = ev.send(Event::Digesting { done: 0, total: 0 });
+                    notify(&wr);
                 }
                 Job::ListModels => match &state {
                     Some((_, installed)) => {
@@ -338,8 +423,125 @@ fn worker(
             };
             notify(&wr);
         }
+        // Interactive work for this pass is done; spend what is left on
+        // the backlog. One at a time, so a new ask never waits behind
+        // more than a single compression.
+        run_one_digest(
+            &agent,
+            &cfg,
+            &caps,
+            &state,
+            &mut digest_queue,
+            &mut digest_total,
+            &ev,
+            &wr,
+        );
     }
     drop(wr);
+}
+
+/// Compress one queued pin, if there is one and a model to do it with.
+/// Failure is not fatal anywhere: the pin keeps the deterministic
+/// outline it has had since the moment it was made.
+#[allow(clippy::too_many_arguments)]
+fn run_one_digest(
+    agent: &ureq::Agent,
+    cfg: &EngineConfig,
+    caps: &Caps,
+    state: &Option<(String, Vec<String>)>,
+    queue: &mut std::collections::VecDeque<Job>,
+    total: &mut usize,
+    ev: &mpsc::Sender<Event>,
+    wr: &OwnedFd,
+) {
+    let Some(Job::Digest {
+        id,
+        label,
+        source,
+        target,
+    }) = queue.pop_front()
+    else {
+        return;
+    };
+    let Some((model, _)) = state else {
+        let _ = ev.send(Event::Digest { id, text: None });
+        notify(wr);
+        return;
+    };
+    let _ = ev.send(Event::Busy {
+        model: model.clone(),
+        warm: false,
+    });
+    notify(wr);
+    let text = digest_once(agent, cfg, caps, model, &label, &source, target).ok();
+    let _ = ev.send(Event::Idle);
+    let _ = ev.send(Event::Digest { id, text });
+    let done = total.saturating_sub(queue.len());
+    let _ = ev.send(Event::Digesting {
+        done,
+        total: if queue.is_empty() { 0 } else { *total },
+    });
+    if queue.is_empty() {
+        *total = 0;
+    }
+    notify(wr);
+}
+
+/// The compression call. No session log, no memories, no working
+/// context: a digest is a pure function of one document, which also
+/// means it never disturbs the prefix cache the asks depend on.
+fn digest_once(
+    agent: &ureq::Agent,
+    cfg: &EngineConfig,
+    caps: &Caps,
+    model: &str,
+    label: &str,
+    source: &str,
+    target: usize,
+) -> Result<String, String> {
+    // Characters in, tokens out: ~4 chars per token, with headroom so a
+    // slightly long answer is still usable rather than cut mid-table.
+    let budget = (target / 3).clamp(128, 2048);
+    let prompt = format!(
+        "Compress this reference document to under {target} characters, \
+         for another model to use when suggesting shell commands.\n\
+         KEEP: exact command names, flags, arguments, paths, env vars, \
+         file formats, and any rule or constraint that would make a \
+         command wrong.\nDROP: prose, rationale, history, examples that \
+         repeat a flag already listed.\nWrite terse lines, not \
+         paragraphs. No preamble, no closing remarks \u{2014} output only \
+         the compressed reference.\n\n=== {label} ===\n{source}\n=== end \
+         ===\nCompressed reference:"
+    );
+    let mut body = serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "stream": false,
+        "options": {
+            "temperature": 0.1,
+            "num_predict": budget as i64,
+            "num_ctx": cfg.num_ctx as i64,
+        },
+    });
+    // Reasoning here would spend the budget arguing with itself about a
+    // document it is only meant to shorten.
+    if let Some(think) = caps.think_field("off") {
+        body["think"] = think;
+    }
+    if !cfg.keep_alive.is_empty() {
+        body["keep_alive"] = serde_json::json!(cfg.keep_alive);
+    }
+    let resp = agent
+        .post(&format!("{}/api/generate", cfg.host))
+        .send_string(&body.to_string())
+        .map_err(|e| e.to_string())?;
+    let text = resp.into_string().map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let out = v["response"].as_str().unwrap_or("").trim().to_string();
+    if out.is_empty() {
+        return Err("empty digest".to_string());
+    }
+    Ok(out)
 }
 
 /// Bind: tell the session what model it has, and what that model can

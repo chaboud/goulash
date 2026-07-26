@@ -235,6 +235,7 @@ const HELP_ITEMS: &[&str] = &[
     "#@/path FILE           pin a file (or dir) into the model's context",
     "#@ <request>           pin/unpin in words; #@ alone lists",
     "#@/unset               drop every pin",
+    "#@/list \u{b7} #@/cancel    what's pinned \u{b7} stop a running ingest",
     "#/settings             live-tune everything below",
     "#/debug                terminal-hackery toggles (esoteric)",
     "#/thinking off|low|medium|high",
@@ -1011,6 +1012,7 @@ fn at_command(
     work: &mut crate::context::WorkContext,
     engine: Option<&Engine>,
     cwd: &str,
+    bound: bool,
 ) -> Option<String> {
     let rest = rest.trim();
     // Paths are the USER's, so they resolve against the shell's cwd —
@@ -1026,23 +1028,50 @@ fn at_command(
         return Some(match (verb, arg) {
             // A blank path is the unset: `#@/path ` with nothing after
             // it reads as "stop anchoring on anything".
-            ("path", "") | ("unset", _) | ("clear", _) => match work.clear() {
-                0 => "@ nothing pinned".to_string(),
-                n => format!("@ cleared ({n})"),
-            },
-            ("path", p) => match work.pin(&resolve(p)) {
-                Ok(msg) => msg,
-                Err(e) => format!("@ {e}"),
-            },
+            ("path", "") | ("unset", _) | ("clear", _) => {
+                if let Some(eng) = engine {
+                    eng.cancel_digests();
+                }
+                work.cancel_cooking();
+                match work.clear() {
+                    0 => "@ nothing pinned".to_string(),
+                    n => format!("@ cleared ({n})"),
+                }
+            }
+            ("path", p) => {
+                let out = match work.pin(&resolve(p)) {
+                    Ok(msg) => msg,
+                    Err(e) => format!("@ {e}"),
+                };
+                kick_digests(work, engine, bound);
+                out
+            }
             ("drop", a) => match a.trim_start_matches('[').trim_end_matches(']').parse::<u64>() {
                 Ok(id) => match work.drop_id(id) {
-                    Some(label) => format!("@ dropped {label}"),
+                    Some(label) => {
+                        // One fewer pin means a bigger share for the
+                        // rest; some of them may now fit unaided.
+                        kick_digests(work, engine, bound);
+                        format!("@ dropped {label}")
+                    }
                     None => format!("@ no pin [{id}]"),
                 },
                 Err(_) => "usage: #@/drop <id>".to_string(),
             },
+            // A long cook has to be abandonable — that was the whole
+            // point of making ingest asynchronous.
+            ("cancel", _) => {
+                if let Some(eng) = engine {
+                    eng.cancel_digests();
+                }
+                match work.cancel_cooking() {
+                    0 => "@ nothing cooking".to_string(),
+                    n => format!("@ cancelled {n}"),
+                }
+            }
             ("list", _) => list_pins(work),
-            _ => "usage: #@/path <file> \u{b7} #@/unset \u{b7} #@/drop <id> \u{b7} #@/list"
+            _ => "usage: #@/path <file> \u{b7} #@/unset \u{b7} #@/drop <id> \
+                  \u{b7} #@/list \u{b7} #@/cancel"
                 .to_string(),
         });
     }
@@ -1063,6 +1092,30 @@ fn at_command(
             None
         }
         None => Some("no engine running \u{2014} try #@/path <file>".to_string()),
+    }
+}
+
+/// Ask the engine to compress any pin that no longer fits its share.
+/// Called after anything that changes the pin set — including *removing*
+/// one, since a smaller pin list means a bigger share each and a digest
+/// that was too big may now fit.
+///
+/// The deterministic outline is already serving in the meantime, so this
+/// is pure upside: if the engine is absent, slow, or refuses, nothing
+/// waits and nothing breaks.
+fn kick_digests(
+    work: &mut crate::context::WorkContext,
+    engine: Option<&Engine>,
+    bound: bool,
+) {
+    // Attempts are finite, so don't spend one on a worker with no model
+    // bound yet — ollama may simply have started after we did, and the
+    // next pin (or the next attempt trigger) will find it.
+    let Some(eng) = engine.filter(|_| bound) else {
+        return;
+    };
+    for (id, label, source, target) in work.digest_wanted() {
+        eng.digest(id, label, source, target);
     }
 }
 
@@ -1625,7 +1678,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         // what makes them suggestible:
                                         // `CMD: #@/path ref.md` is a
                                         // normal pullable suggestion.
-                                        notice = at_command(rest, &mut work, engine.as_ref(), &last_cwd);
+                                        notice = at_command(rest, &mut work, engine.as_ref(), &last_cwd, engine_model.is_some());
                                         band = None;
                                     } else if let Some(cmdline) = body.strip_prefix('/') {
                                         // #/ commands: goulash controls, not
@@ -2114,7 +2167,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         // conversation, and having to leave chat to do
                         // it would be the wrong seam.
                         if let Some(rest) = text.strip_prefix('@') {
-                            let out = at_command(rest, &mut work, engine.as_ref(), &last_cwd);
+                            let out = at_command(rest, &mut work, engine.as_ref(), &last_cwd, engine_model.is_some());
                             if let (Some(c), Some(msg)) = (chat.as_mut(), out) {
                                 c.lines.push(format!("goulash: {msg}"));
                             }
@@ -2234,6 +2287,21 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             );
                         }
                     }
+                    // A compression landed (or failed, in which case the
+                    // pin quietly keeps its outline — which is exactly
+                    // why the outline had to exist first).
+                    engine::Event::Digest { id, text } => {
+                        if let Some(msg) = work.set_digest(id, text) {
+                            notice = Some(msg);
+                        }
+                    }
+                    engine::Event::Digesting { done, total } => {
+                        notice = if total > 0 {
+                            Some(format!("@ digesting {done}/{total} \u{2026}"))
+                        } else {
+                            None
+                        };
+                    }
                     engine::Event::Partial(text) => {
                         if let Some(c) = chat.as_mut() {
                             c.stream = Some(text.split_whitespace().collect::<Vec<_>>().join(" "));
@@ -2302,6 +2370,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 Ok(msg) => msg,
                                 Err(e) => format!("@ {e}"),
                             });
+                        }
+                        if !pins.is_empty() || pinclear {
+                            kick_digests(&mut work, engine.as_ref(), engine_model.is_some());
                         }
                         if memory.enabled {
                             // Forgets first: a modify is FORGET + REMEMBER in

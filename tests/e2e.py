@@ -781,6 +781,14 @@ def test_working_context():
                 return
             p = req["prompt"]
             prompts.append(p)
+            if "Compress this reference document" in p:
+                # The background ingest call. Prove it was handed the
+                # OUTLINE (commands kept, prose already dropped), then
+                # take a beat -- the pin must be useful in the meantime.
+                assert "widgetctl sync --all" in p, "digest source lost the commands"
+                time.sleep(1.2)
+                self._send({"response": "widgetctl sync --all  # DIGESTED"})
+                return
             if "change the pinned working context" in p:
                 # The mediated form: resolve to a path, answer in verbs.
                 if "OTHER.md" in p:      # got a candidate listing
@@ -793,7 +801,9 @@ def test_working_context():
         def log_message(self, *a):
             pass
 
-    srv = http.server.HTTPServer(("127.0.0.1", 0), FakeOllama)
+    # Threading: a slow digest must not wedge the whole fake server, or
+    # the test would be measuring the stub rather than goulash.
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeOllama)
     port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
@@ -806,7 +816,7 @@ def test_working_context():
     with open(os.path.join(home, "config.toml"), "w") as f:
         f.write("[engine]\nprovider = \"ollama\"\n"
                 f"host = \"http://127.0.0.1:{port}\"\nstream = false\n"
-                "commentary = false\n")
+                "commentary = false\ncontext_files_max_chars = 900\n")
     proc, mfd = spawn(["zsh"], home=home)
     time.sleep(1.2)
     os.write(mfd, f"cd {work}\r".encode())
@@ -862,10 +872,48 @@ def test_working_context():
     check("stale text keeps serving until asked to re-cook",
           asked and "NEW LINE ADDED LATER" not in asked[-1], "")
 
+    # A file too big for its share: outline immediately, digest behind it.
+    with open(os.path.join(work, "big.md"), "w") as f:
+        f.write("# widgetctl\n" + "Explanatory prose that carries nothing.\n" * 400
+                + "Run `widgetctl sync --all` to sync.\n")
+    os.write(mfd, b"#@/path big.md\r")
+    # The meter is the durable evidence that a cook is running: a silent
+    # multi-second ingest is exactly the "am I frozen?" failure.
+    out = read_until(mfd, rb"@commandRef.md\+2\*? \d+%", 6.0)
+    check("the chrome meters a running cook",
+          re.search(rb"@commandRef.md\+2\*? \d+%", out) is not None, out[-300:])
+    time.sleep(0.4)
+    # Asked WHILE the digest is still cooking: the pin has to be useful
+    # already, which is the whole reason the outline is computed first.
+    os.write(mfd, b"#during the cook\r")
+    read_until(mfd, rb"PASS", 12.0)
+    asked = [p for p in prompts if "during the cook" in p]
+    check("an over-budget pin is useful before its digest lands",
+          asked and "[outline: prose omitted]" in asked[-1], "")
+    check("and the outline kept the command",
+          asked and "widgetctl sync --all" in asked[-1], "")
+
+    # ...and when it lands the meter collapses back to a plain marker.
+    time.sleep(2.0)
+    os.write(mfd, b"true\r")
+    out = read_until(mfd, rb"goulash", 5.0)
+    check("the meter collapses when the cook finishes",
+          re.search(rb"@commandRef.md\+2\*? \d+%", out) is None, out[-300:])
+    os.write(mfd, b"#after the cook\r")
+    read_until(mfd, rb"PASS", 8.0)
+    asked = [p for p in prompts if "after the cook" in p]
+    check("the digest is what reaches the prompt afterwards",
+          asked and "DIGESTED" in asked[-1], "")
+    check("and the dropped prose stays dropped",
+          asked and "Explanatory prose" not in asked[-1], "")
+
     # Unset really unsets, and the block goes back to costing nothing.
     os.write(mfd, b"#@/unset\r")
-    out = read_until(mfd, rb"cleared", 5.0)
-    check("#@/unset drops every pin", b"cleared" in out, out[-200:])
+    time.sleep(0.5)
+    os.write(mfd, b"true\r")
+    out = read_until(mfd, rb"goulash", 5.0)
+    check("#@/unset clears the chrome marker",
+          b"@commandRef.md" not in out, out[-300:])
     os.write(mfd, b"#gone now\r")
     read_until(mfd, rb"PASS", 8.0)
     asked = [p for p in prompts if "gone now" in p]
