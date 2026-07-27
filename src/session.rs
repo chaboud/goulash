@@ -450,8 +450,17 @@ fn parse_keys(chunk: &[u8]) -> Vec<Key> {
 }
 
 fn hist_push(hist: &mut Vec<SugTurn>, turn: SugTurn) {
-    if hist.first().map(|t| t.cmd == turn.cmd).unwrap_or(false) {
-        return; // adjacent dedup: re-vending the same fix isn't a new turn
+    if let Some(top) = hist.first_mut()
+        && top.cmd == turn.cmd
+    {
+        // Adjacent dedup: re-vending the same fix is not a new turn, so
+        // it gets no new slot. But the ID has to move to it, because
+        // research for THIS ask was dispatched against the new id and
+        // `apply_finding` drops a finding whose turn it cannot find —
+        // so an explicit `#?` on a repeated question silently produced
+        // nothing at all.
+        top.id = turn.id;
+        return;
     }
     hist.insert(0, turn);
     hist.truncate(SUG_HIST_CAP);
@@ -3186,7 +3195,10 @@ mod key_tests {
 }
 #[cfg(test)]
 mod band_tests {
-    use super::{Layout, at_last_column, fixup_bytes, reclaim_rows};
+    use super::{
+        Finding, Layout, SugTurn, apply_finding, at_last_column, fixup_bytes, hist_push,
+        reclaim_rows,
+    };
     use crate::term::Size;
 
     fn layout(rows: u16, cols: u16, reserved: u16) -> Layout {
@@ -3288,5 +3300,51 @@ mod band_tests {
         );
         let out = reclaim_rows((21, 4), 27, 4, &l, p.screen());
         assert!(String::from_utf8_lossy(&out).contains("keep-me"));
+    }
+
+    fn turn(id: u64, cmd: &str) -> SugTurn {
+        SugTurn {
+            id,
+            cmd: cmd.to_string(),
+            text: String::new(),
+            question: String::new(),
+            alt: None,
+        }
+    }
+
+    #[test]
+    fn dedup_moves_the_id_so_research_still_lands() {
+        // Ask the same thing twice, fast vends the same command both
+        // times: the second is deduped and gets no slot. Research for
+        // the second ask was dispatched against id 2, and apply_finding
+        // drops a finding whose turn it cannot find — so an explicit
+        // `#?` on a repeated question used to produce nothing at all.
+        let mut hist = vec![];
+        hist_push(&mut hist, turn(1, "ls -la"));
+        hist_push(&mut hist, turn(2, "ls -la"));
+        assert_eq!(hist.len(), 1, "re-vending the same fix is not a new turn");
+        assert_eq!(hist[0].id, 2, "but the id must follow the live ask");
+
+        let mut log = String::new();
+        apply_finding(
+            &mut hist,
+            2,
+            Finding {
+                cmd: Some("ls -lah".into()),
+                text: "human sizes".into(),
+                reasoning: "-h is friendlier".into(),
+            },
+            &mut log,
+        );
+        assert!(hist[0].alt.is_some(), "the finding found its home");
+    }
+
+    #[test]
+    fn a_different_command_still_gets_its_own_slot() {
+        let mut hist = vec![];
+        hist_push(&mut hist, turn(1, "ls"));
+        hist_push(&mut hist, turn(2, "pwd"));
+        assert_eq!(hist.len(), 2);
+        assert_eq!(hist[0].id, 2);
     }
 }
