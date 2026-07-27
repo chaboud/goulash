@@ -950,6 +950,7 @@ fn slash_command(
     menu: &mut Option<Menu>,
     thinking: &mut String,
     max_tokens: usize,
+    command_first: bool,
     caps: Option<&crate::models::Caps>,
     dbg: &crate::config::DebugConfig,
     slow: &str,
@@ -1052,7 +1053,8 @@ fn slash_command(
         },
         ("settings", _) | ("config", _) => {
             let mut m = Menu::open("settings", MenuKind::Settings);
-            m.items = settings_items(*commentary, slow, thinking, max_tokens, memory, caps);
+            m.items =
+                settings_items(*commentary, slow, thinking, max_tokens, command_first, memory, caps);
             *menu = Some(m);
             None
         }
@@ -1110,6 +1112,7 @@ fn settings_items(
     slow: &str,
     thinking: &str,
     max_tokens: usize,
+    command_first: bool,
     memory: &MemoryStore,
     caps: Option<&crate::models::Caps>,
 ) -> Vec<String> {
@@ -1122,7 +1125,7 @@ fn settings_items(
                 "thinking" => format!("{thinking}{}", thinking_note(caps)),
                 "memory" => if memory.enabled { "on" } else { "off" }.to_string(),
                 "max_tokens" => max_tokens.to_string(),
-                "command_first" => "on".to_string(),
+                "command_first" => if command_first { "on" } else { "off" }.to_string(),
                 _ => String::new(),
             };
             format!("{name}: {v}")
@@ -1612,6 +1615,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut opt_slow = cfg.engine.slow.clone();
     let mut opt_thinking = cfg.engine.thinking.clone();
     let mut opt_max_tokens = cfg.engine.max_tokens;
+    let mut opt_command_first = cfg.engine.command_first;
     // Findings that arrived while the user was browsing. The lineage
     // never mutates under an active selection, so they wait here and
     // land on the return to neutral.
@@ -2054,6 +2058,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             &mut menu,
                                             &mut opt_thinking,
                                             opt_max_tokens,
+                                            opt_command_first,
                                             model_caps.as_ref(),
                                             &dbg,
                                             &opt_slow,
@@ -2409,6 +2414,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     let _ = Config::persist_key("engine", "max_tokens", next);
                                 }
                                 "command_first" => {
+                                    // The session vends mid-stream off its
+                                    // OWN copy, so telling only the engine
+                                    // left half the setting untoggled.
+                                    opt_command_first = next == "on";
                                     if let Some(eng) = engine.as_ref() {
                                         eng.set_option("command_first", next);
                                     }
@@ -2426,6 +2435,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     &opt_slow,
                                     &opt_thinking,
                                     opt_max_tokens,
+                                    opt_command_first,
                                     &memory,
                                     model_caps.as_ref(),
                                 );
@@ -2646,6 +2656,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 &mut menu,
                                 &mut opt_thinking,
                                 opt_max_tokens,
+                                opt_command_first,
                                 model_caps.as_ref(),
                                 &dbg,
                                 &opt_slow,
@@ -2748,6 +2759,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 &opt_slow,
                                 &opt_thinking,
                                 opt_max_tokens,
+                                opt_command_first,
                                 &memory,
                                 model_caps.as_ref(),
                             );
@@ -2912,7 +2924,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             // history. (Mid-stream vends already logged
                             // their CMD line before this point.)
                             if let Some(cmd) = &command
-                                && cfg.engine.command_first
+                                && opt_command_first
                             {
                                 ctx_log.push_str(&format!("CMD: {cmd}\n"));
                             }
@@ -2941,7 +2953,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 );
                                 suggestions.insert(0, (id, cmd.clone(), why.to_string()));
                                 suggestions.truncate(8);
-                                if !cfg.engine.command_first {
+                                if !opt_command_first {
                                     ctx_log.push_str(&format!("CMD: {cmd}\n"));
                                 }
                             }

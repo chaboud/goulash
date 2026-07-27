@@ -936,6 +936,22 @@ def test_engine_ollama():
     os.write(mfd, b"\r")            # ... and back on, so later checks stand
     out = read_until(mfd, rb"commentary: on", 4.0)
     check("cycling wraps around", b"commentary: on" in out, out[-300:])
+    # Field bug: command_first was the one setting with no session-side
+    # variable, so Enter told the engine and rewrote the config while the
+    # row itself was hardcoded to "on" and the session's own mid-stream
+    # vending never changed. It looked exactly like a dead key.
+    for _ in range(5):
+        os.write(mfd, b"\x1b[B")
+        time.sleep(0.15)
+    out = read_until(mfd, rb"command_first: on", 4.0)
+    check("command_first reachable in the list", b"command_first: on" in out,
+          out[-300:])
+    os.write(mfd, b"\r")
+    out = read_until(mfd, rb"command_first: off", 4.0)
+    check("command_first ROW toggles, not just the notice",
+          out.count(b"command_first: off") >= 2, out[-400:])
+    os.write(mfd, b"\r")            # back on, so later checks stand
+    read_until(mfd, rb"command_first: on", 4.0)
     os.write(mfd, b"\x1b")
     time.sleep(0.4)
     # #/debug: the terminal-hackery drawer, same cycle mechanic.

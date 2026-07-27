@@ -810,12 +810,16 @@ fn split_finding(raw: &str) -> (String, Option<String>, String) {
         } else if in_reason {
             reason.push_str(l);
             reason.push('\n');
-        } else if let Some(c) = t.strip_prefix("CMD:") {
+        } else if let Some(c) = t.strip_prefix("CMD:").map(clean_cmd).as_deref() {
             let c = c.trim();
             if !c.is_empty() {
                 command = Some(c.to_string());
             }
-        } else if !t.is_empty() && line.is_empty() {
+        } else if let Some(sa) = t.strip_prefix("SAY:") {
+            if line.is_empty() && !sa.trim().is_empty() {
+                line = sa.trim().to_string();
+            }
+        } else if !t.is_empty() && line.is_empty() && !is_tagged(t) {
             line = t.to_string();
         }
     }
@@ -1229,6 +1233,12 @@ stale. The log also contains the running conversation: '#' lines are \
 earlier user questions, 'goulash:' lines are your earlier replies, and \
 'CMD:' lines are commands you suggested — follow-up questions refer back \
 to them.\n\
+Answer in TAGGED LINES. Every line begins with a tag, and a line holds \
+its tag and nothing else \u{2014} no explanation, no dash, no comment \
+after the value:\n\
+SAY: <one short line of plain text>\n\
+CMD: <a shell command, complete and runnable on its own>\n\
+Never put prose on a CMD line: the user runs that line verbatim.\n\
 When a file would let you answer better — a command reference, a runbook, \
 a config — you may suggest that the user pin it, with a normal command \
 line: 'CMD: #@/path <file>'. Goulash reads it into your working context. \
@@ -1264,26 +1274,44 @@ fn generate(
             "Answer ONLY with PIN: / PINCLEAR lines plus at most one short \
              prose line. No CMD: line."
         }
+        // Nothing may follow `CMD: <command>` on these lines. Mimicry is
+        // what teaches a small model the format, so a directive that
+        // trails an em-dash and an explanation after the placeholder
+        // teaches exactly that — and the user then pulls a command with
+        // prose welded onto the end and runs it. Field-caught.
+        // The grammar itself lives in the byte-stable preamble; these
+        // only say which tags apply this turn, and in what order. A
+        // uniform tagged grammar is what lets a small model keep the
+        // format: with one tagged line and untagged prose it has to
+        // infer when to STOP tagging, and that is the inference that
+        // welds an explanation onto the end of a command.
         (true, false) => {
-            "Reply with the command FIRST, on its own line, formatted \
-             exactly as: CMD: <command> — required whenever any shell \
-             command could accomplish, fix, or demonstrate what was \
-             asked. Then ONE short prose line explaining it."
+            "Answer with exactly two lines:\n\
+             CMD: <command>\n\
+             SAY: <one short line explaining it>\n\
+             Include the CMD line whenever any shell command could \
+             accomplish, fix, or demonstrate what was asked."
         }
         (true, true) => {
-            "If a genuinely useful next command exists, put it FIRST on \
-             its own line, formatted exactly as: CMD: <command>. Then \
-             ONE short prose line."
+            "Answer with:\n\
+             CMD: <command>\n\
+             SAY: <one short line>\n\
+             Include the CMD line ONLY if a genuinely useful next \
+             command exists; otherwise send the SAY line alone."
         }
         (false, false) => {
-            "Reply with ONE short prose line. If any shell command could \
-             accomplish, fix, or demonstrate what was asked, you MUST add \
-             a second line formatted exactly as: CMD: <command>"
+            "Answer with exactly two lines:\n\
+             SAY: <one short line>\n\
+             CMD: <command>\n\
+             Include the CMD line whenever any shell command could \
+             accomplish, fix, or demonstrate what was asked."
         }
         (false, true) => {
-            "Reply with ONE short prose line. Add a second line formatted \
-             exactly as: CMD: <command> ONLY if a genuinely useful next \
-             command exists."
+            "Answer with:\n\
+             SAY: <one short line>\n\
+             CMD: <command>\n\
+             Include the CMD line ONLY if a genuinely useful next \
+             command exists; otherwise send the SAY line alone."
         }
     };
     // Stable-prefix order, most stable first: preamble, memories,
@@ -1372,12 +1400,47 @@ fn generate(
     Ok((acc.trim().to_string(), early))
 }
 
+/// Does this line already carry one of the grammar's tags? Used only to
+/// stop a stray verb line being mistaken for the prose answer.
+fn is_tagged(l: &str) -> bool {
+    const TAGS: &[&str] = &[
+        "CMD:",
+        "SAY:",
+        "REASON:",
+        "REMEMBER:",
+        "FORGET:",
+        "PIN:",
+        "PINCLEAR",
+    ];
+    TAGS.iter().any(|t| l.starts_with(t))
+}
+
+/// Strip trailing prose from a `CMD:` line.
+///
+/// An em-dash or en-dash is never a shell operator, so one appearing
+/// unquoted in a command line means the model kept explaining past the
+/// end of the command. Cutting there is at worst equivalent — the shell
+/// would have choked on it anyway — and at best turns a line that
+/// errors fifteen times into one that runs.
+///
+/// Deliberately narrow. ` -- ` is a real shell idiom (`git log --`), and
+/// `#` inside a command can be a fragment or a literal, so neither is
+/// safe to cut on.
+fn clean_cmd(s: &str) -> String {
+    let cut = s
+        .char_indices()
+        .find(|(_, c)| matches!(c, '\u{2014}' | '\u{2013}'))
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    s[..cut].trim().to_string()
+}
+
 /// A `CMD:` line that has been fully received (its newline has arrived),
 /// so it is safe to vend before the rest of the answer streams in.
 fn complete_cmd_line(acc: &str) -> Option<String> {
     for line in acc.lines() {
         if (!acc.ends_with(line) || acc.ends_with('\n'))
-            && let Some(c) = line.trim().strip_prefix("CMD:")
+            && let Some(c) = line.trim().strip_prefix("CMD:").map(clean_cmd).as_deref()
         {
             let c = c.trim();
             if !c.is_empty() {
@@ -1459,11 +1522,18 @@ fn split_answer(
         if l.is_empty() {
             continue;
         }
-        if let Some(c) = l.strip_prefix("CMD:") {
+        if let Some(c) = l.strip_prefix("CMD:").map(clean_cmd).as_deref() {
             if command.is_none() && !c.trim().is_empty() {
                 command = Some(c.trim().to_string());
             }
-        } else if text.is_empty() {
+        } else if let Some(t) = l.strip_prefix("SAY:") {
+            if text.is_empty() && !t.trim().is_empty() {
+                text = t.trim().to_string();
+            }
+        } else if text.is_empty() && !is_tagged(l) {
+            // Lenient: a model that ignores the grammar entirely still
+            // gets its prose through. The tag is what makes the FORMAT
+            // unambiguous, not what makes the answer usable.
             text = l.to_string();
         }
     }
@@ -1487,8 +1557,63 @@ fn split_answer(
 
 #[cfg(test)]
 mod answer_tests {
-    use super::split_answer;
+    use super::{split_answer, split_finding};
     use std::collections::HashSet;
+
+    #[test]
+    fn prose_welded_onto_a_cmd_line_is_cut_off() {
+        // Field bug: the directive itself showed "CMD: <command> — ..."
+        // and the model mimicked it, so the user pulled a command with
+        // an explanation on the end and the shell ran the explanation as
+        // arguments. An em-dash is never a shell operator, so cutting
+        // there is at worst equivalent to what the shell would do.
+        let (_t, c) = split_answer(
+            "CMD: du -ah . | sort -rh | head -n 10 \u{2014} This lists the top 10 \
+             largest files\nSAY: disk hogs",
+            &paths(&[]),
+        );
+        assert_eq!(c.as_deref(), Some("du -ah . | sort -rh | head -n 10"));
+    }
+
+    #[test]
+    fn the_say_tag_is_read_and_stripped() {
+        let (t, c) = split_answer("CMD: ls -la\nSAY: lists everything", &paths(&[]));
+        assert_eq!(t, "lists everything");
+        assert_eq!(c.as_deref(), Some("ls -la"));
+    }
+
+    #[test]
+    fn an_untagged_answer_still_works() {
+        // Leniency is the point: the tag makes the FORMAT unambiguous,
+        // it is not a precondition for the answer being usable.
+        let (t, c) = split_answer("lists everything\nCMD: ls -la", &paths(&[]));
+        assert_eq!(t, "lists everything");
+        assert_eq!(c.as_deref(), Some("ls -la"));
+    }
+
+    #[test]
+    fn a_stray_verb_line_is_not_mistaken_for_prose() {
+        let (t, _c) = split_answer("REMEMBER: they use pnpm\nSAY: noted", &paths(&[]));
+        assert_eq!(t, "noted", "a REMEMBER line is not the answer text");
+    }
+
+    #[test]
+    fn findings_speak_the_same_grammar() {
+        let (line, cmd, reason) = split_finding(
+            "CMD: rg -n todo \u{2014} searches recursively\nSAY: faster than grep\n\
+             REASON: ripgrep skips .gitignore",
+        );
+        assert_eq!(cmd.as_deref(), Some("rg -n todo"));
+        assert_eq!(line, "faster than grep");
+        assert!(reason.contains("gitignore"));
+    }
+
+    #[test]
+    fn a_dash_inside_a_quoted_argument_is_left_alone() {
+        // The cut is on em/en dashes only, so ordinary flags survive.
+        let (_t, c) = split_answer("CMD: git log --oneline -n 20", &paths(&[]));
+        assert_eq!(c.as_deref(), Some("git log --oneline -n 20"));
+    }
 
     fn paths(names: &[&str]) -> HashSet<String> {
         names.iter().map(|s| s.to_string()).collect()
