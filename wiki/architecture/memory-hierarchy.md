@@ -18,6 +18,13 @@ lossless *capture*.
 
 ## The tree
 
+> **Promotion between levels is the unit of background work, and it is
+> what bounds it** — each level is geometrically smaller than the one
+> below, so there is only ever a finite amount of cooking left to do.
+> See [ambient-research](ambient-research.md).
+
+
+
 ```
 region:   "cleanup in ~/src/junk"     "built libfoo"      "debugged CI issue"
              │                            │                     │

@@ -1,0 +1,275 @@
+# Ambient Research: Observant Salient Elevation
+
+Every rung of the [engagement ladder](two-lane-engagement.md#when-slow-engages-a-ladder-not-a-toggle)
+is triggered by a keystroke — `#?`, `#@`, `#`. But the terminal is a
+continuous stream of intent, and the GPU is idle most of the time. The
+trigger does not have to be a keystroke.
+
+The value is not "an agent watches your terminal" — that has been tried
+and it is annoying. It is **observant salient elevation**: noticing what
+matters in what already happened, and having somewhere to put it that
+does not interrupt.
+
+## Why this is close
+
+Three things that would normally be the hard part are already built and
+load-bearing:
+
+- **Background work that yields to the human.** The digest queue
+  (`src/engine.rs`) is a `VecDeque` of jobs that always loses to an
+  interactive ask, meters its progress, and cancels wholesale. Getting
+  out of the way is the problem that is usually hard.
+- **Late arrival is already safe.** Findings land at their **origin
+  turn**, never at the top of the stack, so nothing arriving late can
+  seize attention. That invariant is what makes unprompted work
+  survivable at all.
+- **The corpus already exists on disk.** `record.rs` has been writing
+  `cmd` / `cmd_end` / `cwd` / `prompt` / `out` as timestamped JSONL for
+  every session ever run. The chunks of the observed are durable and
+  replayable today. Nothing reads them.
+
+## The hierarchy is the throttle
+
+[memory-hierarchy](memory-hierarchy.md) already describes the tree:
+leaves (raw blocks) → markers → regions. What ambient research adds is
+that **promotion between levels is the unit of work**, and that is
+exactly what bounds it.
+
+```
+areas      ~N/k²   ← promoting here is rare and cheap
+groups     ~N/k
+blocks      N      ← promoting here is frequent and cheap
+```
+
+Each level is geometrically smaller than the one below, so the total
+work available is bounded by the shape of the tree rather than by a
+timer. You cannot spin, because there is only ever a finite amount of
+cooking left to do. **The cooking of the hierarchy is the opportunity to
+work, and it is the throttle.**
+
+And the promotion step is not new machinery: **a promotion is a digest.**
+`run_one_digest` already takes a large thing and produces a smaller one
+under a budget, asynchronously, yielding to interactive work. Blocks → a
+group summary is the same operation as file → digest, pointed at a
+different input. The tier that exists for `#@` generalises.
+
+Priority between levels is the obvious one: promote whatever is furthest
+behind, deepest first, since a stale group makes every area above it
+wrong.
+
+## Quiescence is provable, not a backoff
+
+"We have reasoned over what we have, and we are done" is a **fixed
+point**, not a heuristic:
+
+> every unit above the salience threshold has been examined at its
+> current input hash, no new blocks have arrived, and no artifact has
+> changed that would invalidate a prior verdict.
+
+When it holds, the worker returns to a blocking `recv` and burns
+nothing. That is the difference between a daemon and a system that
+converges — and it is the honest answer to "is this eating my battery":
+not *we back off*, but **there is nothing left to think about, and here
+is how you can see that.**
+
+So it should be visible. The chrome already carries state; `settled`
+versus `thinking` is one more word, and it is the word that makes the
+whole mechanic trustworthy.
+
+**The block set needs a horizon.** It grows forever, so salience decays
+with age or the system re-converges over an ever-larger corpus. Same LRU
+shape as the `.goulash` slot retention.
+
+## Discipline: we are a command-prompt thing
+
+**Rejected: an AC-only default.** Tying background work to the power
+adapter is the wrong axis and a bad experience. The budget should be
+coupled to *activity*, not to power state.
+
+The rule instead:
+
+> We work for ~30 seconds after the action stops. We steal extra moments
+> while the action happens. Unless explicitly told `#/study` or
+> `#/cook`, that is all we do.
+
+Two windows, both bounded, both already sensed:
+
+- **After a prompt turn settles** — the human is reading or thinking,
+  the GPU is free, and any keystroke cancels. *Typing is the cancel*;
+  no new verb, no stolen Ctrl-C.
+- **While a command runs** — the human is watching output, not typing.
+  `cmd` state with no keystrokes is stealable time too, and it is time
+  we are otherwise wasting.
+
+This is what makes the "away for three hours" case safe without needing
+the fixed point to be reached: we do not grind for three hours. We do
+thirty seconds after the last action and stop. Convergence becomes
+**opportunistic rather than a goal to chase** — we resume next time
+there is action, and if the corpus is never fully cooked, nothing is
+harmed.
+
+`#/study` and `#/cook` are the explicit escape hatch for "go grind" —
+user-initiated, so the cost is chosen rather than imposed.
+
+## Two stores, and the rule between them
+
+The split already exists implicitly: `memory.toml` is a global,
+user-scoped, model-written store, and pins are project-shaped (they are
+paths). Making it explicit:
+
+| | holds | scope | travels |
+|---|---|---|---|
+| `~/.goulash/` | **habits** — your tools, your idioms, the fixes you keep re-deriving | you | with you, across machines |
+| per-project artifacts (under `~/.goulash/`, keyed by project) | **content** — this tree's build system, layout, runbooks | that tree | only via explicit export |
+
+**The invariant: global holds habits, never content.** That single rule
+is what stops the worst failure — the global store learning something in
+one client's repository and surfacing it in another's. "This user prefers
+`rg`" is portable. "The auth service talks to Redis on 6380" is not, and
+must never leave the tree it came from.
+
+### We do not write to our targets
+
+**All goulash writes go under `~/.goulash/`.** Project artifacts are
+stored there, keyed by a stable project identity, not scattered into the
+directories being worked in.
+
+This was considered and rejected the other way round — a `.goulash/`
+directory created inside each project — for reasons that are not
+aesthetic:
+
+- **Nobody gets to be `.DS_Store`.** A tool that litters other people's
+  trees with its own bookkeeping is a tool people learn to `find -delete`.
+  Writing into a directory we were merely *invited to read* is a
+  category error.
+- **Config-identity switching breaks it.** Field experience with a
+  `.claude` in a home directory and a separate `~/.claude_employer`:
+  switching between them corrupted state that assumed a single identity.
+  So `$GOULASH_HOME` stays overridable, project artifacts are keyed by a
+  stable project identity, and **switching homes starts cold rather than
+  corrupt.** Cold is recoverable; corrupt is not.
+
+### `.paprikash`: the project speaks, we only listen
+
+A project may contain a `.paprikash` — **human-authored, read-only,
+never created or modified by goulash.** It is the mechanism by which a
+repository tells goulash something about itself, and it is the *only*
+in-tree file in the design.
+
+Plausible content:
+
+```toml
+# .paprikash — committed by the humans who own this tree
+research = "off"                  # stay dumb here
+read     = ["docs/", "Makefile"]  # what actually matters
+avoid    = ["vendor/", "*.pem"]
+notes    = "tests run with `just test`, never run migrations by hand"
+```
+
+**The trust rule is an asymmetry, and it is the important part.** A
+`.paprikash` is content from a repository you cloned — untrusted input
+heading for a prompt, which is a live injection surface. But not all
+directives are equally dangerous:
+
+- **Restrictions are honoured unconditionally.** `research = "off"`,
+  `avoid = [...]` — anything that makes goulash do *less* is safe to
+  obey from an untrusted source, because the worst case is that we are
+  unhelpful.
+- **Expansions are suggestions, not instructions.** Anything that would
+  widen what we read, where we look, or what we say is surfaced for
+  consent and never self-applied. Prose in `notes` is quoted to the
+  model as *data the repository asserts*, never as instruction.
+
+That asymmetry means a hostile `.paprikash` can make goulash useless in
+that tree and nothing worse — which is an acceptable worst case, and a
+much easier property to hold than "sanitise arbitrary text".
+
+**Export is explicit.** A `.paprikash` is only ever written by a user
+asking for one. A committed one means a new teammate's goulash starts
+warm — it already knows the build system, the test command, why that one
+script exists. That warm start is the strongest thing in this design,
+and it stays opt-in on both ends.
+
+## Salience: what deserves a pass
+
+The missing primitive is not compute, it is ranking. Most of it needs no
+model at all:
+
+- a non-zero exit the [rules vendor](suggestion-vendors.md) could not fix
+- the same command repeated three or more times with variations —
+  someone is iterating, which means someone is stuck
+- a long output tail nobody scrolled
+- a new cwd with an unfamiliar project shape
+- **a block adjacent to a `#` ask**
+
+That last one is the good one: the human already told us they were
+confused there. **The transcript is labelled data** — we do not have to
+guess what was salient, because people have been marking it for us the
+whole time.
+
+Annealing then has a clean stopping rule: re-examine a unit only when
+its *inputs* change — a file hash, a new related block, a new artifact.
+Otherwise it is settled.
+
+## What lands where
+
+Ambient work has no origin turn, which is a problem given that findings
+must land at their origin. It resolves by splitting the output:
+
+- **Findings** — a command and a line — need a turn. But a failed build
+  *is* a turn, with an ID, an exit code and an output tail. Ambient work
+  provoked by a block lands on that block. No new machinery: the amend
+  mechanic already targets a turn.
+- **Artifacts** — a wiki page, a digest, a note — need no turn. They
+  land in the store and are browsable through the
+  [menu primitive](../interaction/settings-and-nav.md), which the pin
+  browser already is.
+
+Default output is **silence**. Slow already answers `PASS` for "nothing
+better"; ambient needs the same primitive one level up — *nothing worth
+keeping* writes nothing. An accumulating pile of mediocre artifacts is
+the real failure mode, and it arrives slowly enough that you do not
+notice until it is bad.
+
+And the voice does not change: **show up with a recommendation, that is
+the whole list.** "I noticed you have been struggling with…" is
+insufferable. A command and a line.
+
+## Confabulation compounds
+
+A wrong artifact poisons every later pass that reads it. This promotes
+the content-hashed artifact cache from an optimisation to a
+**correctness requirement**: every artifact records the input and hash it
+was derived from, so staleness is detectable and provenance is
+checkable. Derived data that conflicts is thrown away and re-derived
+rather than merged — which also answers staleness for free.
+
+## `#/study` and ambient are the same machine
+
+Offline over the transcript history, online over the current session:
+same salience ranking, same promotion step, same artifact store,
+different clock. Worth building it that way from the start rather than
+discovering it later.
+
+## Status
+
+**Nothing here is built.** What exists: the yielding background queue,
+the digest tier that promotions would reuse, findings-land-at-origin,
+`PASS`, the menu primitive, per-lane bindings so this can run on another
+box, and the transcript corpus.
+
+What is missing, roughly in order:
+
+| | | size |
+|---|---|---|
+| **A** | Blocks addressable in memory. `Block` is built in `session.rs` then flattened into a `ctx_log: String`; keep the `Vec<Block>` (`blocks_seen` is already the ID counter). | ~50 lines |
+| **B** | An activity signal to the engine. The worker's `idle` means "my queue is empty", not "the human is idle". The session knows and never says. | ~30 lines |
+| **C** | The artifact store: keyed by project, content-hashed, with provenance. | ~250 lines |
+| **D** | Promotion bookkeeping: `unexamined → examined(hash, verdict)`, plus the level-behind priority. Falls out of A. | ~50 lines |
+| **E** | The 30-second discipline, and the horizon. | ~50 lines |
+
+**The first slice** — ambient on failed blocks only, at idle, producing
+findings that land on that block's turn, no artifact store yet. A + B
+plus a job type reusing `run_research` verbatim. It answers the only
+question that matters before spending days on C: **does a finding you
+did not ask for feel like a gift or an intrusion?**

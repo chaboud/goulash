@@ -66,6 +66,7 @@ mindmap
 - [architecture/suggestion-vendors.md](architecture/suggestion-vendors.md) — rules (thefuck-style), history/n-gram, LLM vendors behind one interface
 - [architecture/agent-memory.md](architecture/agent-memory.md) — remember-as-a-tool: prime store + searchable bank (backlog)
 - [architecture/two-lane-engagement.md](architecture/two-lane-engagement.md) — fast speaks, slow researches: lanes, MCP capabilities, classification (design)
+- [architecture/ambient-research.md](architecture/ambient-research.md) — observant salient elevation: the hierarchy as throttle, provable quiescence, `.paprikash` (design)
 - [architecture/working-context.md](architecture/working-context.md) — `#@` pinned files as near-tool-use: deterministic + LLM-mediated pinning, budget tiers
 - [architecture/status-rows.md](architecture/status-rows.md) — reserved bottom rows via shrunken inner PTY
 - [architecture/implementation.md](architecture/implementation.md) — Rust, crate landscape, `~/.goulash/` config
