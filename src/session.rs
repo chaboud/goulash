@@ -240,6 +240,9 @@ const MENU_MIN_INNER: u16 = 10;
 enum MenuKind {
     /// Enter binds the model and persists it.
     Model,
+    /// The same list for the research lane — which may be a different
+    /// server entirely, so it is filled from THAT server's inventory.
+    SlowModel,
     /// Enter arms a slot; a second Enter forgets it. Destructive
     /// actions in a modal list need a confirm keystroke, not a
     /// hair-trigger.
@@ -618,7 +621,7 @@ fn compose_rows(
             None => format!(
                 " \u{2191}\u{2193} \u{b7} {} \u{b7} esc \u{b7} {}/{} ",
                 match m.kind {
-                    MenuKind::Model => "\u{23ce} save",
+                    MenuKind::Model | MenuKind::SlowModel => "\u{23ce} save",
                     MenuKind::Memory => "\u{23ce}\u{23ce} forget",
                     MenuKind::Pins => "\u{23ce}\u{23ce} unpin",
                     MenuKind::Settings | MenuKind::Debug => "\u{23ce} cycles",
@@ -940,7 +943,6 @@ fn reclaim_rows(
 fn slash_command(
     cmdline: &str,
     engine: Option<&Engine>,
-    engine_model: &Option<String>,
     blocks: u64,
     commentary: &mut bool,
     memory: &mut MemoryStore,
@@ -1078,16 +1080,24 @@ fn slash_command(
             }
             None => Some("no engine running".to_string()),
         },
-        ("status", _) => Some(format!(
-            "goulash {} \u{b7} engine: {} \u{b7} {} \u{b7} {} blocks this session",
-            env!("CARGO_PKG_VERSION"),
-            engine_model.as_deref().unwrap_or("none"),
-            match caps {
-                Some(c) => c.note(),
-                None => "capabilities unknown",
-            },
-            blocks,
-        )),
+        ("status", _) => {
+            // The lane picture comes back asynchronously from the
+            // worker, which is the only place that knows what actually
+            // bound where; this line is what the user has right now.
+            if let Some(eng) = engine {
+                eng.describe_lanes();
+            }
+            // Deliberately short: the lane line that follows carries the
+            // model, the provider, and what each is trusted with, and
+            // the two together have to fit one bar row at 80 columns.
+            Some(match engine {
+                Some(_) => format!("goulash {} \u{b7} {blocks} blocks", env!("CARGO_PKG_VERSION")),
+                None => format!(
+                    "goulash {} \u{b7} no engine \u{b7} {blocks} blocks",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            })
+        }
         _ => Some(format!("unknown command /{cmd} \u{2014} try #/help")),
     }
 }
@@ -1948,6 +1958,30 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 eng.cancel_research();
                                             }
                                             notice = Some("research cancelled".to_string());
+                                        } else if let Some(sub) = rest.strip_prefix("/model") {
+                                            // `#?/model` binds the research
+                                            // lane. Same sigil scoping the
+                                            // cancels already use: `#/x` is
+                                            // global, `#?/x` is slow's.
+                                            let name = sub.trim();
+                                            match engine.as_ref() {
+                                                Some(eng) if name.is_empty() => {
+                                                    eng.list_slow_models();
+                                                    let mut m = Menu::open(
+                                                        "research model",
+                                                        MenuKind::SlowModel,
+                                                    );
+                                                    m.loaded = false;
+                                                    menu = Some(m);
+                                                }
+                                                Some(eng) => {
+                                                    eng.set_slow_model(name.to_string());
+                                                }
+                                                None => {
+                                                    notice =
+                                                        Some("no engine running".to_string());
+                                                }
+                                            }
                                         } else {
                                             // A bare `?` most likely means
                                             // "help" — tell the model that
@@ -2013,7 +2047,6 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         notice = slash_command(
                                             cmdline,
                                             engine.as_ref(),
-                                            &engine_model,
                                             blocks_seen,
                                             &mut commentary,
                                             &mut memory,
@@ -2228,7 +2261,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 Key::Enter => {
                                     let sel = m.filtered().get(m.cursor).map(|s| s.to_string());
                                     match m.kind {
-                                        MenuKind::Model => {
+                                        MenuKind::Model | MenuKind::SlowModel => {
                                             committed = sel;
                                             close = true;
                                         }
@@ -2459,6 +2492,21 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             m.clamp();
                         }
                     }
+                    if kind == MenuKind::SlowModel
+                        && let Some(name) = committed.take()
+                        && let Some(eng) = engine.as_ref()
+                    {
+                        // Not persisted: the research lane lives in
+                        // `[engine.slow_lane]`, which is a table rather
+                        // than the single scalar `persist_model` knows
+                        // how to rewrite. Binding it for the session is
+                        // the useful half; making it stick is a config
+                        // edit, and saying so beats pretending.
+                        eng.set_slow_model(name.clone());
+                        notice = Some(format!(
+                            "research lane \u{2192} {name} (this session;                              set [engine.slow_lane] to keep it)"
+                        ));
+                    }
                     if let Some(name) = committed
                         && let Some(eng) = engine.as_ref()
                     {
@@ -2591,7 +2639,6 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             let out = slash_command(
                                 cmdline,
                                 engine.as_ref(),
-                                &engine_model,
                                 blocks_seen,
                                 &mut commentary,
                                 &mut memory,
@@ -2926,6 +2973,19 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 None => notice = Some(m),
                             }
                         }
+                    }
+                    // Not an error and not a Ready: binding the research
+                    // lane is worth confirming, but the session tracks
+                    // the FAST model from Ready and would start naming
+                    // the wrong one.
+                    engine::Event::Notice(msg) => notice = Some(msg),
+                    // Follows a #/status: the worker is the only place
+                    // that knows what actually bound where.
+                    engine::Event::Lanes(msg) => {
+                        notice = Some(match notice.take() {
+                            Some(n) => format!("{n} \u{b7} {msg}"),
+                            None => msg,
+                        });
                     }
                     engine::Event::Debug(raw) => rec.engine_debug(&raw),
                     engine::Event::Busy { model, warm } => {

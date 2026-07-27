@@ -32,6 +32,10 @@ pub struct Backend {
     /// Bearer token, for the case where the endpoint is not on this
     /// machine. Empty for LM Studio and ollama.
     pub key: String,
+    /// May this backend be shown pinned file content? Resolved from an
+    /// explicit setting, never inferred from some other field having a
+    /// convenient value — "no api key" is a coincidence, not consent.
+    pub trusted: bool,
 }
 
 impl Backend {
@@ -41,6 +45,36 @@ impl Backend {
             Wire::OpenAi => "openai",
         }
     }
+}
+
+/// `yes` | `no` | `auto`. Auto is the only inference we do, and it is
+/// the narrow one: a loopback host is this machine, and nothing else
+/// qualifies. Anything ambiguous resolves to NOT trusted, because the
+/// failure directions are not symmetric — wrongly withholding a file
+/// costs an answer, wrongly sending one cannot be undone.
+pub fn resolve_trust(setting: &str, host: &str) -> bool {
+    match setting {
+        "yes" | "true" | "always" => true,
+        "no" | "false" | "never" => false,
+        _ => is_loopback(host),
+    }
+}
+
+fn is_loopback(host: &str) -> bool {
+    let h = host
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let h = h.split('/').next().unwrap_or("");
+    // Strip the port, taking care not to mangle a bracketed IPv6 host.
+    let host_only = if let Some(rest) = h.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        h.split(':').next().unwrap_or("")
+    };
+    matches!(host_only, "localhost" | "::1" | "0.0.0.0")
+        || host_only == "127.0.0.1"
+        || host_only.starts_with("127.")
 }
 
 /// An HTTP agent bound to one resolved backend. Everything the engine
@@ -344,6 +378,24 @@ mod tests {
     fn a_chat_completions_answer_is_still_read() {
         let v = serde_json::json!({"choices":[{"message":{"content":"hi"}}]});
         assert_eq!(Wire::OpenAi.text(&v).as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn trust_is_stated_and_auto_only_believes_loopback() {
+        for h in ["http://127.0.0.1:11434", "http://localhost:1234",
+                  "http://[::1]:1234", "http://127.0.0.53:1234"] {
+            assert!(resolve_trust("auto", h), "{h} is this machine");
+        }
+        for h in ["https://api.openai.com", "http://192.168.1.9:1234",
+                  "http://gpu.lan:1234", "http://10.0.0.5:11434"] {
+            assert!(!resolve_trust("auto", h), "{h} is not");
+        }
+        // Stated always wins, in both directions — including trusting a
+        // box on your own LAN, which auto cannot know about.
+        assert!(resolve_trust("yes", "https://api.openai.com"));
+        assert!(!resolve_trust("no", "http://127.0.0.1:11434"));
+        // Anything unrecognised falls to auto, not to trust.
+        assert!(!resolve_trust("maybe", "https://api.openai.com"));
     }
 
     #[test]

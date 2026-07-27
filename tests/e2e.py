@@ -694,6 +694,157 @@ def test_engine_openai():
     srv.shutdown()
 
 
+def test_per_lane_providers():
+    """Fast and slow bound to DIFFERENT servers — the case the two-lane
+    design was always for: a small local model answering immediately, a
+    bigger one elsewhere researching the same turn.
+
+    Two fake servers, one ollama and one OpenAI-compatible, and the test
+    asserts each lane's request landed on its own. Getting this wrong is
+    invisible in normal use (both lanes answer, just from one box), so
+    it needs a server that can say "nobody asked me"."""
+    print("per-lane providers (fast and slow on different servers):")
+    if not shutil.which("zsh"):
+        print("  [SKIP] zsh not installed")
+        return
+    import http.server
+    import threading
+
+    hits = {"fast": 0, "slow": 0, "slow_model": None, "fast_model": None}
+
+    class FastOllama(http.server.BaseHTTPRequestHandler):
+        def _send(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/api/tags":
+                self._send({"models": [{"name": "fastmodel", "size": 1_000_000}]})
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            req = json.loads(self.rfile.read(n) or b"{}")
+            if self.path == "/api/show":
+                self._send({"capabilities": ["completion"]})
+                return
+            if "prompt" not in req:
+                self._send({"done": True})
+                return
+            hits["fast"] += 1
+            hits["fast_model"] = req.get("model")
+            self._send({"response": "FAST-SAYS\nCMD: echo fast"})
+
+        def log_message(self, *a):
+            pass
+
+    class SlowOpenAI(http.server.BaseHTTPRequestHandler):
+        def _send(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/v1/models":
+                self._send({"data": [{"id": "slowmodel"}]})
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            req = json.loads(self.rfile.read(n) or b"{}")
+            if not req.get("prompt"):
+                self._send({"choices": [{"text": ""}]})
+                return
+            hits["slow"] += 1
+            hits["slow_model"] = req.get("model")
+            self._send({"choices": [{"text":
+                        "SLOW-SAYS\nCMD: echo slow\nREASON: because"}]})
+
+        def log_message(self, *a):
+            pass
+
+    fast_srv = http.server.HTTPServer(("127.0.0.1", 0), FastOllama)
+    slow_srv = http.server.HTTPServer(("127.0.0.1", 0), SlowOpenAI)
+    fport, sport = fast_srv.server_address[1], slow_srv.server_address[1]
+    for srv in (fast_srv, slow_srv):
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write(
+            '[engine]\n'
+            'provider = "ollama"\n'
+            f'host = "http://127.0.0.1:{fport}"\n'
+            'slow = "manual"\n'
+            '[engine.slow_lane]\n'
+            'provider = "lmstudio"\n'
+            f'openai_host = "http://127.0.0.1:{sport}"\n'
+        )
+    proc, mfd = spawn(["zsh"], home=home)
+    time.sleep(1.5)
+    os.write(mfd, b"#? which way\r")
+    out = read_until(mfd, rb"FAST-SAYS", 8.0)
+    check("fast lane answered from its own server", b"FAST-SAYS" in out, out[-300:])
+    # Research is async and lands on the turn it came from.
+    deadline = time.time() + 10
+    while time.time() < deadline and hits["slow"] == 0:
+        read_until(mfd, rb"__never__", 1.0)
+    check("slow lane reached the OTHER server", hits["slow"] > 0, str(hits))
+    check("each lane bound its own server's model",
+          hits["fast_model"] == "fastmodel" and hits["slow_model"] == "slowmodel",
+          str(hits))
+    os.write(mfd, b"#/status\r")
+    out = read_until(mfd, rb"slowmodel@openai", 6.0)
+    check("#/status names both lanes",
+          b"fastmodel@ollama" in out and b"slowmodel@openai" in out, out[-400:])
+    # Both fakes are on loopback, so `trusted = "auto"` trusts both and
+    # the warning stays silent. A marker beside every lane would train
+    # people to stop reading it.
+    check("no untrusted marker when both lanes are local",
+          b"untrusted" not in out, out[-400:])
+    os.write(mfd, b"\x1b")
+    time.sleep(0.3)
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+
+    # Trust is STATED, so stating it has to win over what auto would
+    # infer -- here, refusing to trust a lane that is plainly on this
+    # machine. The inverse (trusting a box on your own LAN that auto
+    # cannot know about) is the same switch the other way.
+    home2 = tempfile.mkdtemp(prefix="goulash-test-")
+    with open(os.path.join(home2, "config.toml"), "w") as f:
+        f.write(
+            '[engine]\n'
+            'provider = "ollama"\n'
+            f'host = "http://127.0.0.1:{fport}"\n'
+            '[engine.slow_lane]\n'
+            'provider = "lmstudio"\n'
+            f'openai_host = "http://127.0.0.1:{sport}"\n'
+            'trusted = "no"\n'
+        )
+    proc, mfd = spawn(["zsh"], home=home2)
+    time.sleep(1.5)
+    os.write(mfd, b"#/status\r")
+    out = read_until(mfd, rb"untrusted", 6.0)
+    check("stated distrust overrides what auto would infer",
+          b"untrusted: slow" in out, out[-400:])
+    os.write(mfd, b"\x1b")
+    time.sleep(0.3)
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+    for srv in (fast_srv, slow_srv):
+        srv.shutdown()
+
+
 def test_engine_ollama():
     print("engine probe + # aside answered (fake ollama):")
     if not shutil.which("zsh"):
@@ -1752,6 +1903,7 @@ def main():
         test_tab_completion,
         test_engine_ollama,
         test_engine_openai,
+        test_per_lane_providers,
         test_model_menu,
         test_model_capabilities,
         test_chat_mode,

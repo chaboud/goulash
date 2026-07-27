@@ -37,10 +37,20 @@ pub struct EngineConfig {
     pub openai_host: String,
     /// Name of the environment variable holding a bearer token, for the
     /// case where the endpoint is NOT on this machine. Empty for LM
-    /// Studio and ollama, which want no auth — and the same emptiness
-    /// is what marks a backend local enough to be trusted with pinned
-    /// file content (wiki: working-context.md).
+    /// Studio and ollama, which want no auth.
     pub api_key_env: String,
+    /// Whether this backend may be shown pinned file content
+    /// (wiki: working-context.md). `yes` | `no` | `auto`, where auto
+    /// means "trust a loopback host, nothing else". Stated, never
+    /// inferred from some other setting having a convenient value —
+    /// trust is a decision, not a side effect.
+    pub trusted: String,
+    /// Per-lane overrides. Everything above is the default for both
+    /// lanes; anything set here applies to the SLOW lane only, so the
+    /// two can be different models, different servers, or different
+    /// machines. Absent (or identical) means one lane serving both,
+    /// which is the common case and costs nothing extra.
+    pub slow_lane: LaneOverride,
     /// Model name; overrides favorites and auto-pick.
     pub model: Option<String>,
     /// Preference-ordered favorites: the first one installed wins during
@@ -112,6 +122,86 @@ pub struct EngineConfig {
     pub commentary: bool,
 }
 
+/// Everything that decides WHERE a lane talks and WHAT it binds. The
+/// rest of `EngineConfig` is behaviour, shared by both lanes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneConfig {
+    pub provider: String,
+    pub host: String,
+    pub openai_host: String,
+    pub api_key_env: String,
+    pub trusted: String,
+    pub model: Option<String>,
+    pub favorites: Vec<String>,
+}
+
+/// The same keys, all optional: unset means "inherit from `[engine]`".
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct LaneOverride {
+    pub provider: Option<String>,
+    pub host: Option<String>,
+    pub openai_host: Option<String>,
+    pub api_key_env: Option<String>,
+    pub trusted: Option<String>,
+    pub model: Option<String>,
+    pub favorites: Option<Vec<String>>,
+}
+
+impl LaneOverride {
+    fn is_empty(&self) -> bool {
+        self.provider.is_none()
+            && self.host.is_none()
+            && self.openai_host.is_none()
+            && self.api_key_env.is_none()
+            && self.trusted.is_none()
+            && self.model.is_none()
+            && self.favorites.is_none()
+    }
+}
+
+impl EngineConfig {
+    /// The lane that answers the user directly.
+    pub fn fast_lane(&self) -> LaneConfig {
+        LaneConfig {
+            provider: self.provider.clone(),
+            host: self.host.clone(),
+            openai_host: self.openai_host.clone(),
+            api_key_env: self.api_key_env.clone(),
+            trusted: self.trusted.clone(),
+            model: self.model.clone(),
+            favorites: self.favorites.clone(),
+        }
+    }
+
+    /// The research lane: the fast lane with `[engine.slow_lane]`
+    /// applied over it.
+    pub fn slow_lane(&self) -> LaneConfig {
+        let base = self.fast_lane();
+        let o = &self.slow_lane;
+        LaneConfig {
+            provider: o.provider.clone().unwrap_or(base.provider),
+            host: o.host.clone().unwrap_or(base.host),
+            openai_host: o.openai_host.clone().unwrap_or(base.openai_host),
+            api_key_env: o.api_key_env.clone().unwrap_or(base.api_key_env),
+            trusted: o.trusted.clone().unwrap_or(base.trusted),
+            // A slow override with no model of its own still means a
+            // separate lane — a different HOST is a perfectly good
+            // reason to split, and the model there may auto-pick
+            // differently anyway.
+            model: o.model.clone().or(base.model),
+            favorites: o.favorites.clone().unwrap_or(base.favorites),
+        }
+    }
+
+    /// Is the slow lane worth resolving separately? When it isn't, both
+    /// roles share one binding — which is the point: two lanes on one
+    /// model must not mean two model loads.
+    pub fn lanes_split(&self) -> bool {
+        !self.slow_lane.is_empty() && self.fast_lane() != self.slow_lane()
+    }
+}
+
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
@@ -119,6 +209,8 @@ impl Default for EngineConfig {
             host: "http://127.0.0.1:11434".to_string(),
             openai_host: "http://127.0.0.1:1234".to_string(),
             api_key_env: String::new(),
+            trusted: "auto".to_string(),
+            slow_lane: LaneOverride::default(),
             model: None,
             favorites: Vec::new(),
             keep_alive: "30m".to_string(),
@@ -338,7 +430,7 @@ fn edit_model(text: &str, name: Option<&str>) -> Result<String, String> {
 
 #[cfg(test)]
 mod persist_tests {
-    use super::edit_model;
+    use super::{Config, EngineConfig, edit_model};
 
     #[test]
     fn surgical_edit_preserves_comments() {
@@ -358,5 +450,73 @@ mod persist_tests {
         let out = edit_model("", Some("qwen3:1.7b")).unwrap();
         assert!(out.contains("[engine]"));
         assert!(out.contains("model = \"qwen3:1.7b\""));
+    }
+
+    fn engine_from(toml_src: &str) -> EngineConfig {
+        let c: Config = toml::from_str(toml_src).expect("parses");
+        c.engine
+    }
+
+    #[test]
+    fn one_lane_serves_both_until_told_otherwise() {
+        let e = engine_from("[engine]\nmodel = \"qwen3:4b\"\n");
+        assert!(
+            !e.lanes_split(),
+            "an absent [engine.slow_lane] must not cost a second binding \
+             \u{2014} two lanes on one model would mean two model loads"
+        );
+        assert_eq!(e.fast_lane(), e.slow_lane());
+    }
+
+    #[test]
+    fn a_slow_override_inherits_everything_it_does_not_state() {
+        let e = engine_from(
+            "[engine]\n\
+             provider = \"ollama\"\n\
+             host = \"http://127.0.0.1:11434\"\n\
+             model = \"qwen3:4b\"\n\
+             favorites = [\"a\", \"b\"]\n\
+             [engine.slow_lane]\n\
+             model = \"qwen3:30b\"\n",
+        );
+        assert!(e.lanes_split());
+        let slow = e.slow_lane();
+        assert_eq!(slow.model.as_deref(), Some("qwen3:30b"));
+        assert_eq!(slow.host, "http://127.0.0.1:11434", "host inherited");
+        assert_eq!(slow.provider, "ollama", "provider inherited");
+        assert_eq!(slow.favorites, vec!["a", "b"], "favorites inherited");
+        assert_eq!(e.fast_lane().model.as_deref(), Some("qwen3:4b"));
+    }
+
+    #[test]
+    fn the_lanes_can_be_different_servers_entirely() {
+        // The billing-vs-mailing-address case: a small local model
+        // answering, a big one elsewhere researching.
+        let e = engine_from(
+            "[engine]\n\
+             provider = \"ollama\"\n\
+             [engine.slow_lane]\n\
+             provider = \"lmstudio\"\n\
+             openai_host = \"http://192.168.1.9:1234\"\n\
+             trusted = \"yes\"\n",
+        );
+        assert!(e.lanes_split());
+        assert_eq!(e.fast_lane().provider, "ollama");
+        assert_eq!(e.slow_lane().provider, "lmstudio");
+        assert_eq!(e.slow_lane().openai_host, "http://192.168.1.9:1234");
+        // Stated trust survives a host auto would refuse.
+        assert_eq!(e.slow_lane().trusted, "yes");
+        assert_eq!(e.fast_lane().trusted, "auto");
+    }
+
+    #[test]
+    fn a_slow_table_that_changes_nothing_does_not_split() {
+        let e = engine_from(
+            "[engine]\nmodel = \"m\"\n[engine.slow_lane]\nmodel = \"m\"\n",
+        );
+        assert!(
+            !e.lanes_split(),
+            "restating the same values is not a reason to bind twice"
+        );
     }
 }

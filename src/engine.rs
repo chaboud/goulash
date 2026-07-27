@@ -1,4 +1,4 @@
-use crate::config::EngineConfig;
+use crate::config::{EngineConfig, LaneConfig};
 use crate::models::{Caps, Overrides, Source, Think, caps_for};
 use crate::wire::{Backend, Client, Gen, Wire};
 use std::io::BufRead;
@@ -52,6 +52,12 @@ pub enum Event {
     /// Research started (`Some(turn)`) or went idle (`None`).
     Researching(Option<u64>),
     Error(String),
+    /// Plain feedback that is not an error \u{2014} binding the research
+    /// lane, for one, which must not masquerade as `Ready` (the session
+    /// tracks the FAST model from that and would name the wrong one).
+    Notice(String),
+    /// How the lanes are bound right now, for `#/status`.
+    Lanes(String),
     Models(Vec<String>),
     /// Resolved capabilities for the newly bound model. The session
     /// keeps these so the UI can tell the truth about what `thinking`
@@ -118,12 +124,25 @@ pub enum Job {
     CancelDigests,
     /// Abandon research in flight and pending (`#?/cancel`).
     CancelResearch,
-    SetModel(String),
+    SetModel { slow: bool, name: String },
     /// Live tuning: key/value applied to the worker's own config copy.
     SetOption(String, String),
     /// Forget any pinned model and re-run the probe chain (auto).
     Rebind,
-    ListModels,
+    ListModels { slow: bool },
+    /// How are the lanes bound right now (for `#/status`)?
+    DescribeLanes,
+}
+
+/// One lane's binding: where it talks, what it bound there, and what
+/// that model can do. Fast and slow are the same shape \u{2014} "slow" is a
+/// role, not a different kind of thing.
+struct Lane {
+    cl: Client,
+    /// (bound model, everything installed on that server)
+    state: Option<(String, Vec<String>)>,
+    caps: Caps,
+    cfg: LaneConfig,
 }
 
 pub struct Engine {
@@ -217,8 +236,22 @@ impl Engine {
         });
     }
 
-    pub fn set_model(&self, model: String) {
-        let _ = self.job_tx.send(Job::SetModel(model));
+    pub fn set_model(&self, name: String) {
+        let _ = self.job_tx.send(Job::SetModel { slow: false, name });
+    }
+
+    /// `#?/model`: bind the research lane, reusing the `#?` scoping the
+    /// cancel verbs already established.
+    pub fn set_slow_model(&self, name: String) {
+        let _ = self.job_tx.send(Job::SetModel { slow: true, name });
+    }
+
+    pub fn list_slow_models(&self) {
+        let _ = self.job_tx.send(Job::ListModels { slow: true });
+    }
+
+    pub fn describe_lanes(&self) {
+        let _ = self.job_tx.send(Job::DescribeLanes);
     }
 
     pub fn set_option(&self, key: &str, value: &str) {
@@ -232,7 +265,7 @@ impl Engine {
     }
 
     pub fn list_models(&self) {
-        let _ = self.job_tx.send(Job::ListModels);
+        let _ = self.job_tx.send(Job::ListModels { slow: false });
     }
 
     pub fn digest(&self, id: u64, label: String, source: String, target: usize, card: bool) {
@@ -271,6 +304,14 @@ impl Engine {
     }
 }
 
+/// One agent shape, used for every backend.
+fn new_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(2))
+        .timeout(Duration::from_secs(120))
+        .build()
+}
+
 fn notify(wr: &OwnedFd) {
     let _ = nix::unistd::write(wr, b"e");
 }
@@ -283,16 +324,34 @@ fn worker(
     wr: OwnedFd,
 ) {
     let path_set = crate::vendor::path_executable_set();
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(2))
-        .timeout(Duration::from_secs(120))
-        .build();
+    let agent = new_agent();
 
     // Probe chain: an explicitly named provider, or each known local
     // server in turn. "none" was filtered by the caller.
     // (wiki: llm-engine.md probe chain)
-    let cl = resolve_backend(agent, &cfg);
-    let mut state = probe_models(&cl, &cfg);
+    let cl = resolve_backend(agent.clone(), &cfg.fast_lane());
+    let mut state = probe_models(&cl, &cfg.fast_lane());
+    // The slow lane, when it is genuinely elsewhere. `None` means the
+    // two roles share one binding \u{2014} which is the point of resolving it
+    // at all: two lanes on one model must not mean two model loads, two
+    // KV caches, or two entries in the same server's queue.
+    let mut slow: Option<Lane> = if cfg.lanes_split() {
+        let lane_cfg = cfg.slow_lane();
+        let scl = resolve_backend(agent, &lane_cfg);
+        let sstate = probe_models(&scl, &lane_cfg);
+        let scaps = match &sstate {
+            Some((m, _)) => caps_for(m, show_thinks(&scl, m), &over),
+            None => caps_for("", None, &over),
+        };
+        Some(Lane {
+            cl: scl,
+            state: sstate,
+            caps: scaps,
+            cfg: lane_cfg,
+        })
+    } else {
+        None
+    };
     // What the bound model can actually do. Re-resolved on every bind,
     // never guessed at ask time.
     let mut caps = caps_for("", None, &over);
@@ -332,11 +391,18 @@ fn worker(
         };
         let Some(first) = first else {
             // Research outranks ingest: the user asked for it.
+            // Research runs on the SLOW lane when there is one \u{2014} a
+            // different model, a different server, or a different
+            // machine \u{2014} and otherwise on the shared binding.
+            let (rcl, rcaps, rstate) = match &slow {
+                Some(l) => (&l.cl, &l.caps, &l.state),
+                None => (&cl, &caps, &state),
+            };
             if run_research(
-                &cl,
+                rcl,
                 &cfg,
-                &caps,
-                &state,
+                rcaps,
+                rstate,
                 &mut pending_research,
                 &mut backfill,
                 &ev,
@@ -359,7 +425,7 @@ fn worker(
         // Late binding: ollama may have started after goulash did, so an
         // unbound engine re-probes whenever work arrives.
         if state.is_none() {
-            state = probe_models(&cl, &cfg);
+            state = probe_models(&cl, &cfg.fast_lane());
             if let Some((model, _)) = &state {
                 caps = announce(&cl, &over, &ev, &wr, model);
                 if cfg.prewarm {
@@ -379,10 +445,40 @@ fn worker(
         loop {
             match job {
                 Job::Ask { .. } => latest_ask = Some(job),
-                Job::SetModel(m) => match state.as_mut() {
+                // Naming a slow model is what SPLITS the lanes: until
+                // then the research role rides the fast binding, and
+                // pointing it at a second model is the whole reason to
+                // separate them.
+                Job::SetModel { slow: true, name } => {
+                    let lane = slow.get_or_insert_with(|| {
+                        let lane_cfg = cfg.slow_lane();
+                        let scl = resolve_backend(new_agent(), &lane_cfg);
+                        let sstate = probe_models(&scl, &lane_cfg);
+                        Lane {
+                            cl: scl,
+                            state: sstate,
+                            caps: caps_for("", None, &over),
+                            cfg: lane_cfg,
+                        }
+                    });
+                    match lane.state.as_mut() {
+                        Some((model, _)) => {
+                            *model = name.clone();
+                            lane.cfg.model = Some(name.clone());
+                            lane.caps = caps_for(&name, show_thinks(&lane.cl, &name), &over);
+                            let _ = ev.send(Event::Notice(format!(
+                                "research lane \u{2192} {name} ({})",
+                                lane.cl.be.label()
+                            )));
+                            notify(&wr);
+                        }
+                        None => unreachable_engine(&ev, &wr, &cfg),
+                    }
+                }
+                Job::SetModel { slow: false, name } => match state.as_mut() {
                     Some((model, _)) => {
-                        *model = m.clone();
-                        cfg.model = Some(m);
+                        *model = name.clone();
+                        cfg.model = Some(name);
                         caps = announce(&cl, &over, &ev, &wr, model);
                         pending_warm = true;
                     }
@@ -401,7 +497,7 @@ fn worker(
                 },
                 Job::Rebind => {
                     cfg.model = None;
-                    state = probe_models(&cl, &cfg);
+                    state = probe_models(&cl, &cfg.fast_lane());
                     match &state {
                         Some((model, _)) => {
                             caps = announce(&cl, &over, &ev, &wr, model);
@@ -446,13 +542,26 @@ fn worker(
                     digest_total = 0;
                     notify(&wr);
                 }
-                Job::ListModels => match &state {
-                    Some((_, installed)) => {
-                        let _ = ev.send(Event::Models(installed.clone()));
-                        notify(&wr);
+                Job::DescribeLanes => {
+                    let _ = ev.send(Event::Lanes(describe_lanes(&cl, &state, &caps, &slow)));
+                    notify(&wr);
+                }
+                Job::ListModels { slow: want_slow } => {
+                    // A split lane may be a different SERVER, so its
+                    // menu has to come from that server's inventory \u{2014}
+                    // the fast one's would be a lie there.
+                    let listing = match (want_slow, &slow) {
+                        (true, Some(l)) => &l.state,
+                        _ => &state,
+                    };
+                    match listing {
+                        Some((_, installed)) => {
+                            let _ = ev.send(Event::Models(installed.clone()));
+                            notify(&wr);
+                        }
+                        None => unreachable_engine(&ev, &wr, &cfg),
                     }
-                    None => unreachable_engine(&ev, &wr, &cfg),
-                },
+                }
             }
             match jobs.try_recv() {
                 Ok(next) => job = next,
@@ -539,11 +648,15 @@ fn worker(
         // Interactive work for this pass is done. Research first (the
         // user asked for it), then ingest. One at a time either way, so
         // a new ask never waits behind more than a single job.
+        let (rcl, rcaps, rstate) = match &slow {
+            Some(l) => (&l.cl, &l.caps, &l.state),
+            None => (&cl, &caps, &state),
+        };
         if run_research(
-            &cl,
+            rcl,
             &cfg,
-            &caps,
-            &state,
+            rcaps,
+            rstate,
             &mut pending_research,
             &mut backfill,
             &ev,
@@ -958,21 +1071,25 @@ fn warm_marked(
 /// fallback to the other one); `auto` tries ollama first, then the
 /// OpenAI-compatible port, since ollama is the zero-config default and
 /// LM Studio has to be running deliberately.
-fn resolve_backend(agent: ureq::Agent, cfg: &EngineConfig) -> Client {
-    let key = if cfg.api_key_env.is_empty() {
+fn resolve_backend(agent: ureq::Agent, lane: &LaneConfig) -> Client {
+    let key = if lane.api_key_env.is_empty() {
         String::new()
     } else {
-        std::env::var(&cfg.api_key_env).unwrap_or_default()
+        std::env::var(&lane.api_key_env).unwrap_or_default()
     };
-    let mk = |wire: Wire| Backend {
-        host: match wire {
-            Wire::Ollama => cfg.host.clone(),
-            Wire::OpenAi => cfg.openai_host.clone(),
-        },
-        wire,
-        key: key.clone(),
+    let mk = |wire: Wire| {
+        let host = match wire {
+            Wire::Ollama => lane.host.clone(),
+            Wire::OpenAi => lane.openai_host.clone(),
+        };
+        Backend {
+            trusted: crate::wire::resolve_trust(&lane.trusted, &host),
+            host,
+            wire,
+            key: key.clone(),
+        }
     };
-    if let Some(wire) = Wire::parse(&cfg.provider) {
+    if let Some(wire) = Wire::parse(&lane.provider) {
         return Client {
             agent,
             be: mk(wire),
@@ -989,6 +1106,58 @@ fn resolve_backend(agent: ureq::Agent, cfg: &EngineConfig) -> Client {
     cl
 }
 
+/// What `#/status` prints about the lanes. Trust is named per backend
+/// because a split lane can be somewhere else entirely, and "which of
+/// these two may see my pinned files" is exactly the question a user
+/// with a laptop model and a hosted one needs answered.
+fn describe_lanes(
+    cl: &Client,
+    state: &Option<(String, Vec<String>)>,
+    caps: &Caps,
+    slow: &Option<Lane>,
+) -> String {
+    let name = |st: &Option<(String, Vec<String>)>| {
+        st.as_ref()
+            .map(|(m, _)| m.clone())
+            .unwrap_or_else(|| "none".to_string())
+    };
+    let mut out = match slow {
+        Some(l) => format!(
+            "fast {}@{} \u{2502} slow {}@{}",
+            name(state),
+            cl.be.label(),
+            name(&l.state),
+            l.cl.be.label()
+        ),
+        None => format!("{}@{} \u{b7} {}", name(state), cl.be.label(), caps.note()),
+    };
+    // Trust is called out only when it is NOT the safe case. A line that
+    // says "trusted" beside every lane trains people to stop reading it;
+    // a marker that appears exactly when something off-box can see the
+    // pinned files is the one worth noticing.
+    let untrusted: Vec<&str> = match slow {
+        Some(l) => [
+            (!cl.be.trusted).then_some("fast"),
+            (!l.cl.be.trusted).then_some("slow"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+        None => (!cl.be.trusted)
+            .then_some("this lane")
+            .into_iter()
+            .collect(),
+    };
+    // The warning goes FIRST. This line shares a bar row with the rest
+    // of `#/status`, and whatever falls off the end is whatever the
+    // user does not get to read \u{2014} which must never be the part that
+    // says something off-box can see their pinned files.
+    if !untrusted.is_empty() {
+        return format!("untrusted: {} \u{b7} {out}", untrusted.join("+"));
+    }
+    out
+}
+
 fn reachable(cl: &Client) -> bool {
     cl.get(&cl.models_url())
         .timeout(Duration::from_secs(1))
@@ -996,7 +1165,7 @@ fn reachable(cl: &Client) -> bool {
         .is_ok()
 }
 
-fn probe_models(cl: &Client, cfg: &EngineConfig) -> Option<(String, Vec<String>)> {
+fn probe_models(cl: &Client, lane: &LaneConfig) -> Option<(String, Vec<String>)> {
     let resp = cl
         .get(&cl.models_url())
         .timeout(Duration::from_secs(1))
@@ -1004,7 +1173,7 @@ fn probe_models(cl: &Client, cfg: &EngineConfig) -> Option<(String, Vec<String>)
         .ok()?;
     let v: serde_json::Value = serde_json::from_str(&resp.into_string().ok()?).ok()?;
     let installed = cl.be.wire.models(&v);
-    let model = pick_model(cl.be.wire, &v, &installed, cfg.model.as_deref(), &cfg.favorites)?;
+    let model = pick_model(cl.be.wire, &v, &installed, lane.model.as_deref(), &lane.favorites)?;
     Some((model, installed))
 }
 

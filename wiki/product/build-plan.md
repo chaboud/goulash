@@ -316,12 +316,20 @@ Field-driven, roughly in order of leverage:
    fourth dialect (`Caps::effort_field` derives it from the existing
    `Think::Levels`), so `models.rs` stays the one place that knows
    what a model can do.
-   **Still open**: the per-lane split (fast on one endpoint, slow on
-   another — the "billing vs mailing address" idea) layers on cleanly
-   and was left out of v1; and the **trusted-provider flag**, for
-   which an empty `api_key_env` is now the signal but which `#@` does
-   not yet act on.
-   **Unverified**: proxied by a strict fake in e2e, never pointed at a
+   **Per-lane bindings and stated trust followed** — same page.
+   `[engine.slow_lane]` overrides only what it names, so fast and slow
+   can be different models, servers, or machines, while an absent or
+   identical table keeps ONE binding serving both (two lanes on one
+   model must not mean two model loads). `#?/model` binds the research
+   lane, reusing the sigil scoping the cancels already had.
+   Trust became its own per-lane setting rather than an inference:
+   **no api key is a coincidence, not consent.** `auto` makes exactly
+   one narrow deduction (loopback is this machine) and anything
+   unrecognised falls to *not* trusted, since wrongly withholding a
+   file costs an answer while wrongly sending one cannot be undone.
+   **Still open**: trust *enforcement* — nothing consults
+   `Backend::trusted` before putting pinned content in a prompt yet.
+   **Unverified**: proxied by strict fakes in e2e, never pointed at a
    real LM Studio.
 
 ## Milestone 5 — memory hierarchy + watcher tier

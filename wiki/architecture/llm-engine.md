@@ -68,10 +68,78 @@ that wire, so it is omitted rather than guessed at — the budget
 allowance, which is the half that actually prevents a blank bar, applies
 either way.
 
-An **empty `api_key_env` is also the trust signal**: a backend that
-needs no auth is on this machine, which is exactly the distinction
-[working-context](working-context.md) needs before it decides whether
-pinned file content can go out unfiltered.
+### Per-lane bindings
+
+Fast and slow can be different models, different servers, or different
+machines. `[engine]` is the default for both; `[engine.slow_lane]`
+overrides only what it names:
+
+```toml
+[engine]
+provider = "ollama"                        # small, local, answers now
+model    = "qwen3:4b"
+
+[engine.slow_lane]                         # bigger, elsewhere, researches
+provider    = "lmstudio"
+openai_host = "http://192.168.1.9:1234"
+trusted     = "yes"
+```
+
+**An absent (or identical) `[engine.slow_lane]` means one binding
+serving both roles**, and that is the load-bearing default: two lanes on
+one model must not mean two model loads, two KV caches, or two entries
+in the same server's queue. `lanes_split()` is what decides, and it
+compares resolved values rather than trusting the table's presence — a
+slow table that restates the same settings is not a reason to bind
+twice.
+
+Consequences of a lane being genuinely elsewhere:
+
+- **Its model menu comes from its own server.** `#?/model` lists what
+  that box has; the fast lane's inventory would be a lie there.
+- **Its capabilities are resolved against its own backend**, so a
+  reasoning slow model and a non-reasoning fast one each get the right
+  dialect and the right budget.
+- **`#?/model` binds it**, using the same sigil scoping the cancels
+  already established: `#/x` is global, `#?/x` is slow's. Naming a slow
+  model is also what *splits* a shared binding, since pointing the
+  research role at a second model is the whole reason to separate them.
+
+Binding via `#?/model` lasts the session and is not persisted — the lane
+lives in a TOML *table*, and the surgical `persist_model` writer only
+knows how to rewrite the single scalar. The notice says so rather than
+implying it stuck.
+
+### Trust is stated, not inferred
+
+```toml
+trusted = "auto"     # auto | yes | no, per lane
+```
+
+An earlier draft made "no API key" imply "local, therefore trusted".
+That was rejected: **no api key is a coincidence, not consent.** Trust
+is now its own setting, resolved per lane, with exactly one narrow
+inference behind `auto` — a loopback host is this machine, and nothing
+else qualifies. Anything unrecognised falls to *not* trusted, because
+the failure directions are not symmetric: wrongly withholding a file
+costs an answer, wrongly sending one cannot be undone.
+
+`yes` is what a user with a GPU box on their own LAN sets, which `auto`
+could never work out; `no` is what someone sets for a local server they
+happen not to trust. Both override auto in their own direction.
+
+`#/status` names it **only when it is not the safe case** — a line that
+says "trusted" beside every lane trains people to stop reading it. And
+the marker goes at the *front* of the line: `#/status` shares one bar
+row, whatever falls off the end is whatever the user does not get to
+read, and that must never be the part saying something off-box can see
+their pinned files. (Found by a test: the warning was being truncated
+away.)
+
+What is **not built**: enforcement. Nothing yet consults
+`Backend::trusted` before putting pinned file content in a prompt —
+[working-context](working-context.md) is where that lands, along with
+the skip-list and the explicit confirm.
 
 ## Functional out of the box: the probe chain
 
