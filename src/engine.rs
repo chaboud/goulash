@@ -58,6 +58,20 @@ pub enum Event {
     Notice(String),
     /// How the lanes are bound right now, for `#/status`.
     Lanes(String),
+    /// Runaway diagnostics, counted where the work actually happens.
+    ///
+    /// The session dispatches from a dozen scattered call sites and can
+    /// only report what it *believes* it sent; the worker sees every job
+    /// exactly once. Queue depths are invisible to the session
+    /// altogether, and both have run away before — an uncapped backfill
+    /// is also a worker that never blocks. Emitted only on change.
+    Meter {
+        asks: u64,
+        research: u64,
+        digests: u64,
+        queued: usize,
+        backfill: usize,
+    },
     Models(Vec<String>),
     /// Resolved capabilities for the newly bound model. The session
     /// keeps these so the UI can tell the truth about what `thinking`
@@ -367,6 +381,8 @@ fn worker(
     // pass. `digest_total` is the batch size the meter counts against.
     let mut digest_queue: std::collections::VecDeque<Job> = std::collections::VecDeque::new();
     let mut digest_total = 0usize;
+    let mut last_meter = (u64::MAX, u64::MAX, u64::MAX, usize::MAX, usize::MAX);
+    let (mut n_asks, mut n_research, mut n_digests) = (0u64, 0u64, 0u64);
     // At most one research job is live. A newer `#?` replaces it; the
     // displaced one is dropped, or kept for backfill if configured.
     let mut pending_research: Option<Job> = None;
@@ -376,6 +392,18 @@ fn worker(
         // Blocking recv only when there is no background work waiting —
         // otherwise poll, so a quiet channel means "get on with the
         // cooking" rather than "sleep".
+        let meter = (n_asks, n_research, n_digests, digest_queue.len(), backfill.len());
+        if meter != last_meter {
+            last_meter = meter;
+            let _ = ev.send(Event::Meter {
+                asks: meter.0,
+                research: meter.1,
+                digests: meter.2,
+                queued: meter.3,
+                backfill: meter.4,
+            });
+            notify(&wr);
+        }
         let idle = digest_queue.is_empty() && pending_research.is_none() && backfill.is_empty();
         let first = if idle {
             match jobs.recv() {
@@ -444,7 +472,10 @@ fn worker(
         let mut job = first;
         loop {
             match job {
-                Job::Ask { .. } => latest_ask = Some(job),
+                Job::Ask { .. } => {
+                    n_asks += 1;
+                    latest_ask = Some(job);
+                }
                 // Naming a slow model is what SPLITS the lanes: until
                 // then the research role rides the fast binding, and
                 // pointing it at a second model is the whole reason to
@@ -507,6 +538,7 @@ fn worker(
                     }
                 }
                 Job::Digest { .. } => {
+                    n_digests += 1;
                     digest_queue.push_back(job);
                     digest_total = digest_total.max(digest_queue.len());
                 }
@@ -515,6 +547,7 @@ fn worker(
                 // than three answers wanted. `backfill_abandoned` gives
                 // the loser a second life instead of a queue slot.
                 Job::Research { .. } => {
+                    n_research += 1;
                     if let Some(old) = pending_research.replace(job)
                         && cfg.backfill_abandoned
                     {

@@ -10,6 +10,7 @@ mod record;
 mod sense;
 mod session;
 mod state;
+mod stats;
 mod status;
 mod term;
 mod vendor;

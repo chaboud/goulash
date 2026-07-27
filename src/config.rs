@@ -317,6 +317,10 @@ pub struct StatusConfig {
     pub band: bool,
     /// Max explanation rows in the band (question row is extra).
     pub band_rows: u16,
+    /// Show runaway diagnostics in the chrome row: memory, engine call
+    /// counts, queue depths, context size, disk. Off by default — this
+    /// is for watching whether something climbs, not for daily use.
+    pub stats: bool,
     /// Item rows a menu tries to show. The area grows to fit while a
     /// menu is open and gives the rows back on close — capped so the
     /// shell keeps at least MENU_MIN_INNER rows.
@@ -330,6 +334,7 @@ impl Default for StatusConfig {
             rows: 1,
             band: true,
             band_rows: 1,
+            stats: false,
             menu_rows: 8,
         }
     }

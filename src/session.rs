@@ -271,6 +271,7 @@ const SETTINGS: &[(&str, &[&str])] = &[
     ("memory", &["off", "on"]),
     ("max_tokens", &["256", "512", "1024", "2048"]),
     ("command_first", &["on", "off"]),
+    ("stats", &["off", "on"]),
 ];
 
 /// `#/debug`: the drawer for behaviours that change how goulash drives
@@ -449,6 +450,32 @@ fn parse_keys(chunk: &[u8]) -> Vec<Key> {
     keys
 }
 
+/// The chrome-row diagnostics line, or None when the setting is off.
+/// Refreshes the live counts here rather than at a dozen mutation sites:
+/// they are all cheap `len()` calls, and one place that cannot drift
+/// beats twelve that can.
+#[allow(clippy::too_many_arguments)]
+fn stats_line(
+    on: bool,
+    stats: &mut crate::stats::Stats,
+    sug_hist: &[SugTurn],
+    held: usize,
+    work: &crate::context::WorkContext,
+    ctx_log: &str,
+) -> Option<String> {
+    if !on {
+        return None;
+    }
+    stats.slots = sug_hist.len();
+    stats.held = held;
+    stats.pins = work.list().len();
+    stats.ctx_chars = ctx_log.len();
+    if let Some(dir) = Config::dir() {
+        stats.sample(&dir);
+    }
+    Some(stats.line())
+}
+
 fn hist_push(hist: &mut Vec<SugTurn>, turn: SugTurn) {
     if let Some(top) = hist.first_mut()
         && top.cmd == turn.cmd
@@ -507,6 +534,7 @@ fn compose_rows(
     engine_model: &Option<String>,
     chat: &Option<Chat>,
     pin: Option<&str>,
+    stats: Option<&str>,
 ) -> Vec<String> {
     // Never write the terminal's LAST cell. A row that fills the final
     // column is flagged as continued/soft-wrapped, and a width change
@@ -594,6 +622,7 @@ fn compose_rows(
             shell_name,
             sense::label(st, hook),
             pin,
+            stats,
         ));
         return rows;
     }
@@ -680,6 +709,7 @@ fn compose_rows(
             shell_name,
             sense::label(st, hook),
             pin,
+            stats,
         ));
         return rows;
     }
@@ -716,6 +746,7 @@ fn compose_rows(
             shell_name,
             label,
             pin,
+            stats,
         )];
     }
 
@@ -807,6 +838,7 @@ fn compose_rows(
         shell_name,
         label,
         pin,
+        stats,
     ));
     rows
 }
@@ -960,6 +992,7 @@ fn slash_command(
     thinking: &mut String,
     max_tokens: usize,
     command_first: bool,
+    stats: bool,
     caps: Option<&crate::models::Caps>,
     dbg: &crate::config::DebugConfig,
     slow: &str,
@@ -1062,8 +1095,16 @@ fn slash_command(
         },
         ("settings", _) | ("config", _) => {
             let mut m = Menu::open("settings", MenuKind::Settings);
-            m.items =
-                settings_items(*commentary, slow, thinking, max_tokens, command_first, memory, caps);
+            m.items = settings_items(&Live {
+                commentary: *commentary,
+                slow,
+                thinking,
+                max_tokens,
+                command_first,
+                stats,
+                memory,
+                caps,
+            });
             *menu = Some(m);
             None
         }
@@ -1116,15 +1157,35 @@ fn slash_command(
 /// `name: value` rows for the settings menu, from live state. The
 /// thinking row is annotated with what the bound model will actually do
 /// with it — a dial that silently does nothing is worse than no dial.
-fn settings_items(
+/// The live value of every `#/settings` row, in one place.
+///
+/// It was a growing list of positional scalars, and that is precisely
+/// how `command_first` ended up displayed from a hardcoded literal while
+/// the real value lived elsewhere: nothing forced the two to meet. A
+/// struct makes adding a setting a compile error at every site that has
+/// to know about it.
+struct Live<'a> {
     commentary: bool,
-    slow: &str,
-    thinking: &str,
+    slow: &'a str,
+    thinking: &'a str,
     max_tokens: usize,
     command_first: bool,
-    memory: &MemoryStore,
-    caps: Option<&crate::models::Caps>,
-) -> Vec<String> {
+    stats: bool,
+    memory: &'a MemoryStore,
+    caps: Option<&'a crate::models::Caps>,
+}
+
+fn settings_items(v: &Live) -> Vec<String> {
+    let (commentary, slow, thinking, max_tokens, command_first, stats, memory, caps) = (
+        v.commentary,
+        v.slow,
+        v.thinking,
+        v.max_tokens,
+        v.command_first,
+        v.stats,
+        v.memory,
+        v.caps,
+    );
     SETTINGS
         .iter()
         .map(|(name, _)| {
@@ -1135,6 +1196,7 @@ fn settings_items(
                 "memory" => if memory.enabled { "on" } else { "off" }.to_string(),
                 "max_tokens" => max_tokens.to_string(),
                 "command_first" => if command_first { "on" } else { "off" }.to_string(),
+                "stats" => if stats { "on" } else { "off" }.to_string(),
                 _ => String::new(),
             };
             format!("{name}: {v}")
@@ -1625,6 +1687,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut opt_thinking = cfg.engine.thinking.clone();
     let mut opt_max_tokens = cfg.engine.max_tokens;
     let mut opt_command_first = cfg.engine.command_first;
+    let mut opt_stats = cfg.status.stats;
+    let mut stats = crate::stats::Stats::new();
     // Findings that arrived while the user was browsing. The lineage
     // never mutates under an active selection, so they wait here and
     // land on the return to neutral.
@@ -1683,6 +1747,15 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     &engine_model,
                     &chat,
                     chrome_tag(&work, researching).as_deref(),
+                    stats_line(
+                        opt_stats,
+                        &mut stats,
+                        &sug_hist,
+                        held_findings.len(),
+                        &work,
+                        &ctx_log,
+                    )
+                    .as_deref(),
                 );
                 let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);
                 if !pre.is_empty() {
@@ -2068,6 +2141,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             &mut opt_thinking,
                                             opt_max_tokens,
                                             opt_command_first,
+                                            opt_stats,
                                             model_caps.as_ref(),
                                             &dbg,
                                             &opt_slow,
@@ -2422,6 +2496,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     }
                                     let _ = Config::persist_key("engine", "max_tokens", next);
                                 }
+                                "stats" => {
+                                    opt_stats = next == "on";
+                                    let _ = Config::persist_key(
+                                        "status",
+                                        "stats",
+                                        &opt_stats.to_string(),
+                                    );
+                                }
                                 "command_first" => {
                                     // The session vends mid-stream off its
                                     // OWN copy, so telling only the engine
@@ -2439,15 +2521,16 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 _ => {}
                             }
                             if let Some(m) = menu.as_mut() {
-                                m.items = settings_items(
-                                    commentary,
-                                    &opt_slow,
-                                    &opt_thinking,
-                                    opt_max_tokens,
-                                    opt_command_first,
-                                    &memory,
-                                    model_caps.as_ref(),
-                                );
+                                m.items = settings_items(&Live {
+                commentary,
+                slow: &opt_slow,
+                thinking: &opt_thinking,
+                max_tokens: opt_max_tokens,
+                command_first: opt_command_first,
+                stats: opt_stats,
+                memory: &memory,
+                caps: model_caps.as_ref(),
+            });
                             }
                         }
                     }
@@ -2666,6 +2749,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 &mut opt_thinking,
                                 opt_max_tokens,
                                 opt_command_first,
+                                opt_stats,
                                 model_caps.as_ref(),
                                 &dbg,
                                 &opt_slow,
@@ -2763,15 +2847,16 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         if let Some(m) = menu.as_mut()
                             && m.kind == MenuKind::Settings
                         {
-                            m.items = settings_items(
-                                commentary,
-                                &opt_slow,
-                                &opt_thinking,
-                                opt_max_tokens,
-                                opt_command_first,
-                                &memory,
-                                model_caps.as_ref(),
-                            );
+                            m.items = settings_items(&Live {
+                commentary,
+                slow: &opt_slow,
+                thinking: &opt_thinking,
+                max_tokens: opt_max_tokens,
+                command_first: opt_command_first,
+                stats: opt_stats,
+                memory: &memory,
+                caps: model_caps.as_ref(),
+            });
                         }
                     }
                     // A compression landed (or failed, in which case the
@@ -2999,6 +3084,19 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     // lane is worth confirming, but the session tracks
                     // the FAST model from Ready and would start naming
                     // the wrong one.
+                    engine::Event::Meter {
+                        asks,
+                        research,
+                        digests,
+                        queued,
+                        backfill,
+                    } => {
+                        stats.asks = asks;
+                        stats.research = research;
+                        stats.digests = digests;
+                        stats.queued = queued;
+                        stats.backfill = backfill;
+                    }
                     engine::Event::Notice(msg) => notice = Some(msg),
                     // Follows a #/status: the worker is the only place
                     // that knows what actually bound where.
@@ -3105,6 +3203,15 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     &engine_model,
                     &chat,
                     chrome_tag(&work, researching).as_deref(),
+                    stats_line(
+                        opt_stats,
+                        &mut stats,
+                        &sug_hist,
+                        held_findings.len(),
+                        &work,
+                        &ctx_log,
+                    )
+                    .as_deref(),
                 );
                 if rows != last_rows {
                     // Same paint as redraw!, which also erases wherever

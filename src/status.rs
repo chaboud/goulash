@@ -62,6 +62,7 @@ pub fn chrome_row(
     shell_name: &str,
     state: &str,
     pin: Option<&str>,
+    stats: Option<&str>,
 ) -> String {
     // Width stops one cell short of the real edge (compose_rows explains
     // why); the geometry text still reports the true column count.
@@ -72,8 +73,16 @@ pub fn chrome_row(
         Some(p) => format!(" \u{2502} {p}"),
         None => String::new(),
     };
+    // Stats lead. They are the reason the row was asked for, and the
+    // geometry on the right is the part that can be spared when a narrow
+    // terminal clips — you can always resize to see it again, whereas a
+    // number you are watching climb is the whole point.
+    let diag = match stats {
+        Some(s) => format!("{s} \u{2502} "),
+        None => String::new(),
+    };
     let chrome = format!(
-        " goulash \u{2502} {shell_name}{at} \u{2502} {state} # {}x{inner_rows}+{reserved} ",
+        " {diag}goulash \u{2502} {shell_name}{at} \u{2502} {state} # {}x{inner_rows}+{reserved} ",
         real.cols
     );
     let clipped: String = chrome.chars().take(cols).collect();

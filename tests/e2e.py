@@ -1942,6 +1942,35 @@ def test_idle_with_repaint_off():
         pass
 
 
+def test_stats_row():
+    """The runaway meter. Every defect in the 2026-07 review had the same
+    shape -- growth unconditional, clearing conditional -- and none was
+    visible until it was fatal. This is the row that makes them visible,
+    so the test has to prove the numbers MOVE, not merely that a row was
+    drawn."""
+    print("stats row reports live counters:")
+    if not shutil.which("zsh"):
+        print("  [SKIP] zsh not installed")
+        return
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write("[status]\nstats = true\n")
+    proc, mfd = spawn(["zsh"], home=home, rows=24, cols=120)
+    time.sleep(1.5)
+    out = read_until(mfd, rb"slots", 6.0)
+    check("stats appear in the chrome row", b"slots" in out and b"ctx" in out,
+          out[-200:])
+    check("memory is reported non-zero", re.search(rb"\d+[KMG] \xc2\xb7", out) is not None,
+          out[-200:])
+    # Counters are kept by the WORKER, so they only move if the engine
+    # actually saw the job. No engine here, so the ask still counts.
+    os.write(mfd, b"# does this count\r")
+    out = read_until(mfd, rb"1a/", 8.0)
+    check("an ask increments the meter", b"1a/" in out, out[-200:])
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+
+
 def test_non_tty():
     print("refuses to run without a tty:")
     r = subprocess.run([BIN, "true"], capture_output=True)
@@ -1973,6 +2002,7 @@ def main():
         test_memory,
         test_resize_hygiene,
         test_idle_with_repaint_off,
+        test_stats_row,
         test_non_tty,
     ):
         try:

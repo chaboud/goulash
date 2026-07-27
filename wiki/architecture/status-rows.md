@@ -195,6 +195,49 @@ Confirmation is a hands-on check.
 model, so a future test can compare rendered screens rather than byte
 streams. Worth doing before the next terminal-hackery change.)
 
+## `#/settings stats`: watching for runaway
+
+Every defect the 2026-07 review turned up had the same shape — **growth
+unconditional, clearing conditional** — and not one of them was visible
+until it was fatal:
+
+- a `u8` idle counter cleared only inside a debug branch, so turning that
+  branch off panicked the process after a minute of sitting still;
+- a research backfill queued without limit behind a non-default setting,
+  which also meant a worker that never blocked;
+- a transcript that has always grown forever, by design and unwatched.
+
+Asserts do not catch that class, because the value is legal right up
+until it is not. What catches it is **being able to watch a number
+climb**. So `stats = true` puts a diagnostic line in the chrome row:
+
+```
+118M · 42a/3r/7d · q0+8 · 12 slots · 9k ctx · 1.4G │ goulash │ zsh │ prompt # 116x27+4
+   │      │         │       │          │        └ disk under ~/.goulash
+   │      │         │       │          └ session-log characters vs the cap
+   │      │         │       └ suggestion slots held
+   │      │         └ digest queue + research backfill: the two that ran away
+   │      └ engine calls: asks / research / digests
+   └ resident memory
+```
+
+Three decisions worth keeping:
+
+- **The counters are kept by the worker, not the session.** The session
+  dispatches from a dozen scattered call sites and can only report what
+  it *believes* it sent; the worker sees every job exactly once. Queue
+  depths it cannot see at all.
+- **Stats lead, geometry trails.** On a narrow terminal the row clips
+  from the right, and the geometry is the part that can be spared — you
+  can resize to see it again, whereas a number you are watching climb is
+  the entire point.
+- **Off by default, and the expensive fields are sampled.** RSS and a
+  disk walk cost a syscall and a directory traversal; they refresh every
+  5 s, and the walk is bounded at 4096 entries, because a diagnostic for
+  runaway growth must not become the runaway. On non-Linux the RSS read
+  shells out to `ps` — one fork per five seconds, only for someone who
+  asked to watch.
+
 ## Colour: orange is selection
 
 The strip has three chip colours and one rule between them.
