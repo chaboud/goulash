@@ -332,10 +332,27 @@ prompt, and it is the same gesture they use for every other suggestion.
 The one primitive this whole product is built on turns out to be exactly
 the right shape for "should I trust this file?".
 
-Once ingested, the answer is **kept**: recorded in `~/.goulash` against
-that project, so the question is asked once rather than every session.
-The file is content-hashed, so an edit re-opens the question rather than
-silently riding in on the old consent.
+Beyond consent, the real win is **discoverability**. A silent auto-ingest
+means context arrives and the user never learns where it came from; a
+suggestion tells them the file exists at all. And it is declinable by
+inaction — no dismiss button, no modal, they simply do not pull it.
+
+Two things it needs in order not to become nagware:
+
+- **A decline is remembered too.** Three states per (tree, file hash):
+  *unasked* / *offered and not taken* / *ingested* — and only the first
+  produces a suggestion. Declining by inaction has to be recorded as a
+  decline, or every `cd` into that tree re-asks forever, which is how a
+  polite mechanic turns into an obnoxious one. Kept in `~/.goulash`
+  against the project, so it survives sessions.
+- **It rides the `cd` turn.** A directory change is a turn that almost
+  never has a competing suggestion, whereas a command that just failed
+  has one that matters far more. Discovery is the lowest-priority thing
+  in the slot stack and should never displace a fix.
+
+The file is content-hashed, so an edit re-opens the question — including
+one that was previously declined, since the thing being declined has
+changed — rather than silently riding in on old consent.
 
 #### Restrictions are still honoured on sight
 
