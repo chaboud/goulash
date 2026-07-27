@@ -5,6 +5,39 @@ integrations make it *smart*. They provide gate 2 and gate 3 of
 [input ownership](input-ownership.md) and the transition signals for the
 [state machine](session-state-machine.md).
 
+## The contract
+
+> **The shell needs to run like it would without goulash. Goulash just
+> adds the down arrow, and the way to dispatch via a `#`, which resolves
+> async.**
+
+Everything below is in service of that sentence, and it is worth reading
+as a *limit* rather than a summary. Two additions, both user-initiated,
+neither of which can fire on its own:
+
+- **Down** — and only past the end of history, on a single-line buffer.
+  Every other Down is whatever Down already did, including whatever a
+  plugin bound there.
+- **`#`** — caught before the shell lexes it, answered on another
+  thread. Nothing blocks the prompt, ever.
+
+That is the whole surface. No options are set, no semantics change, no
+widget is replaced without being delegated to. `test_adapter_fidelity`
+and `test_rc_loading` exist to make the claim falsifiable, and
+`test_rc_loading` is **differential** — it runs the shell bare and under
+goulash and demands the same startup sequence, so the reference is the
+real shell rather than our idea of it.
+
+**Where we still deviate, stated plainly** (each is a deliberate trade,
+not an oversight):
+
+| | |
+|---|---|
+| the arrows | claimed by design — this is the feature |
+| `\#` | blanked rather than passed to the lexer. A comment does nothing either way, so it is observably identical, but the mechanism differs |
+| bash: one `history 1` per prompt | what buys bash the `#` surface at all. Net **fewer** forks than before, since the cwd report now only fires when the cwd moves |
+| bash `-l` | emulated, because bash has no `--profile-file`. Startup files and the adapter are right; `shopt -q login_shell` reads false and `$0` is not `-bash` |
+
 ## The wire protocol (implemented)
 
 Adapters talk to goulash over a **private OSC channel** embedded in the
