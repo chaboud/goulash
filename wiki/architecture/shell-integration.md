@@ -221,21 +221,27 @@ every line and runs none of them":
 
 ## rc-file loading: what actually gets sourced
 
-Covered by `test_rc_loading`.
+`test_rc_loading` is **differential, not hardcoded**: it runs the shell
+bare, runs it under goulash with the same flags, and demands the same
+startup files in the same order with `$ZDOTDIR` reading the same way.
+The bare run is the reference — anything else is goulash changing how
+the machine starts a shell. Both shells, with and without `-l`.
 
-**zsh**, via the ZDOTDIR stubs — `.zshenv` → `.zprofile` → `.zshrc`, and
-now `.zlogin` / `.zlogout` too. `ZDOTDIR` is swapped to the user's value
+**zsh**, via the ZDOTDIR stubs. `ZDOTDIR` is swapped to the user's value
 (or **unset**, when they never had one) around each of their files and
 swapped straight back, so `fpath+=$ZDOTDIR/functions` in a `.zshenv`
 resolves the way it would without goulash. The `.zshrc` stub restores it
-for good, which is what makes `.zlogin` and `.zlogout` load natively —
-zsh expands `$ZDOTDIR` afresh for each startup file, so neither needs a
-stub of its own.
+for good, which is also what makes `.zlogin` and `.zlogout` load
+natively — zsh expands `$ZDOTDIR` afresh for each startup file, so
+neither needs a stub of its own.
 
-Previously: `.zlogin` and `.zlogout` were skipped entirely, `ZDOTDIR`
-pointed at goulash's own directory while the user's `.zshenv` and
-`.zprofile` ran, and it was set to `$HOME` when the user had never set
-it — flipping every `[[ -n $ZDOTDIR ]]` test.
+The bugs here were about ZDOTDIR's *value*, not about files being
+skipped: it pointed at goulash's own directory while the user's
+`.zshenv` and `.zprofile` ran, and was set to `$HOME` afterwards when
+the user had never set it — flipping every `[[ -n $ZDOTDIR ]]` test.
+(`.zlogin` did load, by the accident of the `.zshrc` stub restoring
+ZDOTDIR before zsh looked for it. The differential test is what
+established that; reading the code suggested otherwise.)
 
 **bash login shells** used to get *zero* integration, silently. Verified:
 `bash -l -i --rcfile X` reads neither `X` nor `~/.bashrc` — bash ignores

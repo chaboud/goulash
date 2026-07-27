@@ -290,10 +290,14 @@ Field-driven, roughly in order of leverage:
    replace, so a plugin's `accept-line` / `bracketed-paste` / arrow
    bindings / DEBUG trap all keep working. bash gained `#` asides
    (recovered from history at the next prompt — it has no accept-line
-   to hook), login shells gained integration at all, and zsh gained
-   `.zlogin` / `.zlogout` plus an honest `$ZDOTDIR`. Covered by
-   `test_adapter_fidelity` and `test_rc_loading`, which install a
-   plugin that wraps the same widgets and assert it survives.
+   to hook), login shells gained integration at all, and `$ZDOTDIR` now
+   reads the way it would without goulash while the user's own files
+   run. Covered by `test_adapter_fidelity`, which installs a plugin
+   wrapping the same widgets and asserts it survives, and by
+   `test_rc_loading`, which is **differential** — it runs each shell
+   bare and under goulash with the same flags and demands an identical
+   startup sequence, so the reference is the real shell rather than our
+   idea of it.
    **Still open**: `[shell] interactive_comments = on` as an opt-in,
    which needs the sigil-swap Tab widget (prototyped, not shipped);
    bash Down-arrow via `bind -x` and `READLINE_LINE` (bash reaches

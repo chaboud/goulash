@@ -398,55 +398,88 @@ def test_adapter_fidelity():
               str([e.get("text") for e in events if e["ev"] == "aside"]))
 
 
-RC_MARKERS = {
-    ".zshenv": "MARK-ZSHENV",
-    ".zprofile": "MARK-ZPROFILE",
-    ".zshrc": "MARK-ZSHRC",
-    ".zlogin": "MARK-ZLOGIN",
-}
+ZSH_RC_FILES = (".zshenv", ".zprofile", ".zshrc", ".zlogin")
+BASH_RC_FILES = (".bashrc", ".bash_profile", ".bash_login", ".profile")
+
+
+def rc_log_home():
+    """A home whose every startup file appends its own name — and, for
+    zsh, what $ZDOTDIR looked like while it ran — to one log."""
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    for name in ZSH_RC_FILES:
+        with open(os.path.join(home, name), "w") as f:
+            f.write(f'print -r -- "{name} zdot=[${{ZDOTDIR-UNSET}}]" >> "$HOME/rc.log"\n')
+    for name in BASH_RC_FILES:
+        with open(os.path.join(home, name), "w") as f:
+            f.write(f'echo "{name}" >> "$HOME/rc.log"\n')
+    return home
+
+
+def bare_startup(shell, args, home):
+    """What you get by typing the shell's name at a prompt — no goulash
+    anywhere. This is the reference the overlay has to match."""
+    open(os.path.join(home, "rc.log"), "w").close()
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ.update(HOME=home, TERM="xterm-256color")
+        os.environ.pop("ZDOTDIR", None)
+        os.execv(shell, [os.path.basename(shell)] + args)
+    set_winsize(fd, ROWS, COLS)
+    time.sleep(1.2)
+    os.write(fd, b"exit\n")
+    time.sleep(0.5)
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    try:
+        os.waitpid(pid, 0)
+    except ChildProcessError:
+        pass
+    return open(os.path.join(home, "rc.log")).read().strip().splitlines()
+
+
+def goulash_startup(shell, args, home):
+    open(os.path.join(home, "rc.log"), "w").close()
+    proc, mfd = spawn([shell] + args, home=home)
+    time.sleep(2.0)
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+    return open(os.path.join(home, "rc.log")).read().strip().splitlines()
 
 
 def test_rc_loading():
-    """Every startup file the shell would have read without goulash, in
-    order — and with $ZDOTDIR reading the way it would have. The stubs
-    used to skip .zlogin entirely, leave ZDOTDIR pointing at goulash's
-    own dir while the user's .zshenv ran, and set it to $HOME when the
-    user had never set it at all."""
-    print("rc-file loading (nothing skipped, ZDOTDIR honest):")
-    if shutil.which("zsh"):
-        home = tempfile.mkdtemp(prefix="goulash-test-")
-        for name, mark in RC_MARKERS.items():
-            with open(os.path.join(home, name), "w") as f:
-                f.write(f'print -r -- "{mark} zdot=[${{ZDOTDIR-UNSET}}]"\n')
-        proc, mfd = spawn(["zsh", "-l", "-i"], home=home)
-        out = read_until(mfd, rb"MARK-ZLOGIN", 8.0)
-        os.write(mfd, b"exit\r")
-        drain_exit(proc, mfd)
-        text = out.decode("utf8", "replace")
-        for mark in RC_MARKERS.values():
-            check(f"zsh sources the user's {mark.lower()[5:]}", mark in text,
-                  text[-300:])
-        # The user never set ZDOTDIR, so neither should they see one.
-        leaked = [m for m in RC_MARKERS.values()
-                  if re.search(re.escape(m) + r" zdot=\[(?!UNSET)", text)]
-        check("ZDOTDIR is not leaked into the user's rc files", not leaked,
-              str(leaked))
-    else:
-        print("  [SKIP] zsh not installed")
+    """Differential, not hardcoded: run the shell bare, run it under
+    goulash, demand the same startup files in the same order with
+    $ZDOTDIR reading the same way. Anything else is goulash changing how
+    the machine starts a shell.
+
+    Three real bugs this pins down: the zsh stubs skipped .zlogin and
+    .zlogout entirely, they left ZDOTDIR pointing at goulash's own dir
+    while the user's .zshenv ran, and they set it to $HOME when the user
+    had never set it at all. And bash login shells got NO integration —
+    bash ignores --rcfile with -l, so neither the adapter nor the user's
+    own profile loaded."""
+    print("startup files identical to the bare shell:")
+    for shell in ("zsh", "bash"):
+        path = shutil.which(shell)
+        if not path:
+            print(f"  [SKIP] {shell} not installed")
+            continue
+        for args in ([], ["-l"]):
+            label = f"{shell} {' '.join(args) or '(no flags)'}"
+            home = rc_log_home()
+            want = bare_startup(path, args, home)
+            got = goulash_startup(path, args, home)
+            check(f"{label}: same startup sequence", want == got,
+                  f"bare={want} goulash={got}")
+            check(f"{label}: bare run is not vacuous", bool(want), str(want))
     if shutil.which("bash"):
-        # bash ignores --rcfile for login shells, so the login path has
-        # to replay the profile sequence itself or the adapter — and the
-        # user's own profile — never load at all.
-        home = tempfile.mkdtemp(prefix="goulash-test-")
-        with open(os.path.join(home, ".bash_profile"), "w") as f:
-            f.write('echo MARK-BASH-PROFILE\n[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"\n')
-        with open(os.path.join(home, ".bashrc"), "w") as f:
-            f.write("echo MARK-BASHRC\n")
-        proc, mfd = spawn(["bash", "-l", "-i"], home=home)
-        out = read_until(mfd, rb"MARK-BASHRC", 8.0)
-        check("login bash reads the user's profile", b"MARK-BASH-PROFILE" in out,
-              out[-300:])
-        check("login bash reaches .bashrc", b"MARK-BASHRC" in out, out[-300:])
+        # The login path is emulated (bash cannot be told where to find
+        # a profile), so prove the adapter actually arrives.
+        home = rc_log_home()
+        proc, mfd = spawn(["bash", "-l"], home=home)
+        time.sleep(1.5)
         os.write(mfd, b'echo ADAPT=$__goulash_loaded\r')
         out = read_until(mfd, rb"ADAPT=1", 6.0)
         check("login bash gets the adapter", b"ADAPT=1" in out, out[-300:])
