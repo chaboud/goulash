@@ -57,6 +57,78 @@ Priority between levels is the obvious one: promote whatever is furthest
 behind, deepest first, since a stale group makes every area above it
 wrong.
 
+## Three stages, three different throttles
+
+Reasoning over what happened has three parts, and they need separate
+governors because their costs are shaped differently:
+
+| | | bounded by | converges? |
+|---|---|---|---|
+| **1. Condense** | ingest, compress, form the tree | **input** — there is a finite amount of unpromoted material | yes, naturally |
+| **2. Infer** | derive facts from the tree | **nothing intrinsic** — you can always ask the tree another question | **no, without help** |
+| **3. Raise** | elevate what is salient | **output** — the band holds one row, and few things deserve it | yes, naturally |
+
+Stages 1 and 3 self-limit. **Stage 2 is the one that would burn a
+laptop**, and it is where the design effort belongs.
+
+### Everything is delta-driven, which is what makes stage 2 finite
+
+Give inference the same property the other two have for free: run it
+over **what changed**, never over the whole tree. New material, or
+material whose inputs were invalidated. Then every stage owns a
+work-list that empties, and "done" is the same statement three times.
+
+Without that, stage 2 is an infinite loop wearing a feature's clothes —
+there is always another cross-reference to draw.
+
+### Drain deepest-first, with a fast path
+
+The stages form a pipeline, so **the deeper stage always wins**:
+inferring from a half-cooked tree wastes the work and produces facts
+that then have to be invalidated. A burst of new blocks correctly pushes
+inference back, and that self-tunes — while the human is busy the tree
+is churning, so inferences drawn then would be short-lived anyway, and
+the human does not want findings mid-flow either.
+
+One exception, or the most useful finding arrives last: **high-salience
+items skip the queue.** A build that just failed does not wait behind
+the promotion backlog. Everything else takes its turn.
+
+### The stages are a ladder, and rung one is free
+
+They map onto the same shape as the
+[slow ladder](two-lane-engagement.md#when-slow-engages-a-ladder-not-a-toggle),
+which is better than three separate numbers because each rung is
+independently useful:
+
+| | runs | risk |
+|---|---|---|
+| `off` | nothing | none |
+| **`condense`** | stage 1 | **none — it never speaks and never infers** |
+| `infer` | 1 + 2 | writes artifacts; confabulation surface |
+| `raise` | 1 + 2 + 3 | findings appear unbidden |
+
+`condense` is the interesting rung: building the tree makes **every ask
+the user makes themselves** better, with no surfacing risk whatsoever.
+It is the one that could reasonably be on by default, and the opt-in
+starts at `infer`.
+
+Budgets sit on top: a per-window total (the ~30 seconds below) and,
+within it, a cap per stage — so a pathological promotion backlog cannot
+starve inference forever, and runaway inference cannot starve the tree.
+
+### Inference must not eat its own output
+
+Stage 2 writing durable facts creates a loop: inferred facts become
+input to later inference. That is exactly how confabulation compounds —
+a model reasoning about its own guesses three levels deep, with each
+layer laundering the last one's uncertainty into apparent fact.
+
+So provenance carries **depth**, not just origin, and inference over
+inferred material is depth-limited. Raw is truth; a summary is a hint;
+an inference from a summary is a weaker hint; an inference from *that*
+is not worth having.
+
 ## Quiescence is provable, not a backoff
 
 "We have reasoned over what we have, and we are done" is a **fixed
