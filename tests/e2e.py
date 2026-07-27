@@ -489,6 +489,93 @@ def test_rc_loading():
         print("  [SKIP] bash not installed")
 
 
+TAB_RC = r"""
+autoload -Uz compinit; compinit -u -d "$HOME/.zcd"
+__dump() { print -r -- "[$BUFFER]" >> "$HOME/buf.log"; zle send-break }
+zle -N __dump
+bindkey '^X' __dump
+"""
+
+
+def tab_buffer(keys, home, via_goulash):
+    """Type `keys` at a real zsh, then dump $BUFFER. The only honest way
+    to ask what Tab did — the screen is a rendering, the buffer is the
+    fact."""
+    log = os.path.join(home, "buf.log")
+    open(log, "w").close()
+    if via_goulash:
+        proc, mfd = spawn(["zsh"], home=home)
+        time.sleep(2.0)
+        # goulash's child inherits the RUNNER's cwd; the bare shell below
+        # starts in $HOME. Completion is cwd-relative, so pin both.
+        os.write(mfd, b'cd "$HOME"\r')
+        time.sleep(1.0)
+        os.write(mfd, keys)
+        time.sleep(1.2)
+        os.write(mfd, b"\x18")          # ^X: dump and break
+        time.sleep(0.8)
+        os.write(mfd, b"\x03")
+        time.sleep(0.3)
+        os.write(mfd, b"exit\r")
+        drain_exit(proc, mfd)
+    else:
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.environ.update(HOME=home, TERM="xterm-256color")
+            os.environ.pop("ZDOTDIR", None)
+            os.chdir(home)
+            os.execv(shutil.which("zsh"), ["zsh", "-i"])
+        set_winsize(fd, ROWS, COLS)
+        time.sleep(1.2)
+        os.write(fd, keys)
+        time.sleep(1.0)
+        os.write(fd, b"\x18")
+        time.sleep(0.6)
+        os.write(fd, b"\x03exit\n")
+        time.sleep(0.4)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+    return open(log).read().strip()
+
+
+def test_tab_completion():
+    """The field bug, as reported: typing `# mini` and hitting Tab gave
+    an unfiltered dump of the whole home directory with the buffer
+    untouched, where bare zsh completed it to `# miniconda3/`. Cause was
+    `setopt interactivecomments` — a commented line hands the completion
+    system CURRENT=0 and an empty PREFIX, so there is no word to filter
+    by and none to replace, and a second Tab splices the match in at the
+    cursor (`#@ Fa` -> `#@ FaFarmAnimals.md`).
+
+    Differential again: bare zsh is the reference."""
+    print("Tab completion on `#` lines matches bare zsh:")
+    if not shutil.which("zsh"):
+        print("  [SKIP] zsh not installed")
+        return
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    os.mkdir(os.path.join(home, "miniconda3"))
+    for name in ("minutes.txt", "README.md"):
+        open(os.path.join(home, name), "w").close()
+    with open(os.path.join(home, ".zshrc"), "w") as f:
+        f.write(TAB_RC)
+    for label, keys in (("# mini", b"# mini\t"),
+                        ("#@ mini", b"#@ mini\t"),
+                        ("# mini (twice)", b"# mini\t\t"),
+                        ("ls mini", b"ls mini\t")):
+        want = tab_buffer(keys, home, via_goulash=False)
+        got = tab_buffer(keys, home, via_goulash=True)
+        check(f"Tab after '{label}' behaves as bare zsh", want == got,
+              f"bare={want!r} goulash={got!r}")
+        check(f"Tab after '{label}' actually completed",
+              "miniconda3" in want, repr(want))
+
+
 def test_engine_ollama():
     print("engine probe + # aside answered (fake ollama):")
     if not shutil.which("zsh"):
@@ -1544,6 +1631,7 @@ def main():
         test_zsh_auto_integration,
         test_adapter_fidelity,
         test_rc_loading,
+        test_tab_completion,
         test_engine_ollama,
         test_model_menu,
         test_model_capabilities,
