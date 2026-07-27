@@ -166,29 +166,69 @@ avoid    = ["vendor/", "*.pem"]
 notes    = "tests run with `just test`, never run migrations by hand"
 ```
 
-**The trust rule is an asymmetry, and it is the important part.** A
-`.paprikash` is content from a repository you cloned — untrusted input
-heading for a prompt, which is a live injection surface. But not all
-directives are equally dangerous:
+#### Finding one is a suggestion, not an action
 
-- **Restrictions are honoured unconditionally.** `research = "off"`,
-  `avoid = [...]` — anything that makes goulash do *less* is safe to
-  obey from an untrusted source, because the worst case is that we are
-  unhelpful.
-- **Expansions are suggestions, not instructions.** Anything that would
-  widen what we read, where we look, or what we say is surfaced for
-  consent and never self-applied. Prose in `notes` is quoted to the
-  model as *data the repository asserts*, never as instruction.
+A `.paprikash` is content from a repository you cloned — untrusted input
+heading for a prompt, which is a live injection surface. So **nothing in
+it is read into context until the user says so**, and the way they say
+so is the mechanic goulash already has:
 
-That asymmetry means a hostile `.paprikash` can make goulash useless in
-that tree and nothing worse — which is an acceptable worst case, and a
-much easier property to hold than "sanitise arbitrary text".
+```
+$ cd ~/src/someone-elses-thing
+  ↓ suggestion: #@/ingest ./.paprikash
+```
+
+Discovery *suggests*; the user pulls with Down and presses Enter. **Their
+own keystroke is the consent** — no new modal, no dialog, no trust
+prompt, and it is the same gesture they use for every other suggestion.
+The one primitive this whole product is built on turns out to be exactly
+the right shape for "should I trust this file?".
+
+Once ingested, the answer is **kept**: recorded in `~/.goulash` against
+that project, so the question is asked once rather than every session.
+The file is content-hashed, so an edit re-opens the question rather than
+silently riding in on the old consent.
+
+#### Restrictions are still honoured on sight
+
+One exception, and it is the asymmetry that makes the rest safe:
+**anything that makes goulash do *less* is obeyed without ingest.**
+
+- `research = "off"`, `avoid = ["*.pem"]` — honoured on discovery,
+  because the worst case from an untrusted source is that we are
+  unhelpful, and because a tree that wants us quiet should not need
+  every visitor to opt in first. That is precisely the case that matters
+  when someone clones a repository full of things we should not be
+  reading.
+- Everything else — what to read, what to believe, what to say — waits
+  for the ingest. Prose in `notes` is then quoted to the model as *data
+  this repository asserts*, never as instruction.
+
+So a hostile `.paprikash` can make goulash useless in that tree and
+nothing worse. That is an acceptable worst case, and a far easier
+property to hold than "sanitise arbitrary text", which nobody has ever
+managed.
+
+#### The setting
+
+```toml
+[context]
+paprikash = "suggest"    # suggest | auto | off
+```
+
+- **`suggest`** *(default)* — notice one, offer the ingest, honour
+  restrictions meanwhile.
+- **`auto`** — ingest on sight. For people working only in trees they
+  own, where the prompt is friction rather than safety.
+- **`off`** — never look. Discovery itself is the thing being disabled,
+  so nothing is read at all, including restrictions.
 
 **Export is explicit.** A `.paprikash` is only ever written by a user
 asking for one. A committed one means a new teammate's goulash starts
 warm — it already knows the build system, the test command, why that one
 script exists. That warm start is the strongest thing in this design,
-and it stays opt-in on both ends.
+and it stays opt-in on both ends: the project chooses to publish, and
+the reader chooses to ingest.
 
 ## Salience: what deserves a pass
 
