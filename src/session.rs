@@ -520,7 +520,12 @@ fn compose_rows(
         let inner = layout.real.rows.saturating_sub(reserved).max(1);
         let mut rows = Vec::new();
         let tip = " \u{23ce} send \u{b7} \u{2193} command \u{b7} ## or esc back ";
-        rows.push(status::rule_row(Some(" ## chat "), true, Some(tip), cols));
+        rows.push(status::rule_row(
+            Some(" ## chat "),
+            Some(status::SUGGEST_SGR),
+            Some(tip),
+            cols,
+        ));
         let mut tail: Vec<&str> = c.lines.iter().map(|s| s.as_str()).collect();
         let stream_line = c.stream.as_ref().map(|s| format!("goulash: {s} \u{2026}"));
         if let Some(sl) = stream_line.as_deref() {
@@ -624,7 +629,12 @@ fn compose_rows(
             ),
         };
         let mut rows = Vec::new();
-        rows.push(status::rule_row(Some(&chip), true, Some(&tip), cols));
+        rows.push(status::rule_row(
+            Some(&chip),
+            Some(status::SUGGEST_SGR),
+            Some(&tip),
+            cols,
+        ));
         // Cursor pinned near the bottom of the window; list slides.
         let top = (m.cursor + 1).saturating_sub(n_items);
         for row in 0..n_items {
@@ -669,17 +679,15 @@ fn compose_rows(
     let flat = flat_slots(sug_hist);
     let here = browse.and_then(|p| flat.get(p).copied());
     let browsed = here.and_then(|(i, alt)| sug_hist.get(i).map(|t| (i, t, alt)));
+    // The chip always shows FAST's command; the finding has its own row
+    // below. Which of the two is orange says which one Enter pulls.
     let sug_chip = match browsed {
-        Some((_, t, true)) => t
-            .alt
-            .as_ref()
-            .and_then(|a| a.cmd.clone())
-            .map(|c| format!(" \u{2193} researched: {c} ")),
-        Some((_, t, false)) => Some(format!(" \u{2193} suggestion: {} ", t.cmd)),
+        Some((_, t, _)) => Some(format!(" \u{2193} suggestion: {} ", t.cmd)),
         None => suggestions
             .first()
             .map(|s| format!(" \u{2193} suggestion: {} ", s.1)),
     };
+    let alt_selected = browsed.map(|(_, _, is_alt)| is_alt).unwrap_or(false);
     let rule_text = sug_chip
         .clone()
         .or_else(|| notice.clone().map(|n| format!(" {n} ")));
@@ -718,7 +726,13 @@ fn compose_rows(
     };
     rows.push(status::rule_row(
         rule_text.as_deref(),
-        sug_chip.is_some(),
+        sug_chip.as_ref().map(|_| {
+            if alt_selected {
+                status::IDLE_CHIP_SGR
+            } else {
+                status::SUGGEST_SGR
+            }
+        }),
         tip.as_deref(),
         cols,
     ));
@@ -740,7 +754,7 @@ fn compose_rows(
                 &stub,
                 &format!("\u{21b3} {cmd}"),
                 cols,
-                browsed.map(|(_, _, is_alt)| is_alt).unwrap_or(false),
+                alt_selected,
             ));
         }
         None => {

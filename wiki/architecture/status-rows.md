@@ -148,3 +148,25 @@ last column — belt-and-braces above the real fix.
 after DECRC). The behavioural half needs a real emulator — e2e drives a
 PTY with nothing interpreting the other end — so confirmation that the
 completion residue is gone is a hands-on check.
+
+## Colour: orange is selection
+
+The strip has three chip colours and one rule between them.
+
+| | |
+|---|---|
+| orange (`208`, black text) | **the thing Enter pulls right now** |
+| grey (`238`, white text) | a chip that is present but not selected |
+| the chrome grey (`100`) | goulash's own state, never pullable |
+
+Orange does **not** mean "suggestion" and does not mark a category. When
+a turn carries both a fast answer and a
+[researched finding](two-lane-engagement.md), browsing into the finding
+turns it orange and turns fast's chip grey — the colour moves with the
+selection rather than labelling what kind of thing each row is.
+
+Category marking was the first attempt and it was the wrong axis: a
+finding is already visibly a finding, because it is indented under the
+answer it fills in. What a glance cannot otherwise recover is what the
+next keystroke will do, and that is what the strongest colour is spent
+on.

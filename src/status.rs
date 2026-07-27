@@ -4,12 +4,16 @@ use crate::term::Size;
 /// chrome chip is white-on-grey; the suggestion chip is orange.
 pub const CHROME_SGR: &str = "\x1b[0;97;100m"; // white on grey chip
 pub const SUGGEST_SGR: &str = "\x1b[0;30;48;5;208m"; // black on orange chip
-/// A researched finding, inset under the answer it fills in. Deep royal
-/// blue: it recedes against the suggestion orange (208) instead of
-/// competing the way a brighter blue would, and white carries the
-/// contrast that orange gets from black text.
+/// An unselected chip: present, pullable, not the one you are on.
+///
+/// **Orange means selected, not "suggestion".** That is the whole colour
+/// rule — the chip you would pull right now is orange and everything
+/// else is grey, so a glance answers "what does Enter do" rather than
+/// "what kind of thing is this". Categories were the wrong axis: the
+/// user already knows a finding is a finding, because it is indented
+/// under the answer it fills in.
 /// (wiki: architecture/two-lane-engagement.md)
-pub const RESEARCH_SGR: &str = "\x1b[0;97;48;5;25m";
+pub const IDLE_CHIP_SGR: &str = "\x1b[0;97;48;5;238m";
 pub const RULE_SGR: &str = "\x1b[0;37m"; // white rule on default bg
 pub const QUERY_SGR: &str = "\x1b[0;2m"; // dim question on default bg
 pub const TEXT_SGR: &str = "\x1b[0m"; // plain answer text
@@ -18,13 +22,15 @@ pub const TEXT_SGR: &str = "\x1b[0m"; // plain answer text
 /// for a pullable suggestion (or plain inset text for a notice) cuts in
 /// at the left edge; a dim ingress tip cuts in at the right edge and
 /// yields silently when space runs out.
-pub fn rule_row(text: Option<&str>, orange: bool, tip: Option<&str>, cols: usize) -> String {
-    // Left chip: one-dash lead-in.
+pub fn rule_row(text: Option<&str>, chip: Option<&str>, tip: Option<&str>, cols: usize) -> String {
+    // Left chip: one-dash lead-in. `chip` is the SGR it wears — orange
+    // when it is the selected, pullable thing, grey when something else
+    // is, and None for a plain notice that is not pullable at all.
     let (left, left_len) = match text {
         Some(t) => {
             let clipped: String = t.chars().take(cols.saturating_sub(6)).collect();
             let n = clipped.chars().count();
-            let sgr = if orange { SUGGEST_SGR } else { "\x1b[0m" };
+            let sgr = chip.unwrap_or("\x1b[0m");
             (format!("{RULE_SGR}\u{2500}{sgr}{clipped}"), n + 1)
         }
         None => (format!("{RULE_SGR}\u{2500}"), 1),
@@ -90,9 +96,7 @@ pub fn inset_row(stub: &str, body: &str, cols: usize, selected: bool) -> String 
     let room = cols.saturating_sub(stub.chars().count());
     let mut text: String = body.chars().take(room).collect();
     text.push_str(&" ".repeat(room.saturating_sub(text.chars().count())));
-    // Selected reads as the pullable thing (orange, like any chip);
-    // unselected is the quieter blue that says "there is more here".
-    let sgr = if selected { SUGGEST_SGR } else { RESEARCH_SGR };
+    let sgr = if selected { SUGGEST_SGR } else { IDLE_CHIP_SGR };
     format!("{QUERY_SGR}{stub}\x1b[0m{sgr}{text}\x1b[0m")
 }
 
@@ -125,7 +129,7 @@ mod tests {
 
     #[test]
     fn tip_rides_the_right_edge() {
-        let row = rule_row(None, false, Some(" tip "), 40);
+        let row = rule_row(None, None, Some(" tip "), 40);
         assert!(row.contains(" tip "));
         assert_eq!(width(&row), 40);
         // one-dash trail after the tip
@@ -134,14 +138,14 @@ mod tests {
 
     #[test]
     fn tip_yields_when_tight() {
-        let row = rule_row(Some(" a long left chip "), false, Some(" a long tip "), 24);
+        let row = rule_row(Some(" a long left chip "), None, Some(" a long tip "), 24);
         assert!(!row.contains("tip"));
         assert_eq!(width(&row), 24);
     }
 
     #[test]
     fn left_chip_and_tip_coexist() {
-        let row = rule_row(Some(" notice "), false, Some(" tip "), 40);
+        let row = rule_row(Some(" notice "), None, Some(" tip "), 40);
         assert!(row.contains(" notice ") && row.contains(" tip "));
         assert_eq!(width(&row), 40);
     }

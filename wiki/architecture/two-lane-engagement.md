@@ -562,20 +562,31 @@ chrome, and a sharper signal for the one case that needs one.
 
 ### Rendering a pair
 
-- Fast's answer keeps the chip, in the usual
-  [orange](status-rows.md). The researched finding **insets below it**,
-  in blue — an addition to the record, not a replacement of it.
-- Right descends into the inset; Down stays purely "older". (Or Down
-  walks in depth-first, if Right cannot be claimed.)
+- Fast's answer keeps the chip; the researched finding **insets below
+  it** — an addition to the record, not a replacement of it.
+- **Orange means selected, not "suggestion".** Whichever of the two
+  Enter would pull is orange; the other is grey. That is the entire
+  colour rule.
+- Down walks in depth-first: fast's command, then the finding, then the
+  next turn. (Right descending sideways is the other candidate.)
 - **A pair only ever exists within a single turn.** That constraint is
   what stops this becoming a general tree.
 - Lineage is intact, so the explanation can say what changed and why.
 
-The blue: `\x1b[0;97;48;5;25m` — white on 256-colour 25, a deep royal
-blue. It recedes against the orange (208) instead of competing with it,
-the way brighter 26/33 would, and white-on-25 carries the contrast that
-orange gets from black text. Adjustable once it has been seen on a real
-terminal next to the orange.
+### Colour is selection, not category
+
+The first version made the finding *blue* — a category marker saying
+"this one came from research". Wrong axis. The user already knows a
+finding is a finding, because it is indented under the answer it fills
+in; what they cannot see at a glance is **what Enter does right now**.
+
+So orange is the selection indicator and nothing else. The selected chip
+is orange (`208`), everything else is grey
+(`\x1b[0;97;48;5;238m`), and selecting the finding turns *fast's* chip
+grey behind it. One glance answers the only question with a consequence.
+
+That also removes a colour from the vocabulary rather than adding one,
+which is the right direction for a three-row strip.
 
 ### Reaching the alternative: two mechanics, both kept
 

@@ -846,19 +846,24 @@ def test_slow_lane():
     check("the alternative is a step of its own", b"1/2" in out, out[-400:])
     check("the researched finding insets under the turn",
           b"\\xe2\\x86\\xb3" in out or "↳".encode() in out, out[-400:])
-    check("the finding wears its own colour",
-          b"\x1b[0;97;48;5;25m" in out, out[-400:])
+    check("an unselected finding is grey",
+          b"\x1b[0;97;48;5;238m" in out, out[-400:])
     check("the question stub stays on terminal background",
           b"\x1b[0;2m ? how do i clear" in out, out[-500:])
-    check("...and the blue starts after it, not at column one",
-          out.find(b"\x1b[0;97;48;5;25m") > out.find(b"\x1b[0;2m ? how do i clear"),
+    check("...and the block starts after it, not at column one",
+          out.find(b"\x1b[0;97;48;5;238m") > out.find(b"\x1b[0;2m ? how do i clear"),
           out[-500:])
     # Down again walks INTO the alternative -- depth-first, one axis.
     os.write(mfd, b"\x1b[B")
     out = read_until(mfd, rb"2/2", 5.0)
     check("Down steps into the researched command", b"2/2" in out, out[-400:])
-    check("...and it is the pullable one now",
-          b"researched: find" in out, out[-400:])
+    # Orange is the SELECTION indicator, not a category: it moves down to
+    # the finding, and fast's chip goes grey behind it.
+    check("...and orange moves to it",
+          out.rfind(b"\x1b[0;30;48;5;208m\xe2\x86\xb3") >
+          out.rfind(b"\x1b[0;97;48;5;238m\xe2\x86\xb3"), out[-600:])
+    check("...while fast's chip goes grey",
+          b"\x1b[0;97;48;5;238m \xe2\x86\x93 suggestion" in out, out[-600:])
     os.write(mfd, b"\x15")            # ^U: drop the line, end browsing
     time.sleep(0.5)
 
