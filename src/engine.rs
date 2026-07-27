@@ -1121,7 +1121,7 @@ fn describe_lanes(
             .map(|(m, _)| m.clone())
             .unwrap_or_else(|| "none".to_string())
     };
-    let mut out = match slow {
+    let out = match slow {
         Some(l) => format!(
             "fast {}@{} \u{2502} slow {}@{}",
             name(state),
