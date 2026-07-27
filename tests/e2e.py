@@ -79,6 +79,26 @@ def check(name, cond, detail=""):
         failures.append(name)
 
 
+def dismiss_and_exit(mfd):
+    """Esc to close whatever goulash has open, then leave.
+
+    The bare CR in the middle is load-bearing. A lone Esc that reaches
+    zsh leaves ZLE holding a meta prefix, and it does NOT time out --
+    measured at 1.2s -- so the next key is swallowed and `exit` arrives
+    as `xit`: command not found, shell still up, session hangs until the
+    harness gives up. A CR dispatches the pending state and hands back a
+    clean prompt.
+
+    None of this is goulash behaviour; a bare Esc at a zsh prompt does
+    the same thing unwrapped. It is the harness putting the keyboard
+    back before it asks the shell to quit."""
+    os.write(mfd, b"\x1b")
+    time.sleep(0.3)
+    os.write(mfd, b"\r")
+    time.sleep(0.3)
+    os.write(mfd, b"exit\r")
+
+
 def drain_exit(proc, mfd, timeout=8.0):
     deadline = time.time() + timeout
     while time.time() < deadline and proc.poll() is None:
@@ -687,9 +707,7 @@ def test_engine_openai():
     os.write(mfd, b"#/status\r")
     out = read_until(mfd, rb"blocks this session", 5.0)
     check("#/status names the openai provider", b"lmstudio-model" in out, out[-300:])
-    os.write(mfd, b"\x1b")
-    time.sleep(0.3)
-    os.write(mfd, b"exit\r")
+    dismiss_and_exit(mfd)
     drain_exit(proc, mfd)
     srv.shutdown()
 
@@ -811,9 +829,7 @@ def test_per_lane_providers():
     # people to stop reading it.
     check("no untrusted marker when both lanes are local",
           b"untrusted" not in out, out[-400:])
-    os.write(mfd, b"\x1b")
-    time.sleep(0.3)
-    os.write(mfd, b"exit\r")
+    dismiss_and_exit(mfd)
     drain_exit(proc, mfd)
 
     # Trust is STATED, so stating it has to win over what auto would
@@ -837,9 +853,7 @@ def test_per_lane_providers():
     out = read_until(mfd, rb"untrusted", 6.0)
     check("stated distrust overrides what auto would infer",
           b"untrusted: slow" in out, out[-400:])
-    os.write(mfd, b"\x1b")
-    time.sleep(0.3)
-    os.write(mfd, b"exit\r")
+    dismiss_and_exit(mfd)
     drain_exit(proc, mfd)
     for srv in (fast_srv, slow_srv):
         srv.shutdown()
@@ -1243,7 +1257,10 @@ def test_chat_mode():
     check("chat expands the goulash area", b"\x1b[1;16r" in out, out[-300:])
     out = read_until(mfd, rb"goulash: ANS", 8.0)
     check("first answer in the transcript", b"goulash: ANS" in out, out[-300:])
-    out = read_until(mfd, "↓ suggestion: echo p1-".encode(), 4.0)
+    # Same paint, one accumulator: the answer row and the slot row below
+    # it are written together, so a second read starting empty can miss
+    # the whole thing.
+    out = read_until(mfd, "↓ suggestion: echo p1-".encode(), 4.0, out)
     check("slot row under the chat panel shows the command",
           "↓ suggestion: echo p1-".encode() in out, out[-300:])
     time.sleep(0.3)
@@ -1610,9 +1627,13 @@ def test_working_context():
     with open(os.path.join(work, "commandRef.md"), "a") as f:
         f.write("\nNEW LINE ADDED LATER\n")
     os.write(mfd, b"true\r")
-    read_until(mfd, rb"\$", 4.0)
-    time.sleep(0.4)
-    out = read_until(mfd, rb"@commandRef.md\+1\*", 5.0)
+    # Accumulate across both waits. goulash paints the band ONCE, when
+    # the content changes; a read that matches the prompt and throws the
+    # rest away can swallow that paint, and nothing re-sends it. (It used
+    # to: an insurance repaint retransmitted the band every second, which
+    # quietly propped up every test that discarded a paint.)
+    out = read_until(mfd, rb"\$", 4.0)
+    out = read_until(mfd, rb"@commandRef.md\+1\*", 5.0, out)
     check("a changed pin is marked in the chrome",
           b"@commandRef.md+1*" in out, out[-300:])
     # ...and the browser says which one, in words.
@@ -1897,6 +1918,23 @@ def painted_rows(chunk):
     return out
 
 
+def last_paint(chunk, marker):
+    """The bytes of the last complete band paint containing `marker`.
+
+    One paint is one write: DECSC, the rows, DECRC. Anchoring on the
+    whole paint lets a test measure the paint it cares about, instead of
+    reading forward from a marker into whatever arrives next -- which
+    only worked while a periodic repaint guaranteed something would."""
+    end = chunk.rfind(marker)
+    if end < 0:
+        return b""
+    start = chunk.rfind(b"\x1b7", 0, end)
+    if start < 0:
+        return b""
+    stop = chunk.find(b"\x1b8", end)
+    return chunk[start:stop + 2] if stop >= 0 else chunk[start:]
+
+
 def test_resize_hygiene():
     print("resize leaves no stale band and never fills the last column:")
     proc, mfd = spawn(["bash", "--norc"])
@@ -1910,18 +1948,15 @@ def test_resize_hygiene():
     for cols in (78, 76, 75):
         set_winsize(mfd, 24, cols)
         os.killpg(os.getpgid(proc.pid), signal.SIGWINCH)
-        # Paints are suspended until the drag settles. Waiting on a
-        # clock is not enough -- a paint made at the OLD width can still
-        # be in the pipe, and measuring it reports rows one cell too
-        # wide. The chrome row prints the live geometry, so wait for one
-        # that says the NEW width and measure only from there.
-        time.sleep(0.6)
-        read_until(mfd, rb"$^", 0.3)
+        # Paints are suspended until the drag settles, and a paint made
+        # at the OLD width can still be in the pipe -- measuring that one
+        # reports rows a cell too wide. The chrome row prints the live
+        # geometry, so wait for the paint whose chrome says the NEW
+        # width, and measure THAT paint: read to its closing DECRC and
+        # slice back to its opening DECSC.
         marker = f"# {cols}x".encode()
-        out = read_until(mfd, re.escape(marker), 3.0)
-        out = out[out.find(marker):] if marker in out else out
-        out += read_until(mfd, rb"goulash", 2.0)
-        rows = painted_rows(out)
+        out = read_until(mfd, re.escape(marker) + rb".*?\x1b8", 4.0)
+        rows = painted_rows(last_paint(out, marker))
         # A window that captured no paint at all would pass this check
         # vacuously, which is the failure mode of anchoring on a marker.
         check(f"band measured at {cols} cols", rows, "no paint in the window")
@@ -1969,6 +2004,61 @@ def test_idle_with_repaint_off():
             except OSError:
                 break
     check("still running after 75s idle", proc.poll() is None,
+          f"exited rc={proc.poll()}")
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        os.close(mfd)
+    except OSError:
+        pass
+
+
+def test_an_idle_session_writes_nothing():
+    """Reported from the field: goulash left open for hours, WindowServer
+    burning GPU on an idle terminal.
+
+    The insurance repaint fired on a CLOCK -- once a second, forever --
+    and unlike every other paint in the loop it compared nothing before
+    writing. Each pass emitted a scroll-region set plus the whole band:
+    3,600 terminal writes an hour on a session doing nothing, each one a
+    redraw the emulator had to composite.
+
+    It insures against output we mis-parsed damaging the band, so output
+    is its precondition. No output since the last paint means nothing can
+    be broken, and the correct number of repaints is zero. This measures
+    exactly that: bytes on the wire while nobody touches anything."""
+    print("an idle session writes nothing to the terminal:")
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    proc, mfd = spawn(["bash"], home=home)
+    # Let startup and the shell's first prompt finish, then absorb the
+    # one insurance pass the last of that output legitimately arms.
+    deadline = time.time() + 6
+    while time.time() < deadline:
+        r, _, _ = select.select([mfd], [], [], 0.5)
+        if r:
+            try:
+                os.read(mfd, 65536)
+            except OSError:
+                break
+    # Now measure. Nothing is typed, nothing runs, nothing streams.
+    quiet = 12
+    seen = 0
+    deadline = time.time() + quiet
+    while time.time() < deadline:
+        r, _, _ = select.select([mfd], [], [], 0.5)
+        if r:
+            try:
+                seen += len(os.read(mfd, 65536))
+            except OSError:
+                break
+    # The old code wrote ~600 bytes a second here, so ~7KB over this
+    # window. A generous ceiling still fails that by an order of
+    # magnitude, and leaves room for one late insurance pass.
+    check(f"idle for {quiet}s emits almost nothing ({seen} bytes)",
+          seen < 1000, f"{seen} bytes in {quiet}s of idle")
+    check("and it is still running", proc.poll() is None,
           f"exited rc={proc.poll()}")
     try:
         proc.kill()
@@ -2098,6 +2188,7 @@ def main():
         test_memory,
         test_resize_hygiene,
         test_idle_with_repaint_off,
+        test_an_idle_session_writes_nothing,
         test_stats_row,
         test_startup_preserves_the_screen,
         test_non_tty,

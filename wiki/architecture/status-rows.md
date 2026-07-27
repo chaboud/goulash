@@ -149,6 +149,48 @@ after DECRC). The behavioural half needs a real emulator — e2e drives a
 PTY with nothing interpreting the other end — so confirmation that the
 completion residue is gone is a hands-on check.
 
+## The insurance repaint is armed by output, not by a clock
+
+Reported from the field: goulash left open for hours, WindowServer
+burning GPU on a terminal nobody was touching.
+
+The insurance repaint used to fire on a timer — `idle_ticks >= 4` at a
+250 ms poll, so once a second, forever — and alone among the paints in
+the loop it **compared nothing before writing**. Every pass emitted a
+scroll-region set (`ESC[1;Nr`) plus the whole band: measured at 555
+bytes a second, 3,600 writes an hour on a session doing nothing. Each
+one is a redraw the emulator has to composite, and a DECSTBM is exactly
+the sequence an emulator is liable to treat as a full-window
+invalidation rather than a dirty rectangle — we already know it is not
+a cheap no-op, since homing the cursor is what caused the startup bug
+below.
+
+The repaint insures against *output we mis-parsed* damaging the band.
+That is its precondition, so that is what arms it: a flag set when
+master bytes are consumed, cleared when a paint actually writes. **No
+output since the last paint means the band cannot be damaged, and the
+correct number of repaints is zero.** An idle session now emits nothing
+at all — the e2e test measures bytes on the wire and expects none.
+
+It also decays: one second, doubling to a thirty-second ceiling, reset
+by any real paint. A stream that has not broken the band in half a
+minute is not about to, and a new command re-arms the fast cadence
+because whatever just changed is the likeliest thing to have disturbed
+anything.
+
+The interval is a `Duration` against an `Instant`. The old counter
+encoded "one second" as four loop iterations, coupled to a poll timeout
+three hundred lines away — and it was the same `u8` that overflowed and
+panicked when `idle_repaint = false` removed its only reset. Time is
+not a tick count.
+
+The general rule, which the stats row now follows too: **a timer
+expiring is not a reason to write to someone's terminal.** Every other
+paint writes because content changed; the stats row samples on its own
+clock but marks the band dirty only when the *rendered line* differs, so
+a resting process (RSS rounded to whole megabytes) produces no writes
+while a growing one still shows up.
+
 ## Startup: scroll into scrollback, don't start in place
 
 Launching used to leave the terminal half-overwritten — a fresh prompt

@@ -15,6 +15,7 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::os::unix::process::ExitStatusExt;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::time::{Duration, Instant};
 
 const STDIN: RawFd = 0;
 const STDOUT: RawFd = 1;
@@ -230,6 +231,17 @@ fn slot_cmd(hist: &[SugTurn], (i, is_alt): (usize, bool)) -> Option<String> {
 /// Rows of shell the menu will never take: below this the overlay is
 /// eating the terminal rather than annotating it.
 const MENU_MIN_INNER: u16 = 10;
+
+/// Floor and ceiling for the insurance repaint (session.rs, idle path).
+///
+/// It rescues a band damaged by output we failed to parse, so it is
+/// armed by output and not by a clock — and it decays, because a stream
+/// that has not broken the band in thirty seconds is unlikely to start.
+/// A fixed one-second cadence wrote to the terminal 3,600 times an hour
+/// on a session doing nothing, scroll-region set and all, which is not
+/// free however invisible it looks.
+const INSURE_MIN: Duration = Duration::from_secs(1);
+const INSURE_MAX: Duration = Duration::from_secs(30);
 
 /// The shared menu primitive (wiki: interaction/settings-and-nav.md):
 /// modal, type-to-filter (no per-item hotkeys), the list scrolling under
@@ -1950,7 +1962,16 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut buf = [0u8; 65536];
     let mut stdin_open = true;
     let mut dirty = false;
-    let mut idle_ticks: u8 = 0;
+    // Insurance-repaint state. `screen_touched` is the precondition the
+    // whole mechanism insures against: output we may have mis-parsed.
+    // No output since the last paint means the band cannot have been
+    // damaged, so an idle session writes nothing at all.
+    let mut screen_touched = false;
+    let mut last_insure = Instant::now();
+    let mut insure_every = INSURE_MIN;
+    // The last stats line we rendered, so the row can update on its own
+    // clock without a timer ever being the reason we write.
+    let mut last_stats: Option<String> = None;
 
     'session: loop {
         let stdin_fd = unsafe { BorrowedFd::borrow_raw(STDIN) };
@@ -2013,6 +2034,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
             match read_some(master, &mut buf) {
                 Ok(0) => break 'session,
                 Ok(len) => {
+                    // Something reached the emulator that we may have
+                    // read wrongly. That, and only that, is what arms the
+                    // insurance repaint below.
+                    screen_touched = true;
                     // Cleaned stream and marks arrive as ordered segments,
                     // so output is attributed to the correct command block
                     // even when B/output/D land in a single read.
@@ -3385,10 +3410,30 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         // (the inner world is winsize-fenced; bar-threatening sequences
         // are handled as same-batch triggers above), so skipping no-op
         // redraws avoids needless writes. As insurance against trigger
-        // sequences we don't know about, an idle repaint runs about once
-        // a second — overwriting an intact bar with identical content is
-        // invisible, so this costs nothing visually.
+        // sequences we don't know about, a repaint runs behind that —
+        // armed by output rather than by a clock, because output is the
+        // only thing that can damage the band.
         if n == 0 {
+            // Stats keep their own clock. The row exists to catch runaway
+            // growth, so it must not freeze exactly when the session goes
+            // quiet — but it earns a write by CHANGING, never by a timer
+            // expiring. `stats_line` samples at most once every five
+            // seconds and rounds to whole megabytes, so a resting process
+            // renders the same string and nothing is written.
+            if opt_stats {
+                let line = stats_line(
+                    true,
+                    &mut stats,
+                    &sug_hist,
+                    held_findings.len(),
+                    &work,
+                    &ctx_log,
+                );
+                if line != last_stats {
+                    last_stats = line;
+                    dirty = true;
+                }
+            }
             // Focus released: land anything that arrived while the user
             // was reading. Checked here rather than hooked into every
             // place browsing can end — there are six of those, and a
@@ -3432,30 +3477,44 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     // Same paint as redraw!, which also erases wherever
                     // the band used to sit (band open/close moves it).
                     redraw!();
+                    // A real paint is the strongest insurance there is,
+                    // and it re-arms the fast cadence: whatever just
+                    // changed is the likeliest thing to have disturbed
+                    // the band. Disarming here is conditional on having
+                    // actually WRITTEN — a compose that decided nothing
+                    // changed has repaired nothing, and the band may
+                    // still be damaged.
+                    screen_touched = false;
+                    last_insure = Instant::now();
+                    insure_every = INSURE_MIN;
                 }
                 dirty = false;
-                idle_ticks = 0;
-            } else {
-                // Saturating, and the reset is OUTSIDE the debug guard.
-                // Both matter: this counter used to be bumped
-                // unconditionally and cleared only on the repaint path,
-                // so turning `idle_repaint` off left it climbing with
-                // nothing to stop it — u8 overflow, and a panic after
-                // ~64 seconds of genuine idle. A debug toggle must never
-                // be able to change a counter's lifetime.
-                idle_ticks = idle_ticks.saturating_add(1);
-                if idle_ticks >= 4 {
-                    idle_ticks = 0;
-                    // Unprovoked insurance repaint: it rescues a bar we
-                    // lost to output we mis-parsed, but it also writes
-                    // into a stream the line editor believes it owns, at
-                    // a moment nothing asked for. `#/debug` turns it off.
-                    if dbg.idle_repaint && winch_at.is_none() {
-                        write_all(
-                            STDOUT,
-                            &fixup_bytes(&layout, parser.screen(), &last_rows, &dbg.cursor_save),
-                        )?;
-                    }
+            } else if screen_touched && last_insure.elapsed() >= insure_every {
+                // Insurance repaint: it rescues a band we lost to output
+                // we mis-parsed, but it writes into a stream the line
+                // editor believes it owns, at a moment nothing asked for.
+                // So it is armed by output — no output since the last
+                // paint means the band cannot be damaged, and an idle
+                // session writes nothing — and it decays, because a
+                // stream that has not broken the band in thirty seconds
+                // is not about to. `#/debug` turns it off entirely.
+                //
+                // The interval is a Duration against an Instant, not a
+                // count of loop iterations: the old `idle_ticks >= 4`
+                // meant "one second" only because the idle poll timeout
+                // happened to be 250ms, three hundred lines away. It was
+                // also a u8 that overflowed and panicked when the debug
+                // toggle removed its only reset. Time is not a tick
+                // count, and a counter's lifetime must not depend on a
+                // debug flag.
+                screen_touched = false;
+                last_insure = Instant::now();
+                insure_every = (insure_every * 2).min(INSURE_MAX);
+                if dbg.idle_repaint && winch_at.is_none() {
+                    write_all(
+                        STDOUT,
+                        &fixup_bytes(&layout, parser.screen(), &last_rows, &dbg.cursor_save),
+                    )?;
                 }
             }
         }
