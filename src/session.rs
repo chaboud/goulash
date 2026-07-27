@@ -498,6 +498,7 @@ fn stats_line(
     held: usize,
     work: &crate::context::WorkContext,
     ctx_log: &str,
+    num_ctx: usize,
 ) -> Option<String> {
     if !on {
         return None;
@@ -506,10 +507,24 @@ fn stats_line(
     stats.held = held;
     stats.pins = work.list().len();
     stats.ctx_chars = ctx_log.len();
+    stats.num_ctx = num_ctx;
     if let Some(dir) = Config::dir() {
         stats.sample(&dir);
     }
     Some(stats.line())
+}
+
+/// Everything that rides next to the question: the memories most
+/// relevant to it, then the pinned files' cards.
+///
+/// One helper because they are one position, and the position is the
+/// whole point — the stable prefix already holds complete copies of
+/// both, cache-warm and utterly ignorable by a sliding-window model.
+/// Memories were left out of that reasoning when the pin cards were
+/// built; a slot saying macOS `du` wants `-d <depth>` sat in the prefix
+/// while the model suggested `--max-depth=1` twice running.
+fn near_question(memory: &MemoryStore, work: &crate::context::WorkContext, q: &str) -> String {
+    format!("{}{}", memory.cards_block(q), work.cards_block())
 }
 
 fn hist_push(hist: &mut Vec<SugTurn>, turn: SugTurn) {
@@ -1926,6 +1941,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         held_findings.len(),
                         &work,
                         &ctx_log,
+                        cfg.engine.num_ctx,
                     )
                     .as_deref(),
                 );
@@ -2169,7 +2185,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 ctx_log.clone(),
                                                 memory.context_block(),
                                                 work.context_block(),
-                                                work.cards_block(),
+                                                // Commentary has no question, so
+                                                // the command just run stands in
+                                                // as the thing to be relevant to.
+                                                near_question(&memory, &work, &block.cmd),
                                             );
                                         }
                                     }
@@ -2207,7 +2226,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 ctx_log.clone(),
                                                 memory.context_block(),
                                                 work.context_block(),
-                                                work.cards_block(),
+                                                near_question(&memory, &work, body),
                                             );
                                             ctx_log.push_str(&format!(
                                                 "# {} [asked {}]\n",
@@ -2275,7 +2294,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 &ctx_log,
                                                 memory.context_block(),
                                                 work.context_block(),
-                                                work.cards_block(),
+                                                near_question(&memory, &work, q),
                                             );
                                             ctx_log.push_str(&format!(
                                                 "# {q} [asked {}]\n",
@@ -2337,7 +2356,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             ctx_log.clone(),
                                             memory.context_block(),
                                             work.context_block(),
-                                            work.cards_block(),
+                                            near_question(&memory, &work, body),
                                         );
                                         ctx_log.push_str(&format!(
                                             "# {} [asked {}]\n",
@@ -2957,7 +2976,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 &ctx_log,
                                 memory.context_block(),
                                 work.context_block(),
-                                work.cards_block(),
+                                near_question(&memory, &work, rest.trim()),
                             );
                             if let Some(c) = chat.as_mut() {
                                 c.lines.push(format!("? {}", rest.trim()));
@@ -3006,7 +3025,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 ctx_log.clone(),
                                 memory.context_block(),
                                 work.context_block(),
-                                work.cards_block(),
+                                near_question(&memory, &work, &text),
                             );
                             ctx_log.push_str(&format!("# {} [asked {}]\n", text, engine::hms()));
                         } else if let Some(c) = chat.as_mut() {
@@ -3074,6 +3093,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
             let _ = read_some(eng.wake.as_raw_fd(), &mut drain);
             while let Ok(ev) = eng.events.try_recv() {
                 match ev {
+                    // Measurement only — no repaint of its own. The
+                    // stats row picks it up on the next paint, and a
+                    // number changing is not a reason to write.
+                    engine::Event::Prompt { chars } => stats.prompt_chars = chars,
                     engine::Event::Ready { provider, model } => {
                         rec.engine_ready(&provider, &model);
                         notice = Some(format!("engine: {provider} \u{b7} {model}"));
@@ -3428,6 +3451,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     held_findings.len(),
                     &work,
                     &ctx_log,
+                    cfg.engine.num_ctx,
                 );
                 if line != last_stats {
                     last_stats = line;
@@ -3470,6 +3494,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         held_findings.len(),
                         &work,
                         &ctx_log,
+                        cfg.engine.num_ctx,
                     )
                     .as_deref(),
                 );

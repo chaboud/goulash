@@ -34,6 +34,12 @@ pub struct Stats {
     pub held: usize,
     pub pins: usize,
     pub ctx_chars: usize,
+    /// The last assembled prompt, and the window it has to fit in.
+    /// Reported by the worker, because the session only knows the size
+    /// of its own pieces. Over the window means the server truncated
+    /// from the left — the preamble and the memories.
+    pub prompt_chars: usize,
+    pub num_ctx: usize,
     /// Sampled.
     rss_kb: u64,
     disk_kb: u64,
@@ -69,8 +75,29 @@ impl Stats {
             self.queued,
             self.backfill,
             self.slots,
-            human_n(self.ctx_chars),
+            self.ctx(),
             human_kb(self.disk_kb),
+        )
+    }
+
+    /// Prompt occupancy: estimated tokens over the window, with `!` when
+    /// we are over it. Four characters to the token is the same rough
+    /// figure the digest budget uses — wrong in the third digit, right
+    /// about whether you just lost the head of your prompt, which is the
+    /// only question this is asked.
+    ///
+    /// Before the first ask there is no prompt to report, so it shows
+    /// the session log instead of a confident zero.
+    fn ctx(&self) -> String {
+        if self.prompt_chars == 0 || self.num_ctx == 0 {
+            return human_n(self.ctx_chars);
+        }
+        let tok = self.prompt_chars / 4;
+        format!(
+            "{}/{}{}",
+            human_n(tok),
+            human_n(self.num_ctx),
+            if tok > self.num_ctx { "!" } else { "" }
         )
     }
 }
@@ -193,6 +220,25 @@ mod tests {
         assert!(l.contains("+8"), "{l}");
         assert!(l.contains("11k ctx"), "{l}");
         assert!(l.contains("3a/"), "{l}");
+    }
+
+    /// Whether the prompt outgrew the window is the one question that
+    /// makes truncation falsifiable — the server drops the HEAD, which
+    /// is the grammar and the pinned memories, and says nothing.
+    #[test]
+    fn the_ctx_meter_shows_occupancy_and_flags_an_overflow() {
+        let mut s = Stats::new();
+        s.ctx_chars = 11_500;
+        s.num_ctx = 8192;
+        // Before the first ask there is no prompt to report, so it says
+        // what it does know rather than a confident zero.
+        assert!(s.line().contains("11k ctx"), "{}", s.line());
+        s.prompt_chars = 16_000; // ~4k tokens, comfortably inside 8k
+        let l = s.line();
+        assert!(l.contains("4k/8k ctx"), "{l}");
+        assert!(!l.contains('!'), "not over, so no alarm: {l}");
+        s.prompt_chars = 60_000; // ~15k tokens against an 8k window
+        assert!(s.line().contains('!'), "{}", s.line());
     }
 
     #[test]

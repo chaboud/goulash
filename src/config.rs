@@ -117,6 +117,14 @@ pub struct EngineConfig {
     /// Context window requested from the provider; bounds KV memory
     /// (ollama may otherwise load models at huge default contexts).
     pub num_ctx: usize,
+    /// Leading prompt tokens the server must keep when the context
+    /// overflows. It truncates from the LEFT, and the left is where the
+    /// grammar and the pinned memories live — so the default is sized
+    /// to cover the preamble plus a full memory store. 0 disables.
+    pub num_keep: usize,
+    /// Fixed sampling seed. Negative leaves the server to its own
+    /// randomness; set it when you want a field report to reproduce.
+    pub seed: i64,
     /// Load the model in the background at bind/switch time so the first
     /// ask doesn't pay the cold start.
     pub prewarm: bool,
@@ -236,6 +244,8 @@ impl Default for EngineConfig {
             context_tree_max_files: 256,
             context_tree_max_depth: 4,
             num_ctx: 8192,
+            num_keep: 512,
+            seed: -1,
             prewarm: true,
             debug: false,
             commentary: true,

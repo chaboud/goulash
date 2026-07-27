@@ -1,11 +1,19 @@
+//! Flat, slot-limited durable memory (wiki: architecture/agent-memory.md).
+//! Lives in ~/.goulash/memory.toml — enabled state and limits persist
+//! there too, so `#/memory on` sticks across sessions. The whole store is
+//! baked into the prompt's stable prefix when enabled; changes are rare,
+//! so the prefix cache mostly survives — and the few slots that bear on
+//! the question are restated next to it, where a sliding-window model
+//! will actually look.
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Flat, slot-limited durable memory (wiki: architecture/agent-memory.md).
-/// Lives in ~/.goulash/memory.toml — enabled state and limits persist
-/// there too, so `#/memory on` sticks across sessions. The whole store is
-/// baked into the prompt's stable prefix when enabled; changes are rare,
-/// so the prefix cache mostly survives.
+/// Characters the memory cards may spend next to the question. Same
+/// reasoning as the pin cards (context.rs): this rides in the volatile
+/// suffix and is re-prefilled on every ask, so it stays small.
+const CARD_BUDGET: usize = 400;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Slot {
     pub id: u64,
@@ -146,26 +154,91 @@ impl MemoryStore {
         )
     }
 
-    /// The stable-prefix block: pinned memories plus the model's tool
-    /// instructions. Empty when disabled.
+    /// The stable-prefix block: the notes, then the protocol for
+    /// managing them. Empty when disabled.
+    ///
+    /// Notes first, deliberately. This used to lead with four lines
+    /// explaining `REMEMBER:`/`FORGET:` before reaching a single fact,
+    /// so the one thing that mattered was the fifth thing the model
+    /// read. Instructions are for the rare turn that writes a memory;
+    /// the notes are for every turn.
     pub fn context_block(&self) -> String {
         if !self.enabled {
             return String::new();
         }
-        let mut s = format!(
-            "Pinned memories \u{2014} yours to manage ({}/{} slots, \u{2264}{} chars \
-             each). Save one by outputting a line 'REMEMBER: <note>'. Delete one \
-             with 'FORGET: <id>'. To revise one, output both: 'FORGET: <id>' plus \
-             a 'REMEMBER:' line with the new text.\n",
-            self.slots.len(),
-            self.limit,
-            self.max_chars
+        let mut s = String::from(
+            "Remembered about this user and this machine \u{2014} prefer these \
+             over general knowledge when they conflict:\n",
         );
         for slot in &self.slots {
             s.push_str(&format!("  [{}] {}\n", slot.id, slot.text));
         }
-        s.push('\n');
+        if self.slots.is_empty() {
+            s.push_str("  (nothing yet)\n");
+        }
+        s.push_str(&format!(
+            "These are yours to manage ({}/{} slots, \u{2264}{} chars each). Save \
+             one by outputting a line 'REMEMBER: <note>'. Delete one with \
+             'FORGET: <id>'. To revise one, output both: 'FORGET: <id>' plus a \
+             'REMEMBER:' line with the new text.\n\n",
+            self.slots.len(),
+            self.limit,
+            self.max_chars
+        ));
         s
+    }
+
+    /// The near-question block: the slots most likely to bear on THIS
+    /// question, restated where a sliding-window model will actually
+    /// look.
+    ///
+    /// The prefix copy above is complete and cache-warm, and it also
+    /// sits at the furthest point in the prompt from the question —
+    /// which is the exact argument that produced the pin cards, applied
+    /// to the store we left out of that reasoning. Field case: a slot
+    /// recording that macOS `du` wants `-d <depth>` sat in the prefix
+    /// while the model suggested `--max-depth=1` twice in a row.
+    ///
+    /// Ranking is keyword overlap with the question, newest first on a
+    /// tie. Crude next to embeddings, and it has the properties that
+    /// matter here: instant, no engine, cannot fail.
+    pub fn cards_block(&self, question: &str) -> String {
+        if !self.enabled || self.slots.is_empty() {
+            return String::new();
+        }
+        let words: Vec<String> = question
+            .to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 3)
+            .map(|w| w.to_string())
+            .collect();
+        let mut ranked: Vec<(usize, &Slot)> = self
+            .slots
+            .iter()
+            .map(|s| {
+                let text = s.text.to_lowercase();
+                let hits = words.iter().filter(|w| text.contains(w.as_str())).count();
+                (hits, s)
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.id.cmp(&a.1.id)));
+        let mut left = CARD_BUDGET;
+        let mut body = String::new();
+        for (_, slot) in ranked {
+            let line = format!("  [{}] {}\n", slot.id, slot.text);
+            let n = line.chars().count();
+            // `continue`, not `break`: a long note that does not fit
+            // must not shut out the shorter ones behind it.
+            if n > left {
+                continue;
+            }
+            left -= n;
+            body.push_str(&line);
+        }
+        if body.is_empty() {
+            return String::new();
+        }
+        format!("Remembered, most relevant to this question first:\n{body}\n")
     }
 }
 
@@ -178,6 +251,61 @@ mod tests {
             enabled: true,
             ..Default::default()
         }
+    }
+
+    /// The field case that produced this block: the note was in the
+    /// prompt the whole time, at the top of the stable prefix, and the
+    /// model suggested GNU `--max-depth=1` on macOS twice running.
+    #[test]
+    fn the_relevant_memory_rides_next_to_the_question() {
+        let mut m = store();
+        m.add(
+            "Don't forget to update the log file after each command.",
+            "user",
+        )
+        .unwrap();
+        m.add(
+            "The correct flag for limiting directory depth in du is -d <depth>.",
+            "user",
+        )
+        .unwrap();
+        m.add("Sorted file listing command for .so files.", "user")
+            .unwrap();
+        let block = m.cards_block("biggest directories with du");
+        let du = block.find("-d <depth>").expect("the du note is present");
+        let log = block.find("update the log file").unwrap_or(usize::MAX);
+        assert!(du < log, "relevant first, not id order: {block}");
+    }
+
+    #[test]
+    fn cards_are_bounded_and_absent_when_they_would_be_empty() {
+        let mut m = store();
+        assert!(m.cards_block("anything").is_empty(), "no slots, no block");
+        for i in 0..40 {
+            m.add(&format!("note {i} {}", "x".repeat(60)), "user").ok();
+        }
+        let block = m.cards_block("note");
+        assert!(
+            block.chars().count() < super::CARD_BUDGET + 120,
+            "cards blew the budget: {} chars",
+            block.chars().count()
+        );
+        m.set_enabled(false);
+        assert!(m.cards_block("note").is_empty(), "disabled costs nothing");
+    }
+
+    /// The notes lead. This block used to open with four lines of
+    /// REMEMBER/FORGET protocol, so the first fact was the fifth thing
+    /// the model read.
+    #[test]
+    fn the_prefix_block_puts_notes_before_protocol() {
+        let mut m = store();
+        m.add("deploy is make release TARGET=prod", "user").unwrap();
+        let b = m.context_block();
+        assert!(
+            b.find("TARGET=prod").unwrap() < b.find("REMEMBER:").unwrap(),
+            "notes before protocol: {b}"
+        );
     }
 
     #[test]

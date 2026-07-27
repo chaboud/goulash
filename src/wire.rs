@@ -126,6 +126,15 @@ pub struct Gen<'a> {
     /// `reasoning_effort` and only accepts the level form.
     pub effort: Option<&'a str>,
     pub keep_alive: &'a str,
+    /// Leading prompt tokens the server must retain when the context
+    /// overflows. llama.cpp truncates from the LEFT, which is exactly
+    /// where the preamble and the pinned memories live — so without
+    /// this, the first thing dropped is the grammar and the facts the
+    /// user asked us to remember. Zero means "don't send it".
+    pub num_keep: usize,
+    /// Fixed sampling seed, so a field report can be reproduced. None
+    /// leaves the server to its own randomness.
+    pub seed: Option<i64>,
 }
 
 /// One decoded step of a stream.
@@ -173,6 +182,12 @@ impl Wire {
                 if !g.stop.is_empty() {
                     b["options"]["stop"] = json!(g.stop);
                 }
+                if g.num_keep > 0 {
+                    b["options"]["num_keep"] = json!(g.num_keep as i64);
+                }
+                if let Some(s) = g.seed {
+                    b["options"]["seed"] = json!(s);
+                }
                 if let Some(t) = &g.think {
                     b["think"] = t.clone();
                 }
@@ -192,9 +207,13 @@ impl Wire {
                 if !g.stop.is_empty() {
                     b["stop"] = json!(g.stop);
                 }
-                // No num_ctx and no keep_alive: both are server-side
-                // settings there, not per-request ones. Sending them
-                // anyway would be noise at best and a 400 at worst.
+                // No num_ctx, no keep_alive, no num_keep: all three are
+                // server-side settings there, not per-request ones.
+                // Sending them anyway would be noise at best and a 400
+                // at worst. `seed` IS in the OpenAI schema.
+                if let Some(s) = g.seed {
+                    b["seed"] = json!(s);
+                }
                 if let Some(e) = g.effort {
                     b["reasoning_effort"] = json!(e);
                 }
@@ -296,7 +315,39 @@ mod tests {
             think: None,
             effort: None,
             keep_alive: "30m",
+            num_keep: 512,
+            seed: Some(7),
         }
+    }
+
+    /// The head of the prompt is the grammar and the pinned memories,
+    /// and llama.cpp truncates from the left — so `num_keep` is what
+    /// stops an overflowing context from eating exactly the things we
+    /// most needed it to keep. It has no OpenAI equivalent (server-side
+    /// there), but `seed` does, so a field report can be reproduced on
+    /// either wire.
+    #[test]
+    fn num_keep_is_ollama_only_and_seed_crosses_both() {
+        let o = Wire::Ollama.body(&req("p", &[]));
+        let a = Wire::OpenAi.body(&req("p", &[]));
+        assert_eq!(o["options"]["num_keep"], 512);
+        assert_eq!(o["options"]["seed"], 7);
+        assert!(a.get("num_keep").is_none() && a["options"].is_null());
+        assert_eq!(a["seed"], 7);
+    }
+
+    /// Both are opt-out, and opting out means the key is absent rather
+    /// than sent as a zero the server would honour literally.
+    #[test]
+    fn zero_num_keep_and_no_seed_are_simply_not_sent() {
+        let mut g = req("p", &[]);
+        g.num_keep = 0;
+        g.seed = None;
+        let o = Wire::Ollama.body(&g);
+        let a = Wire::OpenAi.body(&g);
+        assert!(o["options"].get("num_keep").is_none());
+        assert!(o["options"].get("seed").is_none());
+        assert!(a.get("seed").is_none());
     }
 
     #[test]

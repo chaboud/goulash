@@ -32,6 +32,14 @@ pub enum Event {
         pins: Vec<String>,
         pinclear: bool,
     },
+    /// How big the prompt we just sent actually was. Nothing else
+    /// measures this: the session knows the size of its own pieces, but
+    /// only the worker knows what the assembled prompt came to — and
+    /// "did the head of my prompt get truncated away?" is otherwise
+    /// unanswerable, which makes a whole class of bug unfalsifiable.
+    Prompt {
+        chars: usize,
+    },
     /// A pin's compressed form, or its card (None when the model gave
     /// nothing usable — the pin keeps its deterministic version).
     Digest {
@@ -838,6 +846,8 @@ fn research_once(
         think: caps.think_field(&cfg.thinking),
         effort: caps.effort_field(&cfg.thinking),
         keep_alive: &cfg.keep_alive,
+        num_keep: cfg.num_keep,
+        seed: (cfg.seed >= 0).then_some(cfg.seed),
     });
     let resp = cl
         .post(&cl.gen_url())
@@ -991,6 +1001,8 @@ fn digest_once(
         think: caps.think_field("off"),
         effort: caps.effort_field("off"),
         keep_alive: &cfg.keep_alive,
+        num_keep: cfg.num_keep,
+        seed: (cfg.seed >= 0).then_some(cfg.seed),
     });
     let resp = cl
         .post(&cl.gen_url())
@@ -1120,6 +1132,10 @@ fn warm_marked(
             think: None,
             effort: None,
             keep_alive: "",
+            // A warm-up request carries no prompt worth protecting and
+            // wants no reproducibility; both would be noise here.
+            num_keep: 0,
+            seed: None,
         }),
     };
     let _ = cl.post(&cl.gen_url()).send_string(&body.to_string());
@@ -1397,6 +1413,9 @@ fn generate(
          Current local time: {}\n{cards}Question: {question}\n{directive}\nAnswer:",
         local_now()
     );
+    let _ = ev.send(Event::Prompt {
+        chars: prompt.chars().count(),
+    });
     // Reasoning models (qwen3+, deepseek-r1) otherwise spend the entire
     // token budget in a separate `thinking` field, returning an empty
     // `response` — a blank bar in the field. The model's own dialect
@@ -1414,6 +1433,8 @@ fn generate(
         think: caps.think_field(&cfg.thinking),
         effort: caps.effort_field(&cfg.thinking),
         keep_alive: &cfg.keep_alive,
+        num_keep: cfg.num_keep,
+        seed: (cfg.seed >= 0).then_some(cfg.seed),
     });
     let resp = cl
         .post(&cl.gen_url())

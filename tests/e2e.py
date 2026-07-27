@@ -1770,6 +1770,8 @@ def test_memory():
     import http.server
     import threading
 
+    prompts = []
+
     class FakeOllama(http.server.BaseHTTPRequestHandler):
         def _send(self, obj):
             body = json.dumps(obj).encode()
@@ -1795,10 +1797,11 @@ def test_memory():
                 self._send({"done": True})
                 return
             p = req["prompt"]
+            prompts.append(p)
             if "Question: save a note" in p:
                 # Echo proof that the pinned block (with the user's slot)
                 # reached the stable prefix, and exercise the tool line.
-                if "Pinned memories" in p and "make release TARGET=prod" in p:
+                if "Remembered about this user" in p and "make release TARGET=prod" in p:
                     ans = "noted MEM-SEEN\nREMEMBER: model saved this note"
                 else:
                     ans = "MEM-MISSING"
@@ -1838,6 +1841,24 @@ def test_memory():
     os.write(mfd, b"# save a note\r")
     out = read_until(mfd, rb"MEM-SEEN", 8.0)
     check("pinned block reached the prompt", b"MEM-SEEN" in out, out[-300:])
+    # ...and the SECOND emission, next to the question. The prefix copy
+    # is complete and cache-warm and sits at the furthest point in the
+    # prompt from the question, which is why a slot saying macOS `du`
+    # wants `-d <depth>` could not stop the model suggesting
+    # `--max-depth=1` twice running. Same fix as the pin cards.
+    asked = [p for p in prompts if "Question: save a note" in p]
+    check("the memory rides next to the question too",
+          asked and "Remembered, most relevant" in asked[-1], str(len(prompts)))
+    check("the near-question copy is below the log, beside the question",
+          asked
+          and asked[-1].index("Remembered, most relevant") > asked[-1].index("Session log")
+          and asked[-1].index("Remembered, most relevant") < asked[-1].index("Question: save"),
+          "")
+    check("the note itself made the trip, not just the header",
+          asked and "TARGET=prod" in
+          asked[-1][asked[-1].index("Remembered, most relevant"):], "")
+    check("the prefix block leads with notes, not protocol",
+          asked and asked[-1].index("TARGET=prod") < asked[-1].index("REMEMBER: <note>"), "")
     time.sleep(0.5)  # let the REMEMBER op land in the store
     os.write(mfd, b"#/memory find saved\r")
     out = read_until(mfd, rb"model saved this note", 5.0)

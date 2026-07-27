@@ -39,6 +39,8 @@ What the wires do *not* share:
 |---|---|---|
 | budget | `options.num_predict` | `max_tokens` |
 | context window | `options.num_ctx` | server-side, not per-request |
+| truncation floor | `options.num_keep` | server-side |
+| seed | `options.seed` | `seed` |
 | residency | `keep_alive` | server-side |
 | reasoning | `think` (bool or level) | `reasoning_effort` (level only) |
 | stream | newline-delimited JSON | SSE, `data:` … `[DONE]` |
@@ -52,6 +54,16 @@ would break:
   so the OpenAI body omits them rather than letting them ride. The e2e
   fake rejects them deliberately, and that assertion has been checked by
   deliberately leaking one.
+- **The server truncates from the LEFT when the prompt outgrows the
+  window**, and the left is where the preamble and the pinned memories
+  live — so the thing dropped first is the grammar and the facts the
+  user explicitly asked us to remember, silently. `num_keep` (default
+  512 tokens) is the floor that stops it. There is no OpenAI equivalent;
+  there it is a server setting, so on LM Studio the protection has to be
+  configured at the server. Which is also why the stats row now reports
+  estimated prompt tokens against `num_ctx` with a `!` when over: until
+  it did, "was my prompt truncated?" had no answer from inside a
+  session, and a whole class of bug was unfalsifiable.
 - **No `/api/show` means no provider opinion on reasoning**, so
   `Source::Table` in [model-capabilities](model-capabilities.md) simply
   stays authoritative — the precedence chain was already built for a
