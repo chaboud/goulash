@@ -52,7 +52,7 @@ pub enum Event {
     /// Research started (`Some(turn)`) or went idle (`None`).
     Researching(Option<u64>),
     Error(String),
-    /// Plain feedback that is not an error \u{2014} binding the research
+    /// Plain feedback that is not an error — binding the research
     /// lane, for one, which must not masquerade as `Ready` (the session
     /// tracks the FAST model from that and would name the wrong one).
     Notice(String),
@@ -135,7 +135,7 @@ pub enum Job {
 }
 
 /// One lane's binding: where it talks, what it bound there, and what
-/// that model can do. Fast and slow are the same shape \u{2014} "slow" is a
+/// that model can do. Fast and slow are the same shape — "slow" is a
 /// role, not a different kind of thing.
 struct Lane {
     cl: Client,
@@ -332,7 +332,7 @@ fn worker(
     let cl = resolve_backend(agent.clone(), &cfg.fast_lane());
     let mut state = probe_models(&cl, &cfg.fast_lane());
     // The slow lane, when it is genuinely elsewhere. `None` means the
-    // two roles share one binding \u{2014} which is the point of resolving it
+    // two roles share one binding — which is the point of resolving it
     // at all: two lanes on one model must not mean two model loads, two
     // KV caches, or two entries in the same server's queue.
     let mut slow: Option<Lane> = if cfg.lanes_split() {
@@ -391,9 +391,9 @@ fn worker(
         };
         let Some(first) = first else {
             // Research outranks ingest: the user asked for it.
-            // Research runs on the SLOW lane when there is one \u{2014} a
+            // Research runs on the SLOW lane when there is one — a
             // different model, a different server, or a different
-            // machine \u{2014} and otherwise on the shared binding.
+            // machine — and otherwise on the shared binding.
             let (rcl, rcaps, rstate) = match &slow {
                 Some(l) => (&l.cl, &l.caps, &l.state),
                 None => (&cl, &caps, &state),
@@ -518,7 +518,7 @@ fn worker(
                     if let Some(old) = pending_research.replace(job)
                         && cfg.backfill_abandoned
                     {
-                        backfill.push_back(old);
+                        push_backfill(&mut backfill, old);
                     }
                 }
                 Job::CancelResearch => {
@@ -548,7 +548,7 @@ fn worker(
                 }
                 Job::ListModels { slow: want_slow } => {
                     // A split lane may be a different SERVER, so its
-                    // menu has to come from that server's inventory \u{2014}
+                    // menu has to come from that server's inventory —
                     // the fast one's would be a lie there.
                     let listing = match (want_slow, &slow) {
                         (true, Some(l)) => &l.state,
@@ -685,6 +685,28 @@ fn worker(
 /// latency pressure, and an answer that goes to **fast** rather than to
 /// the user. Bounded by wall clock, because a lane with no deadline is
 /// a lane that can hang the backlog behind it.
+/// Backfill capacity. Each entry carries a whole prompt — question,
+/// memories, pins, and up to `context_max_chars` of session log — so an
+/// uncapped queue is megabytes, and `backfill.is_empty()` is one of the
+/// three conditions for the worker to block rather than poll. An
+/// unbounded backfill therefore means a worker that never idles.
+const BACKFILL_CAP: usize = 8;
+
+/// Queue an abandoned research job, dropping the OLDEST when full.
+///
+/// Oldest-first is the right eviction: backfill exists to give a
+/// superseded question a second life, and the question the user moved
+/// on from longest ago is the one least worth reviving. Growth here was
+/// unconditional while draining was not — the same shape as the
+/// `idle_ticks` overflow, and reachable whenever someone asks faster
+/// than research completes, which is exactly what supersede is FOR.
+fn push_backfill(q: &mut std::collections::VecDeque<Job>, job: Job) {
+    while q.len() >= BACKFILL_CAP {
+        q.pop_front();
+    }
+    q.push_back(job);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_research(
     cl: &Client,
@@ -1154,7 +1176,7 @@ fn describe_lanes(
     };
     // The warning goes FIRST. This line shares a bar row with the rest
     // of `#/status`, and whatever falls off the end is whatever the
-    // user does not get to read \u{2014} which must never be the part that
+    // user does not get to read — which must never be the part that
     // says something off-box can see their pinned files.
     if !untrusted.is_empty() {
         return format!("untrusted: {} \u{b7} {out}", untrusted.join("+"));
@@ -1553,6 +1575,45 @@ fn split_answer(
         }
     }
     (text, command)
+}
+
+#[cfg(test)]
+mod backfill_tests {
+    use super::{BACKFILL_CAP, Job, push_backfill};
+    use std::collections::VecDeque;
+
+    fn job(n: u64) -> Job {
+        Job::Research {
+            turn: n,
+            question: String::new(),
+            context: String::new(),
+            memories: String::new(),
+            pinned: String::new(),
+        }
+    }
+
+    fn turns(q: &VecDeque<Job>) -> Vec<u64> {
+        q.iter()
+            .map(|j| match j {
+                Job::Research { turn, .. } => *turn,
+                _ => u64::MAX,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn backfill_is_bounded_and_drops_the_stalest() {
+        let mut q = VecDeque::new();
+        for n in 0..(BACKFILL_CAP as u64 + 5) {
+            push_backfill(&mut q, job(n));
+        }
+        assert_eq!(q.len(), BACKFILL_CAP, "an unbounded queue is megabytes");
+        assert_eq!(
+            turns(&q),
+            (5..(BACKFILL_CAP as u64 + 5)).collect::<Vec<_>>(),
+            "the question moved on from longest ago is evicted first"
+        );
+    }
 }
 
 #[cfg(test)]
