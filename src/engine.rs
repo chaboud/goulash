@@ -138,12 +138,17 @@ pub enum Job {
     CancelDigests,
     /// Abandon research in flight and pending (`#?/cancel`).
     CancelResearch,
-    SetModel { slow: bool, name: String },
+    SetModel {
+        slow: bool,
+        name: String,
+    },
     /// Live tuning: key/value applied to the worker's own config copy.
     SetOption(String, String),
     /// Forget any pinned model and re-run the probe chain (auto).
     Rebind,
-    ListModels { slow: bool },
+    ListModels {
+        slow: bool,
+    },
     /// How are the lanes bound right now (for `#/status`)?
     DescribeLanes,
 }
@@ -222,13 +227,7 @@ impl Engine {
     }
 
     /// Unprompted per-turn review; coalescing lets a user ask supersede it.
-    pub fn ask_proactive(
-        &self,
-        context: String,
-        memories: String,
-        pinned: String,
-        cards: String,
-    ) {
+    pub fn ask_proactive(&self, context: String, memories: String, pinned: String, cards: String) {
         let question = "Without being asked, briefly review the most recent \
                         command and its result — one short observation, \
                         tip, or wry aside is always welcome. Add a CMD: \
@@ -392,7 +391,13 @@ fn worker(
         // Blocking recv only when there is no background work waiting —
         // otherwise poll, so a quiet channel means "get on with the
         // cooking" rather than "sleep".
-        let meter = (n_asks, n_research, n_digests, digest_queue.len(), backfill.len());
+        let meter = (
+            n_asks,
+            n_research,
+            n_digests,
+            digest_queue.len(),
+            backfill.len(),
+        );
         if meter != last_meter {
             last_meter = meter;
             let _ = ev.send(Event::Meter {
@@ -627,8 +632,8 @@ fn worker(
             });
             notify(&wr);
             let result = generate(
-                &cl, &cfg, &caps, model, &question, &context, &memories, &pinned, &cards,
-                &ev, &wr, proactive, pin_ask,
+                &cl, &cfg, &caps, model, &question, &context, &memories, &pinned, &cards, &ev, &wr,
+                proactive, pin_ask,
             );
             let _ = ev.send(Event::Idle);
             let _ = match result {
@@ -1232,7 +1237,13 @@ fn probe_models(cl: &Client, lane: &LaneConfig) -> Option<(String, Vec<String>)>
         .ok()?;
     let v: serde_json::Value = serde_json::from_str(&resp.into_string().ok()?).ok()?;
     let installed = cl.be.wire.models(&v);
-    let model = pick_model(cl.be.wire, &v, &installed, lane.model.as_deref(), &lane.favorites)?;
+    let model = pick_model(
+        cl.be.wire,
+        &v,
+        &installed,
+        lane.model.as_deref(),
+        &lane.favorites,
+    )?;
     Some((model, installed))
 }
 
@@ -1297,7 +1308,12 @@ Never put prose on a CMD line: the user runs that line verbatim.\n\
 When a file would let you answer better — a command reference, a runbook, \
 a config — you may suggest that the user pin it, with a normal command \
 line: 'CMD: #@/path <file>'. Goulash reads it into your working context. \
-Suggest it; never assume it happened.\n\n";
+Suggest it; never assume it happened.\n\
+Never invent a path. Every file or directory you name must be one that \
+appears in this prompt — in the working context, the session log, or the \
+user's question. Pinned items are shown as '@label (/real/path)': use the \
+path in the parentheses, never the label, and never guess where goulash \
+keeps its own files.\n\n";
 
 #[allow(clippy::too_many_arguments)]
 fn generate(
@@ -1787,7 +1803,14 @@ mod pick_tests {
     fn configured_model_wins() {
         let tags = json!({"models": [{"name": "llama3.2:1b", "size": 1u64}]});
         assert_eq!(
-            pick_model(Wire::Ollama, &tags, &names(&tags), Some("gemma3:12b"), &["llama3.2:1b".to_string()]).as_deref(),
+            pick_model(
+                Wire::Ollama,
+                &tags,
+                &names(&tags),
+                Some("gemma3:12b"),
+                &["llama3.2:1b".to_string()]
+            )
+            .as_deref(),
             Some("gemma3:12b")
         );
     }

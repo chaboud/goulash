@@ -113,9 +113,23 @@ Resolved rules, in priority order:
    capped so the shell always keeps at least 10 rows, and it is
    *user-initiated* and temporary, which is exactly what the
    no-surprise-resize rule permits.
-5. **Never block the shell.** Menus that need a probe (`/api/tags`)
+5. **Enter is never destructive; Backspace and Delete are.** In the
+   stores you can delete from (`#/memory`, `#@`), Enter opens the row in
+   a reading pane and `⌫⌫`/`⌦⌦` forgets it. Arm-then-confirm still
+   applies, but it is now a second guard rather than the only one:
+   putting "forget this" on the key that means "yes, this one"
+   everywhere else was the actual defect. Both keys are bound because a
+   Mac's Delete key sends the backspace byte. Backspace edits the filter
+   while there is one — it built it — so with a filter typed, forward
+   Delete is the way through.
+6. **The reading pane takes the rows the list won't.** Same growth
+   mechanic as the menu, but uncapped by `menu_rows`: reading wants the
+   screen, browsing does not. It stops at the same ten-row shell floor,
+   scrolls by logical line (so a resize reflows without losing your
+   place), and Esc backs out to the list rather than out of the menu.
+7. **Never block the shell.** Menus that need a probe (`/api/tags`)
    open instantly with a `probing…` row and fill in async.
-6. **Multi-level = a stack of the same primitive.** `#/service` is just
+8. **Multi-level = a stack of the same primitive.** `#/service` is just
    the level above models: providers → models. Esc pops one frame;
    breadcrumb shows where you are (`engine ▸ ollama ▸ model`).
 

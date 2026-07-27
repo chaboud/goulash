@@ -273,9 +273,17 @@ it, and the cache underneath is evicted by its own LRU (50 entries,
 
 Cheap `stat` at prompt turns marks a pin dirty; the old digest keeps
 serving until the user asks for a re-cook (above). Stale beats
-stalled, and stale-and-labelled beats both. Digests cache under
-`~/.goulash/context/` keyed by path + mtime + size, so re-pinning
-across sessions is free.
+stalled, and stale-and-labelled beats both. `stat` is the *trigger*
+only: what a cook is keyed by is path + content hash, per the section
+above. (An earlier draft of this paragraph said mtime + size, which is
+exactly the thing that section argues against — a `touch` is not a
+change.)
+
+**None of the cache is built.** Today a pin lives in the process's
+memory and nowhere else: `#@` reads the file, holds the text, digests
+it, and loses all of it when the session ends. Nothing under
+`~/.goulash` records that a pin ever existed, so re-pinning the same
+unchanged file across sessions pays the full cook again.
 
 ## What v1 actually reads, and what it refuses
 
@@ -285,9 +293,14 @@ across sessions is free.
   because this is a path, not a command line.
 - **Binaries are refused**, not pasted: a NUL in the first 8 KB and the
   pin fails with a reason. A hard 512 KB read cap sits above that.
-- **A tree is bounded** — 64 files, 3 levels, with `.git`, `target`,
-  `node_modules`, `.venv` and friends skipped, and dotfiles ignored. It
-  is a convenience, not a crawler; the note says when the cap was hit.
+- **A tree is bounded** — `[engine] context_tree_max_files` (default
+  256) and `context_tree_max_depth` (default 4), with `.git`, `target`,
+  `node_modules`, `.venv` and friends skipped, and dotfiles ignored. The
+  note says when the cap was hit. The bound exists because a pin is a
+  convenience rather than a crawler; its *size* is taste, and a source
+  tree is a couple of hundred files, so it is yours to set. Note this
+  bounds the READ — what reaches the prompt is still
+  `context_files_max_chars`, shared between pins.
 - **A failed pin changes nothing.** Missing path, unreadable file,
   binary: the error is reported and the context is untouched.
 - **Re-pinning the same path replaces it** and keeps its id — that *is*
@@ -353,6 +366,26 @@ a `+ pin a file …` compose row so pinning never requires remembering
 `#@/path`, and arm-then-confirm to drop — identical gestures to the
 memory browser, deliberately, because they are the same kind of act on
 the same kind of store.
+
+**Enter reads; Backspace or Delete, twice, unpins.** Destructive verbs do
+not belong on the key every other menu uses for "yes, this one" — that
+was v1's mistake, and the confirm keystroke was covering for it rather
+than fixing it. Backspace edits the filter while there *is* one, because
+that is the key that built it; forward Delete always deletes. Both are
+bound because on a Mac laptop the key labelled Delete sends the
+backspace byte, so anything answering to only one answers to neither.
+
+Enter opens a **reading pane** that takes every row the terminal can
+spare above the shell's ten-row floor, scrolling by logical line so a
+resize reflows the text without moving your place in it. What it shows
+is not the file on disk — it is what goulash is *actually sending* for
+that pin right now: the resolved tier, the character count against the
+pin's share, the card, and the body. A pin that quietly outlined itself
+down to headings is otherwise indistinguishable from one that went in
+whole, and "what is really in the prompt?" had no answer from inside the
+session. The pane is only worth having because the band stopped
+scribbling on the screen it grows into (wiki:
+[status-rows](status-rows.md)).
 
 It also matters more than convenience. Once slow starts writing durable
 artifacts — cards, digests, wikis — those hang off the slot that

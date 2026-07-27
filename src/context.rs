@@ -48,9 +48,12 @@ const CARD_MAX: usize = 240;
 /// Card attempts per pin, same reasoning as MAX_DIGEST_ATTEMPTS.
 const MAX_CARD_ATTEMPTS: u8 = 2;
 
-/// Directory walk limits. A tree pin is a convenience, not a crawler.
-const WALK_MAX_FILES: usize = 64;
-const WALK_MAX_DEPTH: usize = 3;
+/// Directory walk limits when nothing says otherwise — see
+/// `context_tree_max_files` / `..._depth` for the live values. A tree
+/// pin is bounded because it is a convenience, not a crawler; the
+/// bound's *size* is a matter of taste, so it is configurable.
+const WALK_MAX_FILES: usize = 256;
+const WALK_MAX_DEPTH: usize = 4;
 const SKIP_DIRS: &[&str] = &[
     ".git",
     "target",
@@ -174,6 +177,9 @@ pub struct WorkContext {
     pub pins: Vec<Pin>,
     /// Total characters all pins together may spend in the prefix.
     pub max_chars: usize,
+    /// Live directory-walk bounds (config; defaults above).
+    walk_files: usize,
+    walk_depth: usize,
     next_id: u64,
 }
 
@@ -182,8 +188,22 @@ impl WorkContext {
         WorkContext {
             pins: Vec::new(),
             max_chars,
+            walk_files: WALK_MAX_FILES,
+            walk_depth: WALK_MAX_DEPTH,
             next_id: 1,
         }
+    }
+
+    /// Tighten or loosen the tree walk. Zero means "use the default",
+    /// so an unset config key cannot silently pin nothing.
+    pub fn with_walk(mut self, files: usize, depth: usize) -> WorkContext {
+        if files > 0 {
+            self.walk_files = files;
+        }
+        if depth > 0 {
+            self.walk_depth = depth;
+        }
+        self
     }
 
     /// Each pin's fair share of the budget. Equal shares beat clever
@@ -204,7 +224,7 @@ impl WorkContext {
         let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let is_dir = meta.is_dir();
         let (raw, note) = if is_dir {
-            read_tree(&path)?
+            read_tree(&path, self.walk_files, self.walk_depth)?
         } else {
             (read_text(&path)?, String::new())
         };
@@ -386,7 +406,17 @@ impl WorkContext {
             if card.trim().is_empty() {
                 continue;
             }
-            body.push_str(&format!("@{}:\n{}", pin.label, card));
+            // The path rides with the label. The prefix copy has it, but
+            // this block is the one the model actually attends to, and a
+            // bare label is an invitation to invent a plausible path for
+            // it — field-observed: a pin labelled `@wiki/` came back as a
+            // suggested `ls ~/.goulash/wiki/`, which has never existed.
+            body.push_str(&format!(
+                "@{} ({}):\n{}",
+                pin.label,
+                pin.path.display(),
+                card
+            ));
             left = left.saturating_sub(card.chars().count());
         }
         if body.trim().is_empty() {
@@ -473,6 +503,56 @@ impl WorkContext {
             .collect()
     }
 
+    /// Everything about one pin, for the reading pane: what it is, and
+    /// then the text the model is *actually* being sent right now —
+    /// tier-resolved, not the raw file. "What did goulash really put in
+    /// the prompt" is otherwise unanswerable from inside the session,
+    /// and a pin that silently outlined itself down to headings looks
+    /// identical to one that went in whole.
+    pub fn view(&self, id: u64) -> Option<(String, Vec<String>)> {
+        let share = self.share();
+        let pin = self.pins.iter().find(|p| p.id == id)?;
+        let (tier, body) = pin.emit(share);
+        let mut lines = vec![
+            format!("path    {}", pin.path.display()),
+            format!(
+                "sending {} \u{b7} {} of {} chars \u{b7} share {}",
+                tier.as_str(),
+                body.chars().count(),
+                pin.raw.chars().count(),
+                share
+            ),
+            format!(
+                "state   {}{}{}",
+                if pin.digest.is_some() {
+                    "digested"
+                } else {
+                    "no digest"
+                },
+                if pin.card.is_some() {
+                    " \u{b7} carded"
+                } else {
+                    " \u{b7} card from text"
+                },
+                if pin.dirty {
+                    " \u{b7} CHANGED ON DISK"
+                } else {
+                    ""
+                }
+            ),
+            String::new(),
+            "\u{2014} card (rides next to the question) \u{2014}".to_string(),
+        ];
+        lines.extend(pin.card_text(CARD_MAX).lines().map(|l| l.to_string()));
+        lines.push(String::new());
+        lines.push(format!(
+            "\u{2014} {} (in the prefix) \u{2014}",
+            tier.as_str()
+        ));
+        lines.extend(body.lines().map(|l| l.to_string()));
+        Some((format!("@{}", pin.label), lines))
+    }
+
     /// A cheap directory listing for the model to resolve a
     /// natural-language pin against. Names only — resolution needs
     /// candidates, not contents.
@@ -483,7 +563,11 @@ impl WorkContext {
                 .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
                 .map(|e| {
                     let n = e.file_name().to_string_lossy().to_string();
-                    if e.path().is_dir() { format!("{n}/") } else { n }
+                    if e.path().is_dir() {
+                        format!("{n}/")
+                    } else {
+                        n
+                    }
                 })
                 .collect(),
             Err(_) => Vec::new(),
@@ -524,14 +608,17 @@ fn read_text(path: &Path) -> Result<String, String> {
 /// Walk a tree into one text: a file list, then each readable file's
 /// content. Bounded hard — this is a convenience, not a crawler, and the
 /// budget will outline it anyway.
-fn read_tree(root: &Path) -> Result<(String, String), String> {
+fn read_tree(root: &Path, max_files: usize, max_depth: usize) -> Result<(String, String), String> {
     let mut files: Vec<PathBuf> = Vec::new();
-    collect(root, 0, &mut files);
-    let hit_cap = files.len() >= WALK_MAX_FILES;
+    collect(root, 0, max_files, max_depth, &mut files);
+    let hit_cap = files.len() >= max_files;
     files.sort();
     let mut s = format!("Tree {} ({} files):\n", root.display(), files.len());
     for f in &files {
-        s.push_str(&format!("  {}\n", f.strip_prefix(root).unwrap_or(f).display()));
+        s.push_str(&format!(
+            "  {}\n",
+            f.strip_prefix(root).unwrap_or(f).display()
+        ));
     }
     for f in &files {
         if let Ok(text) = read_text(f) {
@@ -543,20 +630,22 @@ fn read_tree(root: &Path) -> Result<(String, String), String> {
         }
     }
     let note = if hit_cap {
-        format!(" \u{b7} capped at {WALK_MAX_FILES} files")
+        format!(" \u{b7} capped at {max_files} files")
     } else {
         String::new()
     };
     Ok((s, note))
 }
 
-fn collect(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    if depth > WALK_MAX_DEPTH || out.len() >= WALK_MAX_FILES {
+fn collect(dir: &Path, depth: usize, max_files: usize, max_depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > max_depth || out.len() >= max_files {
         return;
     }
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in rd.filter_map(|e| e.ok()) {
-        if out.len() >= WALK_MAX_FILES {
+        if out.len() >= max_files {
             return;
         }
         let name = entry.file_name().to_string_lossy().to_string();
@@ -566,7 +655,7 @@ fn collect(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             if !SKIP_DIRS.contains(&name.as_str()) {
-                collect(&path, depth + 1, out);
+                collect(&path, depth + 1, max_files, max_depth, out);
             }
         } else {
             out.push(path);
@@ -851,7 +940,11 @@ mod tests {
     fn the_digest_source_is_bounded_not_the_raw_file() {
         let d = tmpdir("digestsrc");
         let f = d.join("huge.md");
-        std::fs::write(&f, "# H\n".to_string() + &"line of prose here\n".repeat(20_000)).unwrap();
+        std::fs::write(
+            &f,
+            "# H\n".to_string() + &"line of prose here\n".repeat(20_000),
+        )
+        .unwrap();
         let mut wc = WorkContext::new(600);
         wc.pin(&f).unwrap();
         let want = wc.digest_wanted();
@@ -965,6 +1058,66 @@ mod tests {
         assert!(p5 < p4, "newest should come first: {block}");
     }
 
+    /// Field bug: a directory pinned as `./wiki` carded as a bare
+    /// `@wiki/`, and the model — which only reliably attends to this
+    /// block — suggested `ls ~/.goulash/wiki/`, a path that has never
+    /// existed. A label is not a location.
+    #[test]
+    fn cards_name_the_real_path_not_just_the_label() {
+        let d = tmpdir("cardpath").join("wiki");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("a.md"), "# notes\n\nbody\n").unwrap();
+        let mut wc = WorkContext::new(40_000);
+        wc.pin(&d).unwrap();
+        let block = wc.cards_block();
+        assert!(block.contains("@wiki/"), "label kept: {block}");
+        assert!(
+            block.contains(&d.canonicalize().unwrap().display().to_string()),
+            "the card has to say where it actually is: {block}"
+        );
+    }
+
+    /// The pane exists to answer "what is goulash really sending?", so
+    /// it reports the resolved tier, not the file on disk.
+    #[test]
+    fn the_reading_pane_shows_what_is_actually_sent() {
+        let d = tmpdir("view");
+        let f = d.join("ref.md");
+        std::fs::write(&f, "# heading\n\nprose here\n").unwrap();
+        let mut wc = WorkContext::new(4000);
+        wc.pin(&f).unwrap();
+        let id = wc.pins[0].id;
+        let (title, lines) = wc.view(id).unwrap();
+        assert_eq!(title, "@ref.md");
+        let text = lines.join("\n");
+        assert!(text.contains(&f.canonicalize().unwrap().display().to_string()));
+        assert!(text.contains("verbatim"), "tier reported: {text}");
+        assert!(text.contains("heading"), "body included: {text}");
+        assert!(wc.view(9999).is_none(), "a stale id views nothing");
+    }
+
+    /// The walk bound is a matter of taste, so it is settable — and an
+    /// unset (zero) config key must fall back rather than pin nothing.
+    #[test]
+    fn the_tree_walk_bound_is_configurable() {
+        let d = tmpdir("walk");
+        for i in 0..6 {
+            std::fs::write(d.join(format!("f{i}.md")), format!("# file {i}\n")).unwrap();
+        }
+        let mut tight = WorkContext::new(40_000).with_walk(2, 1);
+        let msg = tight.pin(&d).unwrap();
+        assert!(msg.contains("capped at 2 files"), "{msg}");
+
+        let mut wide = WorkContext::new(40_000).with_walk(64, 3);
+        let msg = wide.pin(&d).unwrap();
+        assert!(!msg.contains("capped"), "six files fit under 64: {msg}");
+
+        let unset = WorkContext::new(40_000).with_walk(0, 0);
+        let dflt = WorkContext::new(40_000);
+        assert_eq!(unset.walk_files, dflt.walk_files);
+        assert_eq!(unset.walk_depth, dflt.walk_depth);
+    }
+
     #[test]
     fn no_pins_means_no_card_block_at_all() {
         let wc = WorkContext::new(4000);
@@ -1012,7 +1165,10 @@ mod tests {
         let msg = wc.pin(&d).unwrap();
         assert!(msg.starts_with("@ "), "{msg}");
         let block = wc.context_block();
-        assert!(block.contains("# one") && block.contains("# two"), "{block}");
+        assert!(
+            block.contains("# one") && block.contains("# two"),
+            "{block}"
+        );
         assert!(!block.contains("# nope"), "build dirs must be skipped");
         assert!(wc.chrome_tag().unwrap().contains('/'));
     }

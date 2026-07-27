@@ -48,10 +48,7 @@ impl Stats {
     /// Refresh the expensive fields if the interval has elapsed. Cheap
     /// to call from the paint path; does nothing most of the time.
     pub fn sample(&mut self, home: &Path) {
-        if self
-            .last_sample
-            .is_some_and(|t| t.elapsed() < SAMPLE_EVERY)
-        {
+        if self.last_sample.is_some_and(|t| t.elapsed() < SAMPLE_EVERY) {
             return;
         }
         self.last_sample = Some(Instant::now());
@@ -114,7 +111,11 @@ fn rss_kb() -> u64 {
     let Ok(s) = std::fs::read_to_string("/proc/self/statm") else {
         return 0;
     };
-    let pages: u64 = s.split_whitespace().nth(1).and_then(|f| f.parse().ok()).unwrap_or(0);
+    let pages: u64 = s
+        .split_whitespace()
+        .nth(1)
+        .and_then(|f| f.parse().ok())
+        .unwrap_or(0);
     // SAFETY: sysconf is a pure lookup.
     let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if page <= 0 {
@@ -201,7 +202,10 @@ mod tests {
         s.sample(&dir);
         let first = s.last_sample;
         s.sample(&dir);
-        assert_eq!(first, s.last_sample, "a paint-path call must be nearly free");
+        assert_eq!(
+            first, s.last_sample,
+            "a paint-path call must be nearly free"
+        );
     }
 
     #[test]

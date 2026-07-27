@@ -1677,11 +1677,37 @@ def test_working_context():
     time.sleep(0.4)
     os.write(mfd, b"\x1b[B")                  # past "+ pin", onto the entry
     time.sleep(0.3)
-    os.write(mfd, b"\r")                      # arms
+    # Enter reads the pin: not the file on disk, but what goulash is
+    # actually SENDING for it — which for this one is the digest, and
+    # that is otherwise invisible from inside the session.
+    os.write(mfd, b"\r")
+    out = read_until(mfd, "esc back".encode(), 4.0)
+    check("Enter reads the pin", "esc back".encode() in out, out[-500:])
+    check("the pane names the real path, not just the label",
+          os.path.join(work, "big.md").encode() in out, out[-800:])
+    check("the pane reports what tier is being sent",
+          b"DIGESTED" in out or b"digest" in out, out[-800:])
+    # The pane takes every row it can — but never the shell's floor.
+    # Chrome geometry is `colsxinner+reserved`, so this reads it back.
+    geom = re.findall(rb"80x(\d+)\+(\d+)", out)
+    check("the pane grows the band", geom and int(geom[-1][1]) > 6, str(geom[-3:]))
+    check("...but never squeezes the shell below its floor",
+          geom and int(geom[-1][0]) >= 10, str(geom[-3:]))
+    os.write(mfd, b"\x1b")                    # back to the list
     time.sleep(0.4)
-    os.write(mfd, b"\r")                      # confirms
+    # Backspace is the destructive verb once the filter is empty; the
+    # filter is "big" here, so it eats that first — three of them.
+    os.write(mfd, b"\x7f\x7f\x7f")
+    time.sleep(0.4)
+    os.write(mfd, b"\x1b[B")                  # past "+ pin" again
+    time.sleep(0.3)
+    os.write(mfd, b"\x7f")                    # arms
+    out = read_until(mfd, "again to unpin".encode(), 4.0)
+    check("backspace on an empty filter arms the unpin",
+          "again to unpin".encode() in out, out[-400:])
+    os.write(mfd, b"\x7f")                    # confirms
     out = read_until(mfd, rb"dropped", 5.0)
-    check("second Enter drops the pin", b"dropped" in out, out[-300:])
+    check("second backspace drops the pin", b"dropped" in out, out[-300:])
     os.write(mfd, b"\x1b")
     time.sleep(0.4)
 
@@ -1814,13 +1840,25 @@ def test_memory():
     time.sleep(0.3)
     os.write(mfd, b"deploy")          # type-to-filter
     time.sleep(0.4)
-    os.write(mfd, b"\r")              # arm
+    # Enter READS. It used to forget, which put a destructive verb on the
+    # key every other menu uses for "yes, this one".
+    os.write(mfd, b"\r")
+    out = read_until(mfd, "esc back".encode(), 4.0)
+    check("Enter opens the reading pane", "esc back".encode() in out, out[-400:])
+    check("the pane shows the slot's full text",
+          b"TARGET=prod" in out, out[-400:])
+    os.write(mfd, b"\x1b")            # back to the LIST, not out of the menu
+    out = read_until(mfd, rb"\[1\] deploy", 4.0)
+    check("esc leaves the pane, not the browser",
+          b"[1] deploy" in out, out[-400:])
+    # Delete is the destructive verb now, and it still needs confirming.
+    os.write(mfd, b"\x1b[3~")         # arm
     out = read_until(mfd, "again to forget".encode(), 4.0)
-    check("first Enter arms, does not delete",
+    check("first delete arms, does not delete",
           "again to forget".encode() in out, out[-300:])
-    os.write(mfd, b"\r")              # confirm
+    os.write(mfd, b"\x1b[3~")         # confirm
     out = read_until(mfd, rb"forgot \[1\]", 4.0)
-    check("second Enter forgets the slot", b"forgot [1]" in out, out[-300:])
+    check("second delete forgets the slot", b"forgot [1]" in out, out[-300:])
     time.sleep(0.3)
     os.write(mfd, b"\x1b")            # close the browser
     time.sleep(0.4)

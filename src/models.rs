@@ -306,7 +306,10 @@ mod tests {
     fn stems_strip_registry_and_tag() {
         assert_eq!(stem("hf.co/unsloth/Qwen3-8B-GGUF:Q4_K_M"), "qwen3-8b-gguf");
         assert_eq!(stem("gemma3n:e4b"), "gemma3n");
-        assert_eq!(caps("hf.co/unsloth/Qwen3-8B-GGUF:Q4_K_M").think, Think::Bool);
+        assert_eq!(
+            caps("hf.co/unsloth/Qwen3-8B-GGUF:Q4_K_M").think,
+            Think::Bool
+        );
     }
 
     #[test]

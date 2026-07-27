@@ -243,9 +243,10 @@ enum MenuKind {
     /// The same list for the research lane — which may be a different
     /// server entirely, so it is filled from THAT server's inventory.
     SlowModel,
-    /// Enter arms a slot; a second Enter forgets it. Destructive
-    /// actions in a modal list need a confirm keystroke, not a
-    /// hair-trigger.
+    /// Enter opens the slot for reading; Backspace/Delete arms it and a
+    /// second one forgets it. Destructive actions in a modal list need a
+    /// confirm keystroke, not a hair-trigger — and they do not belong on
+    /// the key every other menu uses to say "yes, this one".
     Memory,
     /// Enter cycles the setting's value in place, applying it live AND
     /// persisting it — no config-file round trip.
@@ -256,8 +257,9 @@ enum MenuKind {
     /// Settings, kept separate because these are levers on how goulash
     /// talks to the emulator, not preferences.
     Debug,
-    /// `#@` working context. Enter arms a pin; a second Enter drops it —
-    /// same arm-then-confirm as Memory, for the same reason.
+    /// `#@` working context. Enter opens the pin in the reading pane;
+    /// Backspace/Delete twice unpins — same keymap as Memory, for the
+    /// same reason.
     Pins,
 }
 
@@ -304,6 +306,19 @@ const HELP_ITEMS: &[&str] = &[
     "#/status               engine, model, blocks this session",
 ];
 
+/// One item opened for reading. Takes every row the terminal can spare
+/// above `MENU_MIN_INNER`, which only became a sane thing to do once the
+/// band stopped scribbling on the screen it grew into.
+///
+/// `top` indexes LOGICAL lines, not rendered rows: wrapping stays a
+/// render-time concern, so a resize under an open pane re-flows the text
+/// without moving the reader's place in it.
+struct Viewer {
+    title: String,
+    lines: Vec<String>,
+    top: usize,
+}
+
 struct Menu {
     title: String,
     kind: MenuKind,
@@ -314,6 +329,9 @@ struct Menu {
     armed: Option<String>,
     /// Typing a new entry from inside the list (the `+ new` row).
     composing: Option<String>,
+    /// Reading one item full-height. Modal within the menu: Esc backs
+    /// out to the list, not out of the menu.
+    viewing: Option<Viewer>,
 }
 
 impl Menu {
@@ -327,6 +345,7 @@ impl Menu {
             loaded: kind == MenuKind::Memory,
             armed: None,
             composing: None,
+            viewing: None,
         }
     }
 
@@ -367,6 +386,10 @@ enum Key {
     Char(char),
     Enter,
     Backspace,
+    /// Forward delete (`ESC[3~`). On a Mac laptop the key *labelled*
+    /// Delete sends Backspace, so anything destructive has to answer to
+    /// both or it answers to neither.
+    Delete,
     KillLine,
     Up,
     Down,
@@ -396,6 +419,7 @@ fn parse_keys(chunk: &[u8]) -> Vec<Key> {
                             match chunk[j] {
                                 b'A' if plain => keys.push(Key::Up),
                                 b'B' if plain => keys.push(Key::Down),
+                                b'~' if &chunk[i + 2..j] == b"3" => keys.push(Key::Delete),
                                 _ => {}
                             }
                             i = j + 1;
@@ -491,6 +515,36 @@ fn hist_push(hist: &mut Vec<SugTurn>, turn: SugTurn) {
     }
     hist.insert(0, turn);
     hist.truncate(SUG_HIST_CAP);
+}
+
+/// Hard-wrap ONE logical line, keeping its interior whitespace (a file
+/// being read has meaningful indentation). Always yields at least one
+/// part, including for an empty line — a caller counting rows against a
+/// pane height would otherwise spin forever on a blank.
+fn wrap_hard(line: &str, width: usize) -> Vec<String> {
+    let width = width.max(8);
+    // Control bytes from a pinned file would drive the emulator, not
+    // print. Tabs become spaces so the width count stays honest.
+    let line: String = line
+        .replace('\t', "    ")
+        .chars()
+        .map(|c| if (c as u32) < 0x20 { ' ' } else { c })
+        .collect();
+    if line.chars().count() <= width {
+        return vec![line];
+    }
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    for ch in line.chars() {
+        cur.push(ch);
+        if cur.chars().count() == width {
+            parts.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        parts.push(cur);
+    }
+    parts
 }
 
 /// Whitespace-collapse then hard-wrap into at most `max_rows` rows.
@@ -635,16 +689,71 @@ fn compose_rows(
         // User-initiated, temporary, and it gives the rows straight
         // back on close, so the no-surprise-resize rule is intact.
         let base = cfg.status.band_rows.clamp(1, 4) + 1;
-        let want = cfg.status.menu_rows.clamp(2, 20);
         // Never squeeze the shell below MENU_MIN_INNER rows: the inner
         // world matters more than our list.
         let room = layout
             .real
             .rows
             .saturating_sub(reserved_now + MENU_MIN_INNER);
+        // Reading a file wants every row going; browsing a list does
+        // not, so the pane ignores menu_rows and takes the lot — held to
+        // the same MENU_MIN_INNER floor, counted against what `reserved`
+        // will actually become (items + rule + chrome).
+        let want = match m.viewing {
+            Some(_) => layout.real.rows.saturating_sub(MENU_MIN_INNER + 2),
+            None => cfg.status.menu_rows.clamp(2, 20),
+        };
         let n_items = want.min(base.saturating_add(room)).max(base) as usize;
         let reserved = n_items as u16 + 2; // rule + items + chrome
         let inner = layout.real.rows.saturating_sub(reserved).max(1);
+        if let Some(v) = &m.viewing {
+            let n = v.lines.len();
+            let top = v.top.min(n.saturating_sub(1));
+            let mut rows = Vec::new();
+            rows.push(status::rule_row(
+                Some(&format!(" {} ", v.title)),
+                Some(status::SUGGEST_SGR),
+                Some(&format!(
+                    " \u{2191}\u{2193} scroll \u{b7} esc back \u{b7} {}/{} ",
+                    (top + 1).min(n),
+                    n
+                )),
+                cols,
+            ));
+            // Wrapping happens HERE, not at open time: cols is a render
+            // fact, and `top` counts logical lines, so a resize reflows
+            // the text without moving the reader's place in it.
+            let mut painted = 0usize;
+            let mut idx = top;
+            while painted < n_items {
+                match v.lines.get(idx) {
+                    Some(line) => {
+                        for part in wrap_hard(line, cols.saturating_sub(1)) {
+                            if painted == n_items {
+                                break;
+                            }
+                            rows.push(status::pad_row(&format!(" {part}"), cols, status::TEXT_SGR));
+                            painted += 1;
+                        }
+                        idx += 1;
+                    }
+                    None => {
+                        rows.push(status::pad_row("", cols, status::TEXT_SGR));
+                        painted += 1;
+                    }
+                }
+            }
+            rows.push(status::chrome_row(
+                layout.real,
+                inner,
+                reserved,
+                shell_name,
+                sense::label(st, hook),
+                pin,
+                stats,
+            ));
+            return rows;
+        }
         let filtered = m.filtered();
         let chip = match &m.composing {
             Some(text) => format!(" {} \u{25b8} + {}\u{258f} ", m.title, text),
@@ -660,8 +769,8 @@ fn compose_rows(
                 " \u{2191}\u{2193} \u{b7} {} \u{b7} esc \u{b7} {}/{} ",
                 match m.kind {
                     MenuKind::Model | MenuKind::SlowModel => "\u{23ce} save",
-                    MenuKind::Memory => "\u{23ce}\u{23ce} forget",
-                    MenuKind::Pins => "\u{23ce}\u{23ce} unpin",
+                    MenuKind::Memory => "\u{23ce} read \u{b7} \u{232b}\u{232b} forget",
+                    MenuKind::Pins => "\u{23ce} read \u{b7} \u{232b}\u{232b} unpin",
                     MenuKind::Settings | MenuKind::Debug => "\u{23ce} cycles",
                     MenuKind::Help => "reference",
                 },
@@ -681,10 +790,21 @@ fn compose_rows(
         for row in 0..n_items {
             let idx = top + row;
             let line = match filtered.get(idx) {
+                // The armed prompt goes at the FRONT. A pin row is a
+                // full path and blows past 80 columns routinely, so a
+                // suffix tag is exactly the part that clips — and the
+                // part that clips must never be the one warning you
+                // that the next keystroke destroys something.
+                Some(name) if m.armed.as_deref() == Some(*name) => {
+                    let verb = match m.kind {
+                        MenuKind::Pins => "unpin",
+                        _ => "forget",
+                    };
+                    format!(" \u{232b} again to {verb} \u{2192} {name}")
+                }
                 Some(name) => {
-                    let tag = if m.armed.as_deref() == Some(*name) {
-                        " \u{2190} \u{23ce} again to forget"
-                    } else if m.kind == MenuKind::Model && Some(*name) == engine_model.as_deref() {
+                    let tag = if m.kind == MenuKind::Model && Some(*name) == engine_model.as_deref()
+                    {
                         "*"
                     } else {
                         ""
@@ -1143,7 +1263,10 @@ fn slash_command(
             // model, the provider, and what each is trusted with, and
             // the two together have to fit one bar row at 80 columns.
             Some(match engine {
-                Some(_) => format!("goulash {} \u{b7} {blocks} blocks", env!("CARGO_PKG_VERSION")),
+                Some(_) => format!(
+                    "goulash {} \u{b7} {blocks} blocks",
+                    env!("CARGO_PKG_VERSION")
+                ),
                 None => format!(
                     "goulash {} \u{b7} no engine \u{b7} {blocks} blocks",
                     env!("CARGO_PKG_VERSION")
@@ -1253,7 +1376,11 @@ fn at_command(
                 kick_digests(work, engine, bound);
                 out
             }
-            ("drop", a) => match a.trim_start_matches('[').trim_end_matches(']').parse::<u64>() {
+            ("drop", a) => match a
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<u64>()
+            {
                 Ok(id) => match work.drop_id(id) {
                     Some(label) => {
                         // One fewer pin means a bigger share for the
@@ -1362,7 +1489,13 @@ fn ask_slow(
         return Some("no engine running".to_string());
     };
     if slow == "off" {
-        eng.ask(body.to_string(), ctx_log.to_string(), memories, pinned, cards);
+        eng.ask(
+            body.to_string(),
+            ctx_log.to_string(),
+            memories,
+            pinned,
+            cards,
+        );
         // Said on the question row, not as a notice: a notice is
         // transient and the answer arriving would wipe it, so the user
         // would never learn why their `#?` behaved like a `#`.
@@ -1377,7 +1510,13 @@ fn ask_slow(
         pinned.clone(),
         cards,
     );
-    eng.research(turn, body.to_string(), ctx_log.to_string(), memories, pinned);
+    eng.research(
+        turn,
+        body.to_string(),
+        ctx_log.to_string(),
+        memories,
+        pinned,
+    );
     None
 }
 
@@ -1422,11 +1561,7 @@ fn apply_finding(hist: &mut [SugTurn], turn: u64, finding: Finding, ctx_log: &mu
 /// The deterministic outline is already serving in the meantime, so this
 /// is pure upside: if the engine is absent, slow, or refuses, nothing
 /// waits and nothing breaks.
-fn kick_digests(
-    work: &mut crate::context::WorkContext,
-    engine: Option<&Engine>,
-    bound: bool,
-) {
+fn kick_digests(work: &mut crate::context::WorkContext, engine: Option<&Engine>, bound: bool) {
     // Attempts are finite, so don't spend one on a worker with no model
     // bound yet — ollama may simply have started after we did, and the
     // next pin (or the next attempt trigger) will find it.
@@ -1468,6 +1603,15 @@ fn list_pins(work: &crate::context::WorkContext) -> String {
 
 /// The browser's first row: pinning should not require remembering the
 /// `#@/path` incantation, exactly as `+ new memory` does for slots.
+/// `"[7] /path/to/thing \u{b7} …"` -> `7`. Menu rows carry their store's
+/// id in the text, so the list and the store need no parallel index.
+fn item_id(item: &str) -> Option<u64> {
+    item.trim_start_matches('[')
+        .split(']')
+        .next()
+        .and_then(|s| s.parse::<u64>().ok())
+}
+
 const NEW_PIN: &str = "+ pin a file \u{2026}";
 
 /// Rows for the pin browser, after the `+ pin` row.
@@ -1690,7 +1834,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // `#@` working context: session-scoped for v1. Pins are deliberate
     // and cheap to re-make; persisting them raises the per-cwd vs global
     // scope question, which is still open (wiki: working-context.md).
-    let mut work = crate::context::WorkContext::new(cfg.engine.context_files_max_chars);
+    let mut work = crate::context::WorkContext::new(cfg.engine.context_files_max_chars).with_walk(
+        cfg.engine.context_tree_max_files,
+        cfg.engine.context_tree_max_depth,
+    );
     let mut band: Option<Band> = None;
     let mut menu: Option<Menu> = None;
     let mut chat: Option<Chat> = None;
@@ -1786,9 +1933,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     write_all(STDOUT, &vacated)?;
                 }
                 last_band = (top, rows.len() as u16);
-                write_all(STDOUT, &fixup_bytes(
-                    &layout, parser.screen(), &rows, &dbg.cursor_save,
-                ))?;
+                write_all(
+                    STDOUT,
+                    &fixup_bytes(&layout, parser.screen(), &rows, &dbg.cursor_save),
+                )?;
                 last_rows = rows;
                 paint_deferred = false;
             }
@@ -1979,10 +2127,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                     cmd: v.command.clone(),
                                                     text: v.why.clone(),
                                                     question: band
-                                    .as_ref()
-                                    .and_then(|b| b.question.clone())
-                                    .unwrap_or_default(),
-                                alt: None,
+                                                        .as_ref()
+                                                        .and_then(|b| b.question.clone())
+                                                        .unwrap_or_default(),
+                                                    alt: None,
                                                 },
                                             );
                                             suggestions.insert(0, (id, v.command, v.why));
@@ -1996,7 +2144,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 ctx_log.clone(),
                                                 memory.context_block(),
                                                 work.context_block(),
-                                            work.cards_block(),
+                                                work.cards_block(),
                                             );
                                         }
                                     }
@@ -2034,7 +2182,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 ctx_log.clone(),
                                                 memory.context_block(),
                                                 work.context_block(),
-                                            work.cards_block(),
+                                                work.cards_block(),
                                             );
                                             ctx_log.push_str(&format!(
                                                 "# {} [asked {}]\n",
@@ -2077,8 +2225,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                     eng.set_slow_model(name.to_string());
                                                 }
                                                 None => {
-                                                    notice =
-                                                        Some("no engine running".to_string());
+                                                    notice = Some("no engine running".to_string());
                                                 }
                                             }
                                         } else {
@@ -2165,7 +2312,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             ctx_log.clone(),
                                             memory.context_block(),
                                             work.context_block(),
-                                        work.cards_block(),
+                                            work.cards_block(),
                                         );
                                         ctx_log.push_str(&format!(
                                             "# {} [asked {}]\n",
@@ -2196,8 +2343,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     // its own rather than being
                                     // unreachable.
                                     let flat = flat_slots(&sug_hist);
-                                    let cmd_at =
-                                        |p: usize| flat.get(p).and_then(|&s| slot_cmd(&sug_hist, s));
+                                    let cmd_at = |p: usize| {
+                                        flat.get(p).and_then(|&s| slot_cmd(&sug_hist, s))
+                                    };
                                     let target = if flat.is_empty() {
                                         browse = None;
                                         None
@@ -2207,8 +2355,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         let pos = browse
                                             .filter(|&p| cmd_at(p).as_deref() == Some(&buffer))
                                             .or_else(|| {
-                                                (0..flat.len())
-                                                    .find(|&p| cmd_at(p).as_deref() == Some(&buffer))
+                                                (0..flat.len()).find(|&p| {
+                                                    cmd_at(p).as_deref() == Some(&buffer)
+                                                })
                                             });
                                         match pos {
                                             Some(p) => Some((p + 1).min(flat.len() - 1)),
@@ -2328,6 +2477,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     let mut close = false;
                     let mut kind = MenuKind::Model;
                     let mut new_memory: Option<String> = None;
+                    let mut view: Option<String> = None;
                     notice = None; // a keystroke supersedes the last outcome
                     if let Some(m) = menu.as_mut() {
                         kind = m.kind;
@@ -2348,6 +2498,20 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         m.composing = None;
                                     }
                                     Key::Esc | Key::CtrlC => m.composing = None,
+                                    _ => {}
+                                }
+                                continue;
+                            }
+                            // The reading pane is modal within the menu:
+                            // it owns the arrows, and Esc backs out to
+                            // the list rather than out of the menu.
+                            if let Some(v) = m.viewing.as_mut() {
+                                match key {
+                                    Key::Up => v.top = v.top.saturating_sub(1),
+                                    Key::Down => {
+                                        v.top = (v.top + 1).min(v.lines.len().saturating_sub(1))
+                                    }
+                                    Key::Esc | Key::CtrlC | Key::Enter => m.viewing = None,
                                     _ => {}
                                 }
                                 continue;
@@ -2376,13 +2540,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             m.composing = Some(String::new());
                                             m.armed = None;
                                         }
+                                        // Enter reads. It used to unpin,
+                                        // which put a destructive verb on
+                                        // the key every other menu uses
+                                        // for "yes, this one".
                                         MenuKind::Memory | MenuKind::Pins => {
-                                            if sel.is_some() && m.armed == sel {
-                                                committed = sel;
-                                                m.armed = None;
-                                            } else {
-                                                m.armed = sel;
-                                            }
+                                            view = sel;
+                                            m.armed = None;
                                         }
                                     }
                                 }
@@ -2395,6 +2559,29 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     m.cursor += 1;
                                     m.clamp();
                                 }
+                                // Destructive: arm, then confirm. Delete
+                                // always means delete; Backspace edits
+                                // the filter while there IS one, because
+                                // that is the key that built it.
+                                Key::Delete | Key::Backspace
+                                    if matches!(m.kind, MenuKind::Memory | MenuKind::Pins)
+                                        && (matches!(key, Key::Delete) || m.filter.is_empty()) =>
+                                {
+                                    let sel = m.filtered().get(m.cursor).map(|s| s.to_string());
+                                    let is_new = matches!(
+                                        sel.as_deref(),
+                                        Some(NEW_PIN) | Some(NEW_MEMORY) | None
+                                    );
+                                    if is_new {
+                                        m.armed = None;
+                                    } else if m.armed == sel {
+                                        committed = sel;
+                                        m.armed = None;
+                                    } else {
+                                        m.armed = sel;
+                                    }
+                                }
+                                Key::Delete => m.armed = None,
                                 Key::Backspace => {
                                     m.armed = None;
                                     m.filter.pop();
@@ -2432,15 +2619,35 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             m.clamp();
                         }
                     }
+                    // Enter on a pin or a slot: open it for reading. The
+                    // pane shows what is actually being SENT, which is
+                    // otherwise invisible from inside the session.
+                    if let Some(item) = view.take() {
+                        let opened = match kind {
+                            MenuKind::Pins => item_id(&item).and_then(|id| work.view(id)),
+                            MenuKind::Memory => item_id(&item).and_then(|id| {
+                                let s = memory.slots.iter().find(|s| s.id == id)?;
+                                let mut lines =
+                                    vec![format!("written {} by {}", s.at, s.by), String::new()];
+                                lines.extend(s.text.lines().map(|l| l.to_string()));
+                                Some((format!("memory [{}]", s.id), lines))
+                            }),
+                            _ => None,
+                        };
+                        if let Some((title, lines)) = opened
+                            && let Some(m) = menu.as_mut()
+                        {
+                            m.viewing = Some(Viewer {
+                                title,
+                                lines,
+                                top: 0,
+                            });
+                        }
+                    }
                     if kind == MenuKind::Pins
                         && let Some(item) = committed.take()
                     {
-                        // "[7] /path/to/thing · …" -> 7
-                        let id = item
-                            .trim_start_matches('[')
-                            .split(']')
-                            .next()
-                            .and_then(|s| s.parse::<u64>().ok());
+                        let id = item_id(&item);
                         notice = match id.and_then(|id| work.drop_id(id)) {
                             Some(label) => Some(format!("@ dropped {label}")),
                             None => Some("could not drop that pin".to_string()),
@@ -2535,15 +2742,15 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             }
                             if let Some(m) = menu.as_mut() {
                                 m.items = settings_items(&Live {
-                commentary,
-                slow: &opt_slow,
-                thinking: &opt_thinking,
-                max_tokens: opt_max_tokens,
-                command_first: opt_command_first,
-                stats: opt_stats,
-                memory: &memory,
-                caps: model_caps.as_ref(),
-            });
+                                    commentary,
+                                    slow: &opt_slow,
+                                    thinking: &opt_thinking,
+                                    max_tokens: opt_max_tokens,
+                                    command_first: opt_command_first,
+                                    stats: opt_stats,
+                                    memory: &memory,
+                                    caps: model_caps.as_ref(),
+                                });
                             }
                         }
                     }
@@ -2589,12 +2796,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     if kind == MenuKind::Memory
                         && let Some(item) = committed.take()
                     {
-                        // "[7] text" -> 7
-                        let id = item
-                            .trim_start_matches('[')
-                            .split(']')
-                            .next()
-                            .and_then(|s| s.parse::<u64>().ok());
+                        let id = item_id(&item);
                         notice = match id {
                             Some(id) if memory.delete(id) => {
                                 rec.memory("forget", id, "");
@@ -2740,13 +2942,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             }
                         } else if let Some(rest) = text.strip_prefix('@') {
                             let out = at_command(
-                                            rest,
-                                            &mut work,
-                                            engine.as_ref(),
-                                            &last_cwd,
-                                            engine_model.is_some(),
-                                            &mut menu,
-                                        );
+                                rest,
+                                &mut work,
+                                engine.as_ref(),
+                                &last_cwd,
+                                engine_model.is_some(),
+                                &mut menu,
+                            );
                             if let (Some(c), Some(msg)) = (chat.as_mut(), out) {
                                 c.lines.push(format!("goulash: {msg}"));
                             }
@@ -2779,7 +2981,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 ctx_log.clone(),
                                 memory.context_block(),
                                 work.context_block(),
-                            work.cards_block(),
+                                work.cards_block(),
                             );
                             ctx_log.push_str(&format!("# {} [asked {}]\n", text, engine::hms()));
                         } else if let Some(c) = chat.as_mut() {
@@ -2861,15 +3063,15 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             && m.kind == MenuKind::Settings
                         {
                             m.items = settings_items(&Live {
-                commentary,
-                slow: &opt_slow,
-                thinking: &opt_thinking,
-                max_tokens: opt_max_tokens,
-                command_first: opt_command_first,
-                stats: opt_stats,
-                memory: &memory,
-                caps: model_caps.as_ref(),
-            });
+                                commentary,
+                                slow: &opt_slow,
+                                thinking: &opt_thinking,
+                                max_tokens: opt_max_tokens,
+                                command_first: opt_command_first,
+                                stats: opt_stats,
+                                memory: &memory,
+                                caps: model_caps.as_ref(),
+                            });
                         }
                     }
                     // A compression landed (or failed, in which case the
@@ -3052,10 +3254,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         cmd: cmd.clone(),
                                         text: one_line.clone(),
                                         question: band
-                                    .as_ref()
-                                    .and_then(|b| b.question.clone())
-                                    .unwrap_or_default(),
-                                alt: None,
+                                            .as_ref()
+                                            .and_then(|b| b.question.clone())
+                                            .unwrap_or_default(),
+                                        alt: None,
                                     },
                                 );
                                 suggestions.insert(0, (id, cmd.clone(), why.to_string()));
@@ -3249,9 +3451,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     // into a stream the line editor believes it owns, at
                     // a moment nothing asked for. `#/debug` turns it off.
                     if dbg.idle_repaint && winch_at.is_none() {
-                        write_all(STDOUT, &fixup_bytes(
-                            &layout, parser.screen(), &last_rows, &dbg.cursor_save,
-                        ))?;
+                        write_all(
+                            STDOUT,
+                            &fixup_bytes(&layout, parser.screen(), &last_rows, &dbg.cursor_save),
+                        )?;
                     }
                 }
             }
@@ -3291,6 +3494,7 @@ mod key_tests {
                 Key::Char(c) => *c,
                 Key::Enter => '\u{23ce}',
                 Key::Backspace => '<',
+                Key::Delete => 'X',
                 Key::KillLine => 'K',
                 Key::Up => 'U',
                 Key::Down => 'D',
@@ -3313,12 +3517,60 @@ mod key_tests {
         assert_eq!(kinds(b"\x1b[1;3Bgem"), "gem");
     }
 
+    /// Forward delete is the one parameterized CSI we DO want, and it
+    /// must not drag its neighbours in: `ESC[2~` (insert) is not it.
+    #[test]
+    fn forward_delete_parses_and_its_neighbours_do_not() {
+        assert_eq!(kinds(b"\x1b[3~"), "X");
+        assert_eq!(kinds(b"\x1b[3~\x1b[3~"), "XX");
+        assert_eq!(kinds(b"\x1b[2~\x1b[5~\x1b[6~"), "");
+        // A Mac's Delete key sends the backspace byte, not this.
+        assert_eq!(kinds(b"\x7f"), "<");
+    }
+
     #[test]
     fn lone_esc_and_controls() {
         assert_eq!(kinds(b"\x1b"), "E");
         assert_eq!(kinds(b"\x03\r\x7f\x15q"), "C\u{23ce}<Kq");
     }
 }
+#[cfg(test)]
+mod view_tests {
+    use super::{item_id, wrap_hard};
+
+    /// The pane counts rows against a height; a wrap that can return
+    /// nothing would spin there forever.
+    #[test]
+    fn every_line_yields_at_least_one_row() {
+        assert_eq!(wrap_hard("", 20), vec![""]);
+        assert_eq!(wrap_hard("   ", 20), vec!["   "]);
+        assert!(!wrap_hard(&"x".repeat(500), 20).is_empty());
+    }
+
+    #[test]
+    fn long_lines_split_and_keep_every_character() {
+        let parts = wrap_hard(&"abcdefghij".repeat(5), 10);
+        assert_eq!(parts.len(), 5);
+        assert_eq!(parts.concat(), "abcdefghij".repeat(5));
+    }
+
+    /// Indentation is meaning in a pinned file, so it survives — unlike
+    /// `wrap_chars`, which collapses whitespace for prose.
+    #[test]
+    fn interior_whitespace_survives_but_control_bytes_do_not() {
+        assert_eq!(wrap_hard("    indented", 40), vec!["    indented"]);
+        assert_eq!(wrap_hard("a\x1b[2Jb", 40), vec!["a [2Jb"]);
+        assert_eq!(wrap_hard("a\tb", 40), vec!["a    b"]);
+    }
+
+    #[test]
+    fn rows_carry_their_stores_id() {
+        assert_eq!(item_id("[7] /path/to/thing \u{b7} 12 chars"), Some(7));
+        assert_eq!(item_id("[12] a note"), Some(12));
+        assert_eq!(item_id("+ pin a file \u{2026}"), None);
+    }
+}
+
 #[cfg(test)]
 mod band_tests {
     use super::{
@@ -3358,7 +3610,10 @@ mod band_tests {
         let after = s.rsplit("\x1b8").next().unwrap();
         assert!(!after.contains(";1H"), "CUP after DECRC: {after:?}");
         // Visibility is the one thing DECSC does not carry.
-        assert!(after.contains("\x1b[?25h"), "visibility not restored: {after:?}");
+        assert!(
+            after.contains("\x1b[?25h"),
+            "visibility not restored: {after:?}"
+        );
 
         // The escape hatch really does revert to the old shape.
         let old = fixup_bytes(&l, p.screen(), &["bar".to_string()], "absolute");

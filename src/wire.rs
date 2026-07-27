@@ -363,7 +363,12 @@ mod tests {
             .unwrap();
         assert_eq!(c.text, "ls");
         assert!(!c.done);
-        assert!(Wire::Ollama.chunk(r#"{"response":"","done":true}"#).unwrap().done);
+        assert!(
+            Wire::Ollama
+                .chunk(r#"{"response":"","done":true}"#)
+                .unwrap()
+                .done
+        );
     }
 
     #[test]
@@ -382,12 +387,20 @@ mod tests {
 
     #[test]
     fn trust_is_stated_and_auto_only_believes_loopback() {
-        for h in ["http://127.0.0.1:11434", "http://localhost:1234",
-                  "http://[::1]:1234", "http://127.0.0.53:1234"] {
+        for h in [
+            "http://127.0.0.1:11434",
+            "http://localhost:1234",
+            "http://[::1]:1234",
+            "http://127.0.0.53:1234",
+        ] {
             assert!(resolve_trust("auto", h), "{h} is this machine");
         }
-        for h in ["https://api.openai.com", "http://192.168.1.9:1234",
-                  "http://gpu.lan:1234", "http://10.0.0.5:11434"] {
+        for h in [
+            "https://api.openai.com",
+            "http://192.168.1.9:1234",
+            "http://gpu.lan:1234",
+            "http://10.0.0.5:11434",
+        ] {
             assert!(!resolve_trust("auto", h), "{h} is not");
         }
         // Stated always wins, in both directions — including trusting a

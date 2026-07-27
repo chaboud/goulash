@@ -107,6 +107,13 @@ pub struct EngineConfig {
     /// stable prefix. Shared equally between pins; anything over its
     /// share is outlined rather than truncated (context.rs).
     pub context_files_max_chars: usize,
+    /// Bounds on a directory pin's walk. A tree pin is a convenience,
+    /// not a crawler — but "convenience" for a source tree is a couple
+    /// of hundred files, not sixty, and the right number depends on the
+    /// tree, so it is yours to set. What lands in the prompt is bounded
+    /// by `context_files_max_chars` regardless; this bounds the READ.
+    pub context_tree_max_files: usize,
+    pub context_tree_max_depth: usize,
     /// Context window requested from the provider; bounds KV memory
     /// (ollama may otherwise load models at huge default contexts).
     pub num_ctx: usize,
@@ -226,6 +233,8 @@ impl Default for EngineConfig {
             slow_max_steps: 8,
             slow_max_secs: 180,
             context_files_max_chars: 6000,
+            context_tree_max_files: 256,
+            context_tree_max_depth: 4,
             num_ctx: 8192,
             prewarm: true,
             debug: false,
