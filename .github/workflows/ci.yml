@@ -27,5 +27,11 @@ jobs:
         run: cargo clippy -- -D warnings
       - name: Build
         run: cargo build
+      - name: Terminal screen model (for rendering assertions)
+        # An under-erase is bytes that were never sent, so a byte-stream
+        # assertion cannot see it. pyte renders the stream so the tests
+        # can compare screens. Optional: e2e skips those checks without
+        # it rather than failing.
+        run: python3 -m pip install --quiet --break-system-packages pyte || true
       - name: End-to-end tests (PTY)
         run: python3 tests/e2e.py

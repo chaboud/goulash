@@ -1971,6 +1971,64 @@ def test_stats_row():
     drain_exit(proc, mfd)
 
 
+def test_startup_preserves_the_screen():
+    """Launching used to leave the terminal half-overwritten: a fresh
+    prompt at the top, the tail of whatever was there stranded below it,
+    and none of the visible screen in scrollback. Reproduced by running
+    `ls -R` first.
+
+    Setting the scroll region homes the cursor, the shell's first prompt
+    cycle draws from the region top, and the new session paints downward
+    over live content while everything below the write head keeps the
+    old — so it was neither an append nor a clear.
+
+    This needs a real screen model: an under-erase is bytes that were
+    never sent, so a byte-stream assertion cannot see it."""
+    print("startup scrolls the screen into scrollback:")
+    try:
+        import pyte
+    except ImportError:
+        print("  [SKIP] pyte not installed (pip install pyte)")
+        return
+    rows, cols = 24, 80
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    markers = " ".join(f"echo MARK-{i};" for i in range(1, 16))
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ.update(TERM="xterm-256color", HOME=home, GOULASH_HOME=home)
+        os.execv("/bin/sh", ["sh", "-c", f"{markers} exec {os.path.abspath(BIN)} /bin/bash"])
+    set_winsize(fd, rows, cols)
+    screen = pyte.HistoryScreen(cols, rows, history=2000)
+    stream = pyte.ByteStream(screen)
+    deadline = time.time() + 4
+    while time.time() < deadline:
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if r:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            stream.feed(chunk)
+    try:
+        os.kill(pid, 9)
+        os.close(fd)
+    except OSError:
+        pass
+
+    def render(line):
+        return "".join(line[i].data for i in sorted(line)) if hasattr(line, "keys") else str(line)
+
+    visible = [l for l in screen.display if "MARK-" in l]
+    check("no stale content left on the visible screen", not visible, str(visible[:3]))
+    scrolled = [render(l) for l in screen.history.top if "MARK-" in render(l)]
+    check("every prior line is in scrollback, not destroyed",
+          len(scrolled) >= 15, f"{len(scrolled)}/15 recovered")
+    band = [l for l in screen.display if "goulash" in l and "bash" in l]
+    check("and the band is drawn", bool(band), str(screen.display[-1]))
+
+
 def test_non_tty():
     print("refuses to run without a tty:")
     r = subprocess.run([BIN, "true"], capture_output=True)
@@ -2003,6 +2061,7 @@ def main():
         test_resize_hygiene,
         test_idle_with_repaint_off,
         test_stats_row,
+        test_startup_preserves_the_screen,
         test_non_tty,
     ):
         try:

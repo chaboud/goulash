@@ -1617,17 +1617,30 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // Place existing screen content clear of the reserved rows, without
     // clearing the screen or entering the alternate screen: scroll just
     // enough that the cursor lands inside the inner region.
-    let (row, col, typed_ahead) = query_cursor_row(layout.real);
+    // Startup: scroll the visible screen into scrollback, then begin
+    // clean at the top.
+    //
+    // Starting *in place* was the obvious thing and it was wrong. Setting
+    // the scroll region homes the cursor, the shell's first prompt cycle
+    // then draws from the region top, and the new session paints
+    // downward over whatever was there — while everything below the
+    // write head keeps the old content. Nothing scrolls, so nothing
+    // reaches scrollback: the visible screen is not preserved, it is
+    // half-overwritten. Field-reported as "a fresh prompt at the top,
+    // trash in the middle, and no scrollback", and reproduced by
+    // launching after an `ls -R`.
+    //
+    // Newlines at the bottom margin SCROLL, so `row` of them push every
+    // used line up and off. That is the whole difference from a clear:
+    // the screen ends up equally blank, and every line of it is one
+    // scroll-wheel away instead of destroyed.
+    let (row, _col, typed_ahead) = query_cursor_row(layout.real);
     let inner_rows = layout.inner().rows;
     let mut init: Vec<u8> = Vec::new();
-    let final_row = if row > inner_rows {
-        init.extend(std::iter::repeat_n(b'\n', (row - inner_rows) as usize));
-        inner_rows
-    } else {
-        row
-    };
+    init.extend_from_slice(format!("\x1b[{};1H", layout.real.rows).as_bytes());
+    init.extend(std::iter::repeat_n(b'\n', row as usize));
     init.extend_from_slice(format!("\x1b[1;{inner_rows}r").as_bytes());
-    init.extend_from_slice(format!("\x1b[{final_row};{col}H").as_bytes());
+    init.extend_from_slice(b"\x1b[1;1H");
     write_all(STDOUT, &init)?;
 
     let mut parser = vt100::Parser::new(inner_rows, layout.real.cols, 0);
@@ -3247,10 +3260,16 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
 
     // Restore the terminal: full scroll region, cursor to the old status
     // row start, default attributes, visible cursor.
+    // Erase EVERY reserved row, not just the first. `ESC[2K` clears one
+    // line, so three-quarters of the band used to survive the exit and
+    // sit under the parent shell's next prompt as debris.
     let mut out: Vec<u8> = Vec::new();
-    out.extend_from_slice(b"\x1b[r");
+    out.extend_from_slice(b"\x1b[r\x1b[0m");
+    for r in layout.status_row()..=layout.real.rows {
+        out.extend_from_slice(format!("\x1b[{r};1H\x1b[2K").as_bytes());
+    }
     out.extend_from_slice(format!("\x1b[{};1H", layout.status_row()).as_bytes());
-    out.extend_from_slice(b"\x1b[0m\x1b[2K\x1b[?25h");
+    out.extend_from_slice(b"\x1b[?25h");
     let _ = write_all(STDOUT, &out);
     drop(raw);
     WINCH_PIPE_WR.store(-1, Ordering::Relaxed);

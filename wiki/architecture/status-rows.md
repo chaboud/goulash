@@ -149,6 +149,53 @@ after DECRC). The behavioural half needs a real emulator — e2e drives a
 PTY with nothing interpreting the other end — so confirmation that the
 completion residue is gone is a hands-on check.
 
+## Startup: scroll into scrollback, don't start in place
+
+Launching used to leave the terminal half-overwritten — a fresh prompt
+at the top, the tail of whatever was there stranded below it, and none
+of the visible screen in scrollback. Neither an append nor a clear, and
+worse than either.
+
+The mechanism: **setting the scroll region homes the cursor.** goulash
+CUPs back immediately, but the shell's first prompt cycle then draws
+from the region top anyway, so the new session paints downward over live
+content while everything below the write head keeps the old. Nothing
+scrolls, so nothing reaches scrollback: the visible screen is not
+preserved, it is destroyed a row at a time as the session grows into it.
+
+The startup now scrolls the visible screen away instead:
+
+```
+CUP to the real bottom row       newlines at the bottom margin SCROLL
+'\n' x cursor_row                every used line goes to scrollback
+ESC[1;{inner_rows}r              scroll region
+CUP 1;1                          begin clean
+```
+
+That is the whole difference from a clear: **the screen ends up equally
+blank, and every line of it is one scroll-wheel away instead of gone.**
+It is also deterministic — independent of where the cursor was, which
+terminal it is, or whether DSR answers — where starting in place only
+ever looked right when the screen happened to be nearly empty.
+
+The exit had the matching half-measure: `ESC[2K` clears *one* line, so
+three-quarters of the band survived and sat under the parent shell's
+next prompt as debris. Every reserved row is erased now.
+
+### This is the bug class the harness could not see
+
+An under-erase is **bytes that were never sent**, so no assertion over a
+byte stream can detect one. The e2e suite drove a pty with nothing
+interpreting the far end, which is why residue and half-overwritten
+screens went unnoticed through several rounds of "verified".
+
+`pyte` gives the tests a real screen model, and the regression test for
+this asserts both halves — *no stale content visible* and *every prior
+line recovered from scrollback*. Checked against the old code, which
+strands 15 markers on screen and recovers 0 of 15. CI installs it
+opportunistically; the rendering checks skip rather than fail when it is
+absent.
+
 ## Geometry repair: let ZLE re-derive, don't tiptoe
 
 goulash resizes the inner PTY whenever its own area changes height — a
