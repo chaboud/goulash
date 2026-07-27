@@ -150,6 +150,21 @@ and it does not decay, is not automatic, and stays deliberately small.
 | size | large, bounded by tiers | **small, and that is the point** |
 | lives in | the session, then the project's artifacts | `~/.goulash` |
 
+**This is the memory bank, and that is probably all it is.** There is no
+second store to build: `memory.toml` ([agent-memory](agent-memory.md)) is
+already flat, already global, already user-scoped, already model-written
+via `REMEMBER:`, and already capped. The cap is what enforces "small",
+which was the whole requirement. Resisting the urge to invent a
+parallel structure is most of the design.
+
+What it needs is not more storage but a slightly richer row:
+
+| field | why |
+|---|---|
+| `source` | user-asserted, model-asserted, or **graduated** from the tiers — three very different confidences wearing the same clothes today |
+| `last_confirmed` | the invalidation path, below |
+| `depth` | provenance distance from raw ([ambient-research](ambient-research.md#inference-must-not-eat-its-own-output)) |
+
 Two kinds of thing belong in it, and the second is the interesting one:
 
 - **About the user** — their tools, their idioms, the fixes they keep

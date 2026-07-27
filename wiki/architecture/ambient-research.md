@@ -163,11 +163,32 @@ fast as it grows**, which is why the fixed point is reachable at all.
 adapter is the wrong axis and a bad experience. The budget should be
 coupled to *activity*, not to power state.
 
-The rule instead:
+The rule instead — and the right shape for it is a **token bucket filled
+by command activity**:
 
-> We work for ~30 seconds after the action stops. We steal extra moments
-> while the action happens. Unless explicitly told `#/study` or
-> `#/cook`, that is all we do.
+> Every command turn deposits tokens. Work spends them. An empty bucket
+> means an idle machine, whatever else is outstanding. Unless explicitly
+> told `#/study` or `#/cook`, that is all we do.
+
+Four properties that make this better than a timer:
+
+- **Idling is unconditional.** An empty bucket stops work even with a
+  huge backlog, so "the user walked away" and "the machine went quiet"
+  are the same event. Convergence stays opportunistic; we never need the
+  fixed point to be *reached* for the laptop to be cool.
+- **The activity that creates the work also funds it.** More commands
+  means more to think about *and* more budget to think with, and the two
+  scale together without a coefficient to tune.
+- **Deposit by salience, not by count.** A failed build is worth more
+  tokens than an `ls`, and a `#` ask — someone signalling confusion — is
+  worth more still. The interesting work funds itself first.
+- **A cap on the bucket.** An afternoon of commands must not bank hours
+  of grinding for one idle evening. Burst credit, not a savings account.
+
+Spend is per **unit of work** rather than per second, so a slow model
+does not get charged for being slow and a fast one does not get to do
+more for the same activity. What the user paid for is thought, not
+wall-clock.
 
 Two windows, both bounded, both already sensed:
 
@@ -226,7 +247,57 @@ aesthetic:
   stable project identity, and **switching homes starts cold rather than
   corrupt.** Cold is recoverable; corrupt is not.
 
-### `.paprikash`: the project speaks, we only listen
+### Session pins and location pins are different lifetimes
+
+`#@ eero.md — use this for our debugging session` and "this is what is
+true about this place" are not the same act, and collapsing them would
+lose the distinction that matters. But they are the same *verb* at two
+lifetimes:
+
+| | scope | lives | restored |
+|---|---|---|---|
+| **session pin** — `#@ <file>` | this conversation | until the session ends or you unpin | no |
+| **location pin** — pin *for here* | this tree | in `~/.goulash`, keyed by location | **on return** |
+
+A location pin is the answer to "every time I come back to this repo I
+end up pinning the same three files". Resolution is nearest-ancestor,
+like `.git`, so pinning at a repo root applies throughout it — and the
+restore is the user's own earlier decision coming back, not context
+appearing from nowhere.
+
+The chrome marker and the browser already exist; location pins are a
+section in the same list rather than a second surface.
+
+### `.paprikash` is a manifest, not a payload
+
+Which resolves what `.paprikash` actually *is*: **the project's
+suggestion of what your location pins should be.** Not a new mechanism —
+a file the humans who own a tree commit, saying "here is what matters
+here", which ingesting turns into location pins you own.
+
+```toml
+# .paprikash — committed by the humans who own this tree
+research = "off"                  # a restriction: honoured on sight
+read     = ["docs/", "Makefile"]  # a suggested pin set
+avoid    = ["vendor/", "*.pem"]
+notes    = "tests run with `just test`, never run migrations by hand"
+```
+
+Only the middle part is pinning. `research` and `avoid` are
+restrictions, which are not pins at all and follow the sight rule below;
+`notes` is prose, quoted to the model as *data this repository asserts*.
+
+So the layering is clean, and each layer already has a home:
+
+```
+.paprikash        the project's suggestion      (in-tree, read-only, untrusted)
+   ↓ ingest, on the user's Enter
+location pins     this user's standing context  (~/.goulash, keyed by tree)
+   ↓ every ask
+session pins      what we are doing right now   (#@, ephemeral)
+```
+
+### The project speaks, we only listen
 
 A project may contain a `.paprikash` — **human-authored, read-only,
 never created or modified by goulash.** It is the mechanism by which a
