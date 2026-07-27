@@ -119,6 +119,33 @@ __goulash_bound_widget $'\e[A' up-line-or-history __goulash_up
 __goulash_bound_widget $'\eOB' "$__goulash_down" __goulash_down_ss3
 __goulash_bound_widget $'\eOA' "$__goulash_up" __goulash_up_ss3
 
+# --- geometry repair ---------------------------------------------------
+# goulash resizes the inner PTY when its own area changes height (a menu
+# opening, chat taking focus). zsh gets a SIGWINCH and redraws, but ZLE's
+# accounting for a line it has already drawn can end up describing the
+# old geometry — and a WRAPPED line redrawn shorter then clears one row
+# too few, leaving the tail of the previous line stranded on screen.
+#
+# Rather than tiptoe around ZLE's bookkeeping, make it re-derive: a
+# reset-prompt on every WINCH costs nothing and repairs a real terminal
+# drag too, which no amount of care on our side could have avoided.
+#
+# Unconditional on purpose. The documented idiom is `zle && zle
+# reset-prompt`, but `zle` reports INACTIVE inside a WINCH trap even
+# while ZLE is reading — measured — so the guard suppresses exactly the
+# case that needs it. When ZLE really is idle the call is a harmless
+# no-op returning 0.
+if (( ${+functions[TRAPWINCH]} )) && [[ ${functions[TRAPWINCH]} != *__goulash_* ]]; then
+  functions[__goulash_user_winch]=${functions[TRAPWINCH]}
+fi
+typeset -g __goulash_prev_winch_trap="$(trap -p WINCH 2>/dev/null)"
+TRAPWINCH() {
+  (( ${+functions[__goulash_user_winch]} )) && __goulash_user_winch "$@"
+  [[ -n "$__goulash_prev_winch_trap" ]] && eval "${${__goulash_prev_winch_trap#trap -- }% WINCH}"
+  zle reset-prompt 2>/dev/null
+  return 0
+}
+
 # --- the `#` aside -----------------------------------------------------
 # Intercepted at accept-line, shipped to goulash over the OSC channel,
 # never executed, kept in history. `\#` escapes it back out.

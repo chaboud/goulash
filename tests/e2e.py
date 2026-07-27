@@ -1558,6 +1558,18 @@ def test_working_context():
     check("pin shows in the chrome", b"@commandRef.md" in out, out[-300:])
 
     # ...and the file's content is actually in front of the model.
+    # Barrier: the card is cooked ASYNCHRONOUSLY, so asking before it
+    # lands legitimately gets the deterministic card and the assertion
+    # below fails for a reason that is not a bug. Wait for the crib call
+    # itself rather than sleeping and hoping.
+    deadline = time.time() + 10
+    while time.time() < deadline and not any(
+        "crib for this reference" in p and "commandRef.md" in p for p in prompts
+    ):
+        time.sleep(0.2)
+    check("the card was actually cooked before we asked",
+          any("crib for this reference" in p and "commandRef.md" in p for p in prompts),
+          str(len(prompts)))
     os.write(mfd, b"#how do i sync\r")
     read_until(mfd, rb"PASS", 8.0)
     asked = [p for p in prompts if "how do i sync" in p]

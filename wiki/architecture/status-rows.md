@@ -149,6 +149,52 @@ after DECRC). The behavioural half needs a real emulator — e2e drives a
 PTY with nothing interpreting the other end — so confirmation that the
 completion residue is gone is a hands-on check.
 
+## Geometry repair: let ZLE re-derive, don't tiptoe
+
+goulash resizes the inner PTY whenever its own area changes height — a
+menu opening, chat taking focus. zsh gets a SIGWINCH and redraws, but
+ZLE's accounting for a line it has already drawn can describe the old
+geometry, and a **wrapped** line redrawn shorter then clears one row too
+few. The tail of the previous line is left stranded on screen
+(field-reported: a recalled `#/settings` with `rh | head -n 10 …` still
+hanging off the end of it).
+
+The tempting fix was to stop resizing — draw menus inside the fixed
+band, as v0.3.0 did. That was **rejected as a fix**, though it may still
+be right as a UI choice:
+
+- It would not have worked. v0.3.0 had residue too, from the
+  tab-completion path, without any menu resize. The screenshots that
+  reported this show `cursor_save: decsc` already active. Resize is an
+  aggravator, not the cause — the *wrap* is the cause, which is the
+  hazard family this page already documents.
+- It cannot help a real terminal drag, which produces the same SIGWINCH
+  and which no layout choice on our side avoids.
+
+The actual repair is to stop tiptoeing around ZLE's bookkeeping and make
+it re-derive:
+
+```zsh
+TRAPWINCH() { zle reset-prompt }
+```
+
+**Unconditional, and that matters.** The documented idiom is
+`zle && zle reset-prompt`, but `zle` reports *inactive* inside a WINCH
+trap even while ZLE is reading — measured under a pty — so the guard
+suppresses exactly the case that needs it. When ZLE really is idle the
+call is a harmless no-op returning 0. A user's own `TRAPWINCH`, or a
+`trap ... WINCH`, is captured and run first.
+
+**Unverified.** The e2e harness drives a pty with nothing rendering the
+far end, so an under-erase is *invisible* to it by construction — the
+missing bytes were never sent. A deterministic repro built for this
+found nothing, which is a statement about the harness, not the bug.
+Confirmation is a hands-on check.
+
+(That blind spot is now closable: `pyte` gives the harness a real screen
+model, so a future test can compare rendered screens rather than byte
+streams. Worth doing before the next terminal-hackery change.)
+
 ## Colour: orange is selection
 
 The strip has three chip colours and one rule between them.
