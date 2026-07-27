@@ -107,23 +107,26 @@ not protect it. Both shells close that hole explicitly:
 - **zsh**: history expansion happens in the lexer, which strips
   comments first when `INTERACTIVE_COMMENTS` is set.
 
-**zsh leaves `interactive_comments` unset for interactive shells**, so
-the adapter does `setopt interactivecomments`. Load order is handled —
-the generated rc sources the user's `.zshrc` *first*, then ours.
+**zsh leaves `interactive_comments` unset for interactive shells**, and
+the adapter used to `setopt interactivecomments` to close this. It no
+longer does — the dependency was illusory and the option was expensive.
+See below.
 
-Note the asymmetry: `#` asides are intercepted by the **zsh** ZLE
-accept-line widget, which reads `$BUFFER` before the shell lexes it
-(so goulash sees exactly what was typed, pre-expansion). Bash has no
-equivalent interception today — asides there are just comments the
-shell ignores, and bash users reach suggestions via **Alt-Down**.
+Each shell reaches the aside a different way:
 
-That asymmetry is also the reason the option turns out to be
-unnecessary — see below.
+- **zsh** intercepts at the ZLE `accept-line` widget, which reads
+  `$BUFFER` before the shell lexes it — goulash sees exactly what was
+  typed, pre-expansion, and the line never reaches the parser.
+- **bash** has no equivalent hook (a `#` line is a comment, so it never
+  executes and the DEBUG trap never fires). What bash *does* do is
+  record it in history, so the aside is recovered at the next prompt by
+  noticing that the history number advanced onto a line starting with
+  `#`. One turn later than zsh, and invisible at that scale.
 
-## `interactivecomments` is a dependency we don't have
+## `interactivecomments` was a dependency we didn't have
 
-Measured, not argued (dev, 2026-07). Setting the option costs more than
-it buys, and the thing it was buying was already covered.
+Measured, not argued (dev, 2026-07). Setting the option cost more than
+it bought, and the thing it was buying was already covered. **Removed.**
 
 **What it costs.** Under `interactivecomments`, zsh lexes `# mini` as a
 comment, so the completion system is handed `CURRENT=0`, `words=()` and
@@ -163,13 +166,14 @@ The `\#` escape changes shape rather than disappearing: it still means
 way, the widget can blank it too for the same observable result.
 
 **If a user wants the option anyway** — and `echo a # b` stripping is a
-reasonable thing to want — it becomes a setting rather than a
-dependency, because the aside path no longer relies on it:
+reasonable thing to want — it can become a setting rather than a
+dependency, because the aside path no longer relies on it. **Not built**;
+recorded here so the shape is known:
 
 | `[shell] interactive_comments` | |
 |---|---|
-| `off` (default) | leave zsh exactly as the user configured it; Tab behaves like bare zsh |
-| `on` | `setopt` it, **and** install the Tab widget below so completion still works |
+| `off` (today, and the only behaviour) | zsh exactly as the user configured it; Tab behaves like bare zsh |
+| `on` (unbuilt) | `setopt` it, **and** install a Tab widget so completion still works |
 
 The Tab widget is the compensating half, needed only in the `on` case:
 swap the `#…` sigil for a same-role non-comment stand-in (`: `), run
@@ -184,48 +188,65 @@ underlying widget is interactive (`menu-select`, `fzf-tab`).
 ## Adapter fidelity audit
 
 The contract is that goulash changes **nothing** about the shell except
-the Down arrow and the async `#` interception. Six live deviations, all
-verified under a pty:
+the arrows and the async `#` interception. Seven deviations were found
+under a pty, and all seven are now fixed — covered by
+`test_adapter_fidelity`, which loads a plugin that wraps the same
+widgets and asserts it still runs.
 
-| deviation | what it breaks | fix |
+| deviation | what it broke | how it works now |
 |---|---|---|
-| `setopt interactivecomments` | Tab completion on `#` lines; `echo a # b` semantics for *every* command | don't set it (above) |
-| `zle -N accept-line` | **clobbers** any prior widget — `zle -lL` shows only ours. We load after `.zshrc`, so atuin, `magic-enter`, and syntax-highlighting wrappers are silently dropped | capture with `zle -lL accept-line`, delegate instead of calling `.accept-line` |
-| `zle -N bracketed-paste` | same clobber; kills `bracketed-paste-magic` and `bracketed-paste-url-magic` | same |
-| `bindkey ^[[A ^[OA ^[[B ^[OB` | clobbers zsh-history-substring-search, fzf, autosuggestions; our fallback calls the *builtin* `up-line-or-history`, not what was bound | capture with `bindkey -L`, delegate |
-| `add-zsh-hook precmd` appends | our `$?` capture runs **last**, after every user precmd hook — any hook that runs a command clobbers the exit code we report | prepend into `precmd_functions` |
-| `$(base64)` in `precmd` | two forks per prompt for the cwd, two more per aside — latency we added to every prompt | encode in-shell, or send cwd only when it changes |
+| `setopt interactivecomments` | Tab on `#` lines; `echo a # b` for *every* command | not set; the widget blanks the buffer instead |
+| `zle -N accept-line` | **clobbered** any prior widget outright. We load after `.zshrc`, so atuin, `magic-enter`, syntax-highlighting wrappers were silently dropped | `$widgets[accept-line]` is re-registered under a private name and delegated to |
+| `zle -N bracketed-paste` | same clobber; killed `bracketed-paste-magic` / `-url-magic` | same |
+| `bindkey ^[[A ^[OA ^[[B ^[OB` | clobbered zsh-history-substring-search, fzf, autosuggestions; the fallback called the *builtin* `up-line-or-history`, not what was bound | `bindkey -L` captures the prior widget per sequence; the goulash path only takes over past the end of history |
+| zsh `add-zsh-hook precmd` appends | our `$?` read ran **last**, behind every user hook — so the exit code goulash reported was whatever the last hook left | a capture hook is moved to the front of `precmd_functions` and returns the status unchanged, so user hooks see what they always saw. A classic bare `precmd` function is wrapped for the same reason |
+| bash preexec armed at the *start* of `PROMPT_COMMAND` | a plugin's own prompt hook fired the DEBUG trap, consumed the arming, and the user's real command was never reported — goulash sat in `cmd` state forever | arming moved to a `__goulash_ready` appended **last**, plus a history-number check so an unmoved history number can never be mistaken for a new command |
+| bash `trap ... DEBUG` | replaced any existing DEBUG trap (bash-preexec, direnv, profilers) | the previous trap is captured and `eval`'d first |
+| `$(base64)` in `precmd` | two forks per prompt just to report an unchanged cwd | cwd is sent only when it moves |
 
-`zle -lL <widget>` and `bindkey -L <seq>` both hand back the prior
-definition, so **capture-and-delegate costs about three lines per
-hook**. This needs a fidelity test: drive a pty with a fake plugin that
-wraps `accept-line` and binds the arrows, then assert the plugin still
-runs with the adapter loaded.
+Two of those fixes are subtle enough to be worth stating on their own,
+because both fail **silently** and both present as "the shell echoes
+every line and runs none of them":
+
+- **`zle -N` inside `$(...)` registers the widget in a subshell.** The
+  capture has to set a global, not print one.
+- **bash withholds the DEBUG trap from functions *and* from sourced
+  files** unless `functrace` is on. `trap -p DEBUG` from inside the
+  adapter reports the default, so the plugin we meant to preserve looks
+  like it was never there. `PROMPT_COMMAND` is evaluated in the
+  top-level context and is the only place the real answer is visible,
+  so the read happens there and the value is passed in as an argument.
+  Setting a trap from inside a function is fine; only reading one is
+  blocked.
 
 ## rc-file loading: what actually gets sourced
 
-zsh, via the ZDOTDIR stubs — correct order (`.zshenv` → `.zprofile` →
-`.zshrc`), with three gaps:
+Covered by `test_rc_loading`.
 
-- **No `.zlogin` or `.zlogout` stub.** `prepare()` accepts `-l` and
-  `--login`, so a login zsh under goulash silently skips the user's
-  `~/.zlogin`.
-- **`$ZDOTDIR` still points at goulash's dir during `.zshenv` and
-  `.zprofile`** — only the `.zshrc` stub restores it. A dotfile setup
-  that does `fpath+=$ZDOTDIR/functions` in `.zshenv` gets the wrong
-  directory.
-- When the user had no `ZDOTDIR`, the stub sets it to `$HOME`; real zsh
-  leaves it **unset**, so `[[ -n $ZDOTDIR ]]` tests flip.
+**zsh**, via the ZDOTDIR stubs — `.zshenv` → `.zprofile` → `.zshrc`, and
+now `.zlogin` / `.zlogout` too. `ZDOTDIR` is swapped to the user's value
+(or **unset**, when they never had one) around each of their files and
+swapped straight back, so `fpath+=$ZDOTDIR/functions` in a `.zshenv`
+resolves the way it would without goulash. The `.zshrc` stub restores it
+for good, which is what makes `.zlogin` and `.zlogout` load natively —
+zsh expands `$ZDOTDIR` afresh for each startup file, so neither needs a
+stub of its own.
 
-bash is **broken for login shells**. Verified: `bash -l -i --rcfile X`
-does not read `X` — bash ignores `--rcfile` for login shells and reads
-`/etc/profile` then `~/.bash_profile` / `~/.bash_login` / `~/.profile`.
-`prepare()` accepts `-l`/`--login` and takes the `--rcfile` path anyway,
-so `goulash bash -l` gets **zero integration and no warning**. The
-non-login path is fine. Fix: for a login bash, inject via a generated
-profile (or `--init-file` after re-exec) rather than `--rcfile`, or fall
-back to passthrough with a visible notice.
+Previously: `.zlogin` and `.zlogout` were skipped entirely, `ZDOTDIR`
+pointed at goulash's own directory while the user's `.zshenv` and
+`.zprofile` ran, and it was set to `$HOME` when the user had never set
+it — flipping every `[[ -n $ZDOTDIR ]]` test.
 
-Bash's Tab is unaffected by any of this: readline doesn't lex comments,
-so `# Fa` completes to `# Farm` there with `interactive_comments` on —
-verified.
+**bash login shells** used to get *zero* integration, silently. Verified:
+`bash -l -i --rcfile X` reads neither `X` nor `~/.bashrc` — bash ignores
+`--rcfile` for login shells and reads `/etc/profile` then the first of
+`~/.bash_profile`, `~/.bash_login`, `~/.profile`, and there is no
+`--profile-file` to point anywhere else. Since `prepare()` accepts `-l`
+and `--login`, the only way to reach a login bash is to drop the login
+flag and replay that sequence in the generated rcfile before sourcing
+the adapter. Two things the emulation does not reproduce: `shopt -q
+login_shell` reads false, and `$0` is not `-bash`.
+
+Bash's Tab was never affected by any of this: readline doesn't lex
+comments, so `# Fa` completes to `# Farm` there with
+`interactive_comments` on — verified.

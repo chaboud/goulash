@@ -277,20 +277,27 @@ Field-driven, roughly in order of leverage:
    scroll, type-to-filter, Enter to act — with review/approve for
    machine-written entries. Cheap, independently useful, and the
    natural next code task.
-9. **Adapter fidelity — stop changing the shell.** The contract is
-   that goulash alters *nothing* about zsh/bash except the Down arrow
-   and the async `#` interception. A field audit (dev, 2026-07) found
-   six live deviations, one of them semantic —
+9. ~~**Adapter fidelity — stop changing the shell.**~~ **Built** —
    [shell-integration](../architecture/shell-integration.md#adapter-fidelity-audit)
-   has the table and the fix for each. Headline: `setopt
-   interactivecomments` is not needed at all (the aside is caught at
-   `accept-line`, before the lexer), and dropping it removes both the
-   Tab-completion breakage and an unasked-for change to `echo a # b`.
-   The rest are **capture-and-delegate** instead of replace: `zle -lL`
-   and `bindkey -L` hand back what was there, so wrapping a plugin's
-   `accept-line` / `bracketed-paste` / arrow bindings costs three
-   lines each. Needs a **fidelity test suite** — drive a pty with a
-   fake plugin installed and assert the plugin still runs.
+   has the table. The contract is that goulash alters *nothing* about
+   zsh/bash except the arrows and the async `#` interception; a field
+   audit (dev, 2026-07) found seven deviations and all seven are fixed.
+   Headline: `setopt interactivecomments` was never needed (the aside
+   is caught at `accept-line`, before the lexer, and the buffer is
+   blanked so the parser never sees it) — dropping it removes both the
+   Tab-completion breakage and an unasked-for change to `echo a # b`
+   for every command. The rest are **capture-and-delegate** instead of
+   replace, so a plugin's `accept-line` / `bracketed-paste` / arrow
+   bindings / DEBUG trap all keep working. bash gained `#` asides
+   (recovered from history at the next prompt — it has no accept-line
+   to hook), login shells gained integration at all, and zsh gained
+   `.zlogin` / `.zlogout` plus an honest `$ZDOTDIR`. Covered by
+   `test_adapter_fidelity` and `test_rc_loading`, which install a
+   plugin that wraps the same widgets and assert it survives.
+   **Still open**: `[shell] interactive_comments = on` as an opt-in,
+   which needs the sigil-swap Tab widget (prototyped, not shipped);
+   bash Down-arrow via `bind -x` and `READLINE_LINE` (bash reaches
+   suggestions through Alt-Down today).
 10. **OpenAI-compatible provider.** The engine is ollama-only and
    hardcoded to it: `/api/generate` for asks, `/api/tags` for the
    model list, `/api/show` for the capability probe, and ollama's own

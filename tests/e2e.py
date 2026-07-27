@@ -310,6 +310,152 @@ def test_zsh_auto_integration():
     check("accept recorded", any(e["ev"] == "accept" for e in events))
 
 
+ZSH_PLUGIN = r"""
+# A plausible plugin, installed the way a real one would be: from the
+# user's .zshrc, i.e. BEFORE goulash's adapter loads. Everything here
+# has to survive the adapter (wiki: shell-integration, fidelity audit).
+myaccept() { print -r -- "PLUG-ACCEPT" >> "$HOME/plug.log"; zle .accept-line }
+mypaste()  { print -r -- "PLUG-PASTE"  >> "$HOME/plug.log"; zle .bracketed-paste }
+mydown()   { print -r -- "PLUG-DOWN"   >> "$HOME/plug.log"; zle .down-line-or-history }
+myup()     { print -r -- "PLUG-UP"     >> "$HOME/plug.log"; zle .up-line-or-history }
+zle -N accept-line myaccept
+zle -N bracketed-paste mypaste
+zle -N mydown; zle -N myup
+bindkey '^[[B' mydown; bindkey '^[OB' mydown
+bindkey '^[[A' myup;   bindkey '^[OA' myup
+autoload -Uz add-zsh-hook
+myprecmd() { print -r -- "PLUG-PRECMD:$?" >> "$HOME/plug.log"; command true }
+add-zsh-hook precmd myprecmd
+"""
+
+BASH_PLUGIN = r"""
+__plug_debug() { echo "PLUG-DEBUG" >> "$HOME/plug.log"; }
+trap '__plug_debug' DEBUG
+__plug_prompt() { echo "PLUG-PROMPT:$?" >> "$HOME/plug.log"; }
+PROMPT_COMMAND='__plug_prompt'
+"""
+
+
+def test_adapter_fidelity():
+    """The adapter must change NOTHING about the shell except the arrows
+    and the async `#` interception. Two things get checked here that no
+    amount of reading catches: that a plugin bound to the same widgets
+    still runs, and that `#` no longer leaks into ordinary command
+    lexing — goulash used to `setopt interactivecomments`, which changed
+    what `echo a # b` means and broke Tab completion on every `#` line."""
+    print("adapter fidelity (plugins survive, shell semantics untouched):")
+    # `echo x # y` is the tell. Each shell has its own answer and the
+    # adapter must not change it: zsh leaves interactive_comments unset,
+    # so the `#` is just another argument; bash has it on by default, so
+    # the tail is a comment. goulash used to `setopt interactivecomments`
+    # and make zsh behave like bash — for every command the user typed.
+    for shell, plugin, rc, expect in (("zsh", ZSH_PLUGIN, ".zshrc", b"mark-4 # trailing"),
+                                      ("bash", BASH_PLUGIN, ".bashrc", b"mark-4")):
+        if not shutil.which(shell):
+            print(f"  [SKIP] {shell} not installed")
+            continue
+        home = tempfile.mkdtemp(prefix="goulash-test-")
+        with open(os.path.join(home, rc), "w") as f:
+            f.write(plugin)
+        log = os.path.join(home, "plug.log")
+        proc, mfd = spawn([shell], home=home)
+        time.sleep(1.5)
+        os.write(mfd, b"echo mark-$((2*2)) # trailing\r")
+        out = read_until(mfd, rb"mark-4", 6.0)
+        tail = out[out.rfind(b"mark-4"):][:40]
+        check(f"{shell}: '#' mid-command lexed the shell's own way",
+              tail.startswith(expect), repr(tail))
+        os.write(mfd, b"false\r")
+        time.sleep(0.6)
+        os.write(mfd, b"# an aside with !! in it\r")
+        if shell == "bash":
+            # bash has no accept-line to hook, so an aside is recovered
+            # from history at the NEXT prompt — one turn later by design.
+            time.sleep(0.6)
+            os.write(mfd, b"\r")
+        out = read_until(mfd, rb"no engine", 8.0)
+        check(f"{shell}: aside still intercepted", b"no engine" in out, out[-300:])
+        check(f"{shell}: aside not history-expanded", b"echo mark" not in out[-200:],
+              out[-200:])
+        os.write(mfd, b"exit\r")
+        drain_exit(proc, mfd)
+        seen = open(log).read() if os.path.exists(log) else ""
+        if shell == "zsh":
+            check("zsh: plugin accept-line widget still runs",
+                  "PLUG-ACCEPT" in seen, seen[-200:])
+            check("zsh: plugin precmd sees the true exit code",
+                  "PLUG-PRECMD:1" in seen, seen[-300:])
+        else:
+            check("bash: plugin DEBUG trap still fires",
+                  "PLUG-DEBUG" in seen, seen[-200:])
+            check("bash: plugin PROMPT_COMMAND sees the true exit code",
+                  "PLUG-PROMPT:1" in seen, seen[-300:])
+        logs = glob.glob(os.path.join(home, "history", "session-*.jsonl"))
+        events = [json.loads(line) for line in open(logs[0])] if logs else []
+        check(f"{shell}: aside reached goulash verbatim",
+              any(e["ev"] == "aside" and e["text"] == "# an aside with !! in it"
+                  for e in events),
+              str([e.get("text") for e in events if e["ev"] == "aside"]))
+
+
+RC_MARKERS = {
+    ".zshenv": "MARK-ZSHENV",
+    ".zprofile": "MARK-ZPROFILE",
+    ".zshrc": "MARK-ZSHRC",
+    ".zlogin": "MARK-ZLOGIN",
+}
+
+
+def test_rc_loading():
+    """Every startup file the shell would have read without goulash, in
+    order — and with $ZDOTDIR reading the way it would have. The stubs
+    used to skip .zlogin entirely, leave ZDOTDIR pointing at goulash's
+    own dir while the user's .zshenv ran, and set it to $HOME when the
+    user had never set it at all."""
+    print("rc-file loading (nothing skipped, ZDOTDIR honest):")
+    if shutil.which("zsh"):
+        home = tempfile.mkdtemp(prefix="goulash-test-")
+        for name, mark in RC_MARKERS.items():
+            with open(os.path.join(home, name), "w") as f:
+                f.write(f'print -r -- "{mark} zdot=[${{ZDOTDIR-UNSET}}]"\n')
+        proc, mfd = spawn(["zsh", "-l", "-i"], home=home)
+        out = read_until(mfd, rb"MARK-ZLOGIN", 8.0)
+        os.write(mfd, b"exit\r")
+        drain_exit(proc, mfd)
+        text = out.decode("utf8", "replace")
+        for mark in RC_MARKERS.values():
+            check(f"zsh sources the user's {mark.lower()[5:]}", mark in text,
+                  text[-300:])
+        # The user never set ZDOTDIR, so neither should they see one.
+        leaked = [m for m in RC_MARKERS.values()
+                  if re.search(re.escape(m) + r" zdot=\[(?!UNSET)", text)]
+        check("ZDOTDIR is not leaked into the user's rc files", not leaked,
+              str(leaked))
+    else:
+        print("  [SKIP] zsh not installed")
+    if shutil.which("bash"):
+        # bash ignores --rcfile for login shells, so the login path has
+        # to replay the profile sequence itself or the adapter — and the
+        # user's own profile — never load at all.
+        home = tempfile.mkdtemp(prefix="goulash-test-")
+        with open(os.path.join(home, ".bash_profile"), "w") as f:
+            f.write('echo MARK-BASH-PROFILE\n[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"\n')
+        with open(os.path.join(home, ".bashrc"), "w") as f:
+            f.write("echo MARK-BASHRC\n")
+        proc, mfd = spawn(["bash", "-l", "-i"], home=home)
+        out = read_until(mfd, rb"MARK-BASHRC", 8.0)
+        check("login bash reads the user's profile", b"MARK-BASH-PROFILE" in out,
+              out[-300:])
+        check("login bash reaches .bashrc", b"MARK-BASHRC" in out, out[-300:])
+        os.write(mfd, b'echo ADAPT=$__goulash_loaded\r')
+        out = read_until(mfd, rb"ADAPT=1", 6.0)
+        check("login bash gets the adapter", b"ADAPT=1" in out, out[-300:])
+        os.write(mfd, b"exit\r")
+        drain_exit(proc, mfd)
+    else:
+        print("  [SKIP] bash not installed")
+
+
 def test_engine_ollama():
     print("engine probe + # aside answered (fake ollama):")
     if not shutil.which("zsh"):
@@ -1363,6 +1509,8 @@ def main():
         test_shell_hooks,
         test_suggestions,
         test_zsh_auto_integration,
+        test_adapter_fidelity,
+        test_rc_loading,
         test_engine_ollama,
         test_model_menu,
         test_model_capabilities,

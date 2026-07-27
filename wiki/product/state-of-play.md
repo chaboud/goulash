@@ -114,9 +114,26 @@ owner can do.
   jumps days, confusing mtime freshness). If a change appears to have
   no effect, `cargo clean -p goulash` before concluding anything.
 - **`#`, `#/`, `#@` are safe shell syntax by specification** — see
-  [shell-integration](../architecture/shell-integration.md). The one
-  dependency is zsh's `interactive_comments`, which the adapter sets
-  *after* sourcing the user's rc.
+  [shell-integration](../architecture/shell-integration.md). It once
+  looked like this depended on zsh's `interactive_comments`; it does
+  not, and setting that option cost a great deal (it changed `echo a #
+  b` for every command and broke Tab completion on every `#` line).
+  The aside is caught at `accept-line`, *before* the lexer, so blanking
+  the buffer keeps the line away from the parser entirely — a stronger
+  guarantee than asking the parser to treat it as a comment.
+- **A shell hook that reads state must run at the right END of the
+  chain.** Three separate bugs, same shape: our zsh `precmd` was
+  appended so it read `$?` after the user's hooks had clobbered it; our
+  bash preexec detector armed at the *start* of `PROMPT_COMMAND`, so a
+  plugin's own prompt hook consumed the arming and the real command was
+  never reported. Capture-first, arm-last.
+- **Shells hide state from the contexts you would naturally read it
+  in.** bash withholds the DEBUG trap from shell functions *and* from
+  sourced files, so `trap -p DEBUG` from an adapter reports "nobody has
+  one" and the plugin you meant to preserve is silently dropped. zsh's
+  `zle -N` inside a `$(...)` registers the widget in a subshell that
+  immediately exits. Both failures are silent and both look, from the
+  terminal, like a shell that echoes every line and runs none of them.
 - **Never blank-erase inner rows.** The shell only rebuilds its screen
   at a prompt turn, so anything erased between turns leaves a hole
   nothing repairs. Restore from the vt100 mirror instead.
