@@ -107,14 +107,125 @@ not protect it. Both shells close that hole explicitly:
 - **zsh**: history expansion happens in the lexer, which strips
   comments first when `INTERACTIVE_COMMENTS` is set.
 
-That option is the one real dependency: **zsh leaves
-`interactive_comments` unset for interactive shells**, so the adapter
-does `setopt interactivecomments`. Load order matters and is handled —
-the generated rc sources the user's `.zshrc` *first*, then ours, so
-nothing downstream can unset it.
+**zsh leaves `interactive_comments` unset for interactive shells**, so
+the adapter does `setopt interactivecomments`. Load order is handled —
+the generated rc sources the user's `.zshrc` *first*, then ours.
 
 Note the asymmetry: `#` asides are intercepted by the **zsh** ZLE
 accept-line widget, which reads `$BUFFER` before the shell lexes it
 (so goulash sees exactly what was typed, pre-expansion). Bash has no
 equivalent interception today — asides there are just comments the
 shell ignores, and bash users reach suggestions via **Alt-Down**.
+
+That asymmetry is also the reason the option turns out to be
+unnecessary — see below.
+
+## `interactivecomments` is a dependency we don't have
+
+Measured, not argued (dev, 2026-07). Setting the option costs more than
+it buys, and the thing it was buying was already covered.
+
+**What it costs.** Under `interactivecomments`, zsh lexes `# mini` as a
+comment, so the completion system is handed `CURRENT=0`, `words=()` and
+an empty `PREFIX`. There is no current word — nothing to filter by and
+nothing to insert — so Tab dumps an **unfiltered listing of the whole
+directory** on the first press, and a second press splices a match in
+at the cursor instead of replacing the word:
+
+```
+#@ Fa   nointeractivecomments  →  1 tab: "#@ Farm"   (correct)
+#@ Fa   interactivecomments    →  1 tab: everything in cwd, buffer unchanged
+                                  2 tabs: "#@ FaFarmAnimals.md"
+```
+
+That second line is where the mangled `#/modelAnimals.md` rows in
+history come from — a filename welded onto a `#` command with no
+separator. It is *not* an under-erase and has nothing to do with the
+[deferred-wrap hazard](status-rows.md#deferred-wrap-why-the-cursor-restore-is-decsc-not-cup),
+which is what it looks like. Every `#` line does it, including `#/mod`,
+which has no file argument at all. And the option is not scoped to
+asides: `echo a # b` silently changes meaning for every command the
+user types.
+
+**What it was buying.** History expansion runs *before* tokenization, so
+comment rules can't protect an aside containing `!!` — the argument for
+needing the option. But the aside never reaches the parser: the
+accept-line widget can push it into history with `print -s` and blank
+`$BUFFER`, so the shell parses an empty line. Probed under a real pty
+with `nointeractivecomments`: `# what does !! do` and
+`# and $(echo BAD) too` both arrive at the widget **verbatim** — no
+expansion, no substitution, no error. Not letting the parser see the
+line is a stronger guarantee than asking it to treat the line as a
+comment.
+
+The `\#` escape changes shape rather than disappearing: it still means
+"this one is not for goulash", and since a comment does nothing either
+way, the widget can blank it too for the same observable result.
+
+**If a user wants the option anyway** — and `echo a # b` stripping is a
+reasonable thing to want — it becomes a setting rather than a
+dependency, because the aside path no longer relies on it:
+
+| `[shell] interactive_comments` | |
+|---|---|
+| `off` (default) | leave zsh exactly as the user configured it; Tab behaves like bare zsh |
+| `on` | `setopt` it, **and** install the Tab widget below so completion still works |
+
+The Tab widget is the compensating half, needed only in the `on` case:
+swap the `#…` sigil for a same-role non-comment stand-in (`: `), run
+whatever widget was bound to `^I` before us, then swap the sigil back.
+The line is no longer a comment for the duration of the completion, so
+`PREFIX` is correct and matches replace the word. Prototyped and
+measured working (`#@ Fa` → `#@ Farm`, `#@ /abs/path/Fa` → `…/Farm`,
+`# Fa` → `# Farm`), with `#/`-verb completion from a static table as a
+bonus. Cost: the buffer briefly reads `: ` instead of `#` if the
+underlying widget is interactive (`menu-select`, `fzf-tab`).
+
+## Adapter fidelity audit
+
+The contract is that goulash changes **nothing** about the shell except
+the Down arrow and the async `#` interception. Six live deviations, all
+verified under a pty:
+
+| deviation | what it breaks | fix |
+|---|---|---|
+| `setopt interactivecomments` | Tab completion on `#` lines; `echo a # b` semantics for *every* command | don't set it (above) |
+| `zle -N accept-line` | **clobbers** any prior widget — `zle -lL` shows only ours. We load after `.zshrc`, so atuin, `magic-enter`, and syntax-highlighting wrappers are silently dropped | capture with `zle -lL accept-line`, delegate instead of calling `.accept-line` |
+| `zle -N bracketed-paste` | same clobber; kills `bracketed-paste-magic` and `bracketed-paste-url-magic` | same |
+| `bindkey ^[[A ^[OA ^[[B ^[OB` | clobbers zsh-history-substring-search, fzf, autosuggestions; our fallback calls the *builtin* `up-line-or-history`, not what was bound | capture with `bindkey -L`, delegate |
+| `add-zsh-hook precmd` appends | our `$?` capture runs **last**, after every user precmd hook — any hook that runs a command clobbers the exit code we report | prepend into `precmd_functions` |
+| `$(base64)` in `precmd` | two forks per prompt for the cwd, two more per aside — latency we added to every prompt | encode in-shell, or send cwd only when it changes |
+
+`zle -lL <widget>` and `bindkey -L <seq>` both hand back the prior
+definition, so **capture-and-delegate costs about three lines per
+hook**. This needs a fidelity test: drive a pty with a fake plugin that
+wraps `accept-line` and binds the arrows, then assert the plugin still
+runs with the adapter loaded.
+
+## rc-file loading: what actually gets sourced
+
+zsh, via the ZDOTDIR stubs — correct order (`.zshenv` → `.zprofile` →
+`.zshrc`), with three gaps:
+
+- **No `.zlogin` or `.zlogout` stub.** `prepare()` accepts `-l` and
+  `--login`, so a login zsh under goulash silently skips the user's
+  `~/.zlogin`.
+- **`$ZDOTDIR` still points at goulash's dir during `.zshenv` and
+  `.zprofile`** — only the `.zshrc` stub restores it. A dotfile setup
+  that does `fpath+=$ZDOTDIR/functions` in `.zshenv` gets the wrong
+  directory.
+- When the user had no `ZDOTDIR`, the stub sets it to `$HOME`; real zsh
+  leaves it **unset**, so `[[ -n $ZDOTDIR ]]` tests flip.
+
+bash is **broken for login shells**. Verified: `bash -l -i --rcfile X`
+does not read `X` — bash ignores `--rcfile` for login shells and reads
+`/etc/profile` then `~/.bash_profile` / `~/.bash_login` / `~/.profile`.
+`prepare()` accepts `-l`/`--login` and takes the `--rcfile` path anyway,
+so `goulash bash -l` gets **zero integration and no warning**. The
+non-login path is fine. Fix: for a login bash, inject via a generated
+profile (or `--init-file` after re-exec) rather than `--rcfile`, or fall
+back to passthrough with a visible notice.
+
+Bash's Tab is unaffected by any of this: readline doesn't lex comments,
+so `# Fa` completes to `# Farm` there with `interactive_comments` on —
+verified.

@@ -277,6 +277,40 @@ Field-driven, roughly in order of leverage:
    scroll, type-to-filter, Enter to act — with review/approve for
    machine-written entries. Cheap, independently useful, and the
    natural next code task.
+9. **Adapter fidelity — stop changing the shell.** The contract is
+   that goulash alters *nothing* about zsh/bash except the Down arrow
+   and the async `#` interception. A field audit (dev, 2026-07) found
+   six live deviations, one of them semantic —
+   [shell-integration](../architecture/shell-integration.md#adapter-fidelity-audit)
+   has the table and the fix for each. Headline: `setopt
+   interactivecomments` is not needed at all (the aside is caught at
+   `accept-line`, before the lexer), and dropping it removes both the
+   Tab-completion breakage and an unasked-for change to `echo a # b`.
+   The rest are **capture-and-delegate** instead of replace: `zle -lL`
+   and `bindkey -L` hand back what was there, so wrapping a plugin's
+   `accept-line` / `bracketed-paste` / arrow bindings costs three
+   lines each. Needs a **fidelity test suite** — drive a pty with a
+   fake plugin installed and assert the plugin still runs.
+10. **OpenAI-compatible provider.** The engine is ollama-only and
+   hardcoded to it: `/api/generate` for asks, `/api/tags` for the
+   model list, `/api/show` for the capability probe, and ollama's own
+   `think` field for the [reasoning dial](../architecture/model-capabilities.md).
+   The OpenAI `/v1/chat/completions` shape is what everything else
+   speaks — llama.cpp's server, vLLM, LM Studio, together with the
+   hosted APIs — so one more provider unlocks most of the field at
+   once. Work: a `Provider` seam behind `ask`/`stream`/`list`/`probe`
+   (four call sites in `src/engine.rs`), `[engine] provider =
+   ollama|openai` plus `base_url` / `api_key_env`, SSE parsing for the
+   stream, `GET /v1/models` for the picker, and a capability story
+   where there is no `/api/show` — the family table in `src/models.rs`
+   already carries the dialect, so `Source::Table` simply stays
+   authoritative and `Source::Provider` never fires.
+   Two things it forces into the open: **`reasoning_effort` vs
+   `think`** (a third dialect for `Caps::think_field`), and the
+   **trusted-provider flag** the `#@` design already assumes — a
+   remote endpoint is exactly the case where pinned file content
+   needs the skip-list and the explicit confirm, where a local one
+   needs neither.
 
 ## Milestone 5 — memory hierarchy + watcher tier
 Rolling cleanup loop (local model if available) setting region markers;
