@@ -841,13 +841,25 @@ def test_slow_lane():
 
     # The finding lands on the turn it came from, not at the top.
     time.sleep(2.0)
-    os.write(mfd, b"\x1b[B")          # Down: browse the turn
-    out = read_until(mfd, rb"researched", 5.0)
+    os.write(mfd, b"\x1b[B")          # Down: fast's command first
+    out = read_until(mfd, rb"1/2", 5.0)
+    check("the alternative is a step of its own", b"1/2" in out, out[-400:])
     check("the researched finding insets under the turn",
-          b"researched" in out, out[-400:])
+          b"\\xe2\\x86\\xb3" in out or "↳".encode() in out, out[-400:])
     check("the finding wears its own colour",
           b"\x1b[0;97;48;5;25m" in out, out[-400:])
-    os.write(mfd, b"\x1b[A")          # back to neutral
+    check("the question stub stays on terminal background",
+          b"\x1b[0;2m ? how do i clear" in out, out[-500:])
+    check("...and the blue starts after it, not at column one",
+          out.find(b"\x1b[0;97;48;5;25m") > out.find(b"\x1b[0;2m ? how do i clear"),
+          out[-500:])
+    # Down again walks INTO the alternative -- depth-first, one axis.
+    os.write(mfd, b"\x1b[B")
+    out = read_until(mfd, rb"2/2", 5.0)
+    check("Down steps into the researched command", b"2/2" in out, out[-400:])
+    check("...and it is the pullable one now",
+          b"researched: find" in out, out[-400:])
+    os.write(mfd, b"\x15")            # ^U: drop the line, end browsing
     time.sleep(0.5)
 
     # The reasoning is retained where fast can read it, since fast is the
@@ -1104,6 +1116,15 @@ def test_working_context():
     check("second Enter drops the pin", b"dropped" in out, out[-300:])
     os.write(mfd, b"\x1b")
     time.sleep(0.4)
+
+    # A literal path resolves DIRECTLY, with no model call -- `#@ .` is
+    # a path the user typed, not a request to interpret.
+    before = len(prompts)
+    os.write(mfd, b"#@ .\r")
+    time.sleep(1.0)
+    check("a bare literal path pins without the model",
+          not any("change the pinned working context" in p
+                  for p in prompts[before:]), "")
 
     # Unset really unsets, and the block goes back to costing nothing.
     os.write(mfd, b"#@/unset\r")

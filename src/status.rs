@@ -78,6 +78,24 @@ pub fn chrome_row(
     )
 }
 
+/// The inset row for a researched finding: the question's remaining
+/// words stay on the terminal's own background, and the finding's block
+/// starts after them.
+///
+/// Full-width colour read as a takeover; indenting it keeps the row
+/// legible as *an addition under a question* rather than a banner. The
+/// stub is generous enough (20 chars) to still say which question.
+pub fn inset_row(stub: &str, body: &str, cols: usize, selected: bool) -> String {
+    let stub: String = stub.chars().take(cols / 3).collect();
+    let room = cols.saturating_sub(stub.chars().count());
+    let mut text: String = body.chars().take(room).collect();
+    text.push_str(&" ".repeat(room.saturating_sub(text.chars().count())));
+    // Selected reads as the pullable thing (orange, like any chip);
+    // unselected is the quieter blue that says "there is more here".
+    let sgr = if selected { SUGGEST_SGR } else { RESEARCH_SGR };
+    format!("{QUERY_SGR}{stub}\x1b[0m{sgr}{text}\x1b[0m")
+}
+
 /// One full-width styled band row (padded/truncated to cols).
 pub fn pad_row(text: &str, cols: usize, sgr: &str) -> String {
     let mut line: String = text.chars().take(cols).collect();

@@ -172,6 +172,10 @@ struct SugTurn {
     id: u64,
     cmd: String,
     text: String,
+    /// What was asked. `text` is the answer; the inset row stubs the
+    /// *question*, because that is what says which turn you are looking
+    /// at when a finding has taken the row over.
+    question: String,
     /// A researched finding for this turn. Fast stays primary and this
     /// **fills in beneath it** — an addition to the record rather than a
     /// replacement, so the stack reads as a transcript of what happened
@@ -192,6 +196,36 @@ struct Finding {
 }
 
 const SUG_HIST_CAP: usize = 50;
+
+/// The slot stack flattened for browsing: one entry per pullable
+/// command, so a turn with a researched alternative contributes two —
+/// fast's first, the finding second.
+///
+/// Down therefore walks *into* the alternative before moving to the next
+/// turn (depth-first), which keeps the whole stack reachable on the one
+/// axis the user's fingers already know. Reaching it sideways with Right
+/// is the other candidate; this is the mechanic that needs no new key.
+/// (wiki: architecture/two-lane-engagement.md)
+fn flat_slots(hist: &[SugTurn]) -> Vec<(usize, bool)> {
+    let mut out = Vec::with_capacity(hist.len());
+    for (i, t) in hist.iter().enumerate() {
+        out.push((i, false));
+        if t.alt.as_ref().and_then(|a| a.cmd.as_ref()).is_some() {
+            out.push((i, true));
+        }
+    }
+    out
+}
+
+/// The command a flattened slot pastes.
+fn slot_cmd(hist: &[SugTurn], (i, is_alt): (usize, bool)) -> Option<String> {
+    let t = hist.get(i)?;
+    if is_alt {
+        t.alt.as_ref()?.cmd.clone()
+    } else {
+        Some(t.cmd.clone())
+    }
+}
 
 /// Rows of shell the menu will never take: below this the overlay is
 /// eating the terminal rather than annotating it.
@@ -630,9 +664,18 @@ fn compose_rows(
     // While browsing the slot history, the browsed turn owns the area:
     // its command in the chip, its chat text in the band, position on
     // the rule's right end. Everything else is frozen underneath.
-    let browsed = browse.and_then(|i| sug_hist.get(i).map(|t| (i, t)));
+    // Browsing walks the FLATTENED stack, so resolve the position back
+    // to (turn, is-it-the-alternative).
+    let flat = flat_slots(sug_hist);
+    let here = browse.and_then(|p| flat.get(p).copied());
+    let browsed = here.and_then(|(i, alt)| sug_hist.get(i).map(|t| (i, t, alt)));
     let sug_chip = match browsed {
-        Some((_, t)) => Some(format!(" \u{2193} suggestion: {} ", t.cmd)),
+        Some((_, t, true)) => t
+            .alt
+            .as_ref()
+            .and_then(|a| a.cmd.clone())
+            .map(|c| format!(" \u{2193} researched: {c} ")),
+        Some((_, t, false)) => Some(format!(" \u{2193} suggestion: {} ", t.cmd)),
         None => suggestions
             .first()
             .map(|s| format!(" \u{2193} suggestion: {} ", s.1)),
@@ -661,16 +704,12 @@ fn compose_rows(
     // Right end of the rule: scroll position while browsing the slot
     // history; otherwise the ingress tip — until a pullable suggestion
     // exists (the command is the more important thing).
-    let tip = match browsed {
-        Some((i, _)) => Some(format!(
+    let tip = match browse.filter(|_| browsed.is_some()) {
+        Some(p) => Some(format!(
             " \u{2191} {}/{}{} ",
-            i + 1,
-            sug_hist.len(),
-            if i + 1 < sug_hist.len() {
-                " \u{2193}"
-            } else {
-                ""
-            }
+            p + 1,
+            flat.len(),
+            if p + 1 < flat.len() { " \u{2193}" } else { "" }
         )),
         None if sug_chip.is_none() => {
             Some(" # message to chat \u{b7} #/help for help ".to_string())
@@ -687,20 +726,21 @@ fn compose_rows(
     // When one exists for the browsed turn it overlays here, indented
     // and in its own colour — the question was not doing much work on
     // this row anyway, so it truncates to a stub and an ellipsis.
-    let alt = browsed.and_then(|(_, t)| t.alt.as_ref());
+    let alt = browsed.and_then(|(_, t, _)| t.alt.as_ref());
     match alt {
         Some(a) => {
-            let stub: String = match browsed.map(|(_, t)| t.text.as_str()) {
+            let stub = match browsed.map(|(_, t, _)| t.question.as_str()) {
                 Some(q) if !q.is_empty() => {
-                    format!("{}\u{2026} ", q.chars().take(10).collect::<String>())
+                    format!(" {}\u{2026} ", q.chars().take(20).collect::<String>())
                 }
-                _ => String::new(),
+                _ => " ".to_string(),
             };
             let cmd = a.cmd.as_deref().unwrap_or(&a.text);
-            rows.push(status::pad_row(
-                &format!(" {stub}\u{21b3} {cmd}"),
+            rows.push(status::inset_row(
+                &stub,
+                &format!("\u{21b3} {cmd}"),
                 cols,
-                status::RESEARCH_SGR,
+                browsed.map(|(_, _, is_alt)| is_alt).unwrap_or(false),
             ));
         }
         None => {
@@ -717,12 +757,12 @@ fn compose_rows(
     let mut lines = match browsed {
         // A finding's one line explains the inset above it; the turn's
         // own text is what the question row already stubbed.
-        Some((_, t)) if t.alt.is_some() => wrap_chars(
+        Some((_, t, _)) if t.alt.is_some() => wrap_chars(
             &t.alt.as_ref().unwrap().text,
             cols.saturating_sub(2),
             n_text as usize,
         ),
-        Some((_, t)) => wrap_chars(&t.text, cols.saturating_sub(2), n_text as usize),
+        Some((_, t, _)) => wrap_chars(&t.text, cols.saturating_sub(2), n_text as usize),
         None => band
             .as_ref()
             .map(|b| wrap_chars(&b.text, cols.saturating_sub(2), n_text as usize))
@@ -1155,10 +1195,25 @@ fn at_command(
         *menu = Some(m);
         return None;
     }
-    // Natural language: the model resolves it against a listing of
-    // candidates and answers in PIN verbs. Read-only, and goulash does
-    // the reading — a mis-resolved pin costs a wasted read, not a side
-    // effect, which is why this needs no approval prompt in front of it.
+    // A literal path resolves DIRECTLY — no model call, no latency, no
+    // chance of a mis-resolve. `#@ .` and `#@ ./ref.md` are paths the
+    // user typed, not requests to interpret, and sending them to a model
+    // was both slower and worse.
+    let literal = resolve(rest);
+    if literal.exists() {
+        let out = match work.pin(&literal) {
+            Ok(msg) => msg,
+            Err(e) => format!("@ {e}"),
+        };
+        kick_digests(work, engine, bound);
+        return Some(out);
+    }
+
+    // Anything that is not a path is handed to the model, which resolves
+    // it against a listing of candidates and answers in PIN verbs.
+    // Read-only, and goulash does the reading — a mis-resolved pin costs
+    // a wasted read, not a side effect, which is why this needs no
+    // approval prompt in front of it.
     match engine {
         Some(eng) => {
             eng.ask_pin(
@@ -1800,7 +1855,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                     id,
                                                     cmd: v.command.clone(),
                                                     text: v.why.clone(),
-                                                    alt: None,
+                                                    question: band
+                                    .as_ref()
+                                    .and_then(|b| b.question.clone())
+                                    .unwrap_or_default(),
+                                alt: None,
                                                 },
                                             );
                                             suggestions.insert(0, (id, v.command, v.why));
@@ -1984,22 +2043,27 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     // repaste) and STOPS at the oldest.
                                     // The user's own text is never
                                     // clobbered — a mismatch ends browsing.
-                                    let target = if sug_hist.is_empty() {
+                                    // Walk the FLATTENED stack, so a
+                                    // researched alternative is a step of
+                                    // its own rather than being
+                                    // unreachable.
+                                    let flat = flat_slots(&sug_hist);
+                                    let cmd_at =
+                                        |p: usize| flat.get(p).and_then(|&s| slot_cmd(&sug_hist, s));
+                                    let target = if flat.is_empty() {
                                         browse = None;
                                         None
                                     } else if buffer.is_empty() {
                                         Some(0)
                                     } else {
                                         let pos = browse
-                                            .filter(|&p| {
-                                                sug_hist.get(p).map(|t| t.cmd == buffer)
-                                                    == Some(true)
-                                            })
+                                            .filter(|&p| cmd_at(p).as_deref() == Some(&buffer))
                                             .or_else(|| {
-                                                sug_hist.iter().position(|t| t.cmd == buffer)
+                                                (0..flat.len())
+                                                    .find(|&p| cmd_at(p).as_deref() == Some(&buffer))
                                             });
                                         match pos {
-                                            Some(p) => Some((p + 1).min(sug_hist.len() - 1)),
+                                            Some(p) => Some((p + 1).min(flat.len() - 1)),
                                             None => {
                                                 browse = None;
                                                 None
@@ -2007,7 +2071,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         }
                                     };
                                     if let Some(i) = target {
-                                        let turn = sug_hist[i].clone();
+                                        let (ti, _) = flat[i];
+                                        let mut turn = sug_hist[ti].clone();
+                                        if let Some(c) = cmd_at(i) {
+                                            turn.cmd = c;
+                                        }
                                         if turn.cmd != buffer {
                                             rec.accept(turn.id);
                                             let mut bytes = Vec::new();
@@ -2703,6 +2771,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     .as_ref()
                                     .and_then(|b| b.question.clone())
                                     .unwrap_or_default(),
+                                question: band
+                                    .as_ref()
+                                    .and_then(|b| b.question.clone())
+                                    .unwrap_or_default(),
                                 alt: None,
                             },
                         );
@@ -2799,7 +2871,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         id,
                                         cmd: cmd.clone(),
                                         text: one_line.clone(),
-                                        alt: None,
+                                        question: band
+                                    .as_ref()
+                                    .and_then(|b| b.question.clone())
+                                    .unwrap_or_default(),
+                                alt: None,
                                     },
                                 );
                                 suggestions.insert(0, (id, cmd.clone(), why.to_string()));
