@@ -76,9 +76,14 @@ So it should be visible. The chrome already carries state; `settled`
 versus `thinking` is one more word, and it is the word that makes the
 whole mechanic trustworthy.
 
-**The block set needs a horizon.** It grows forever, so salience decays
-with age or the system re-converges over an ever-larger corpus. Same LRU
-shape as the `.goulash` slot retention.
+**The horizon comes free from the tiers.** An unbounded block set would
+mean re-converging over an ever-larger corpus, but the
+[fixed-count tiers](memory-hierarchy.md#the-structure-fixed-count-tiers-overflow-promotes)
+mean the examinable set is bounded by construction: a block that falls
+out of tier 0 is no longer a block, it is part of a group, and the group
+is examined once instead of its members individually. There is no decay
+heuristic to tune. **The set of things left to think about shrinks as
+fast as it grows**, which is why the fixed point is reachable at all.
 
 ## Discipline: we are a command-prompt thing
 
