@@ -1,5 +1,6 @@
 use crate::config::EngineConfig;
 use crate::models::{Caps, Overrides, Source, Think, caps_for};
+use crate::wire::{Backend, Client, Gen, Wire};
 use std::io::BufRead;
 use std::os::fd::OwnedFd;
 use std::sync::mpsc;
@@ -287,16 +288,18 @@ fn worker(
         .timeout(Duration::from_secs(120))
         .build();
 
-    // Probe chain, v1: ollama (explicit or auto-detected). "none" was
-    // filtered by the caller. (wiki: llm-engine.md probe chain)
-    let mut state = probe_ollama(&agent, &cfg);
+    // Probe chain: an explicitly named provider, or each known local
+    // server in turn. "none" was filtered by the caller.
+    // (wiki: llm-engine.md probe chain)
+    let cl = resolve_backend(agent, &cfg);
+    let mut state = probe_models(&cl, &cfg);
     // What the bound model can actually do. Re-resolved on every bind,
     // never guessed at ask time.
     let mut caps = caps_for("", None, &over);
     if let Some((model, _)) = &state {
-        caps = announce(&agent, &cfg, &over, &ev, &wr, model);
+        caps = announce(&cl, &over, &ev, &wr, model);
         if cfg.prewarm {
-            warm_marked(&agent, &cfg, model, &ev, &wr);
+            warm_marked(&cl, &cfg, model, &ev, &wr);
         }
     }
 
@@ -330,7 +333,7 @@ fn worker(
         let Some(first) = first else {
             // Research outranks ingest: the user asked for it.
             if run_research(
-                &agent,
+                &cl,
                 &cfg,
                 &caps,
                 &state,
@@ -342,7 +345,7 @@ fn worker(
                 continue;
             }
             run_one_digest(
-                &agent,
+                &cl,
                 &cfg,
                 &caps,
                 &state,
@@ -356,11 +359,11 @@ fn worker(
         // Late binding: ollama may have started after goulash did, so an
         // unbound engine re-probes whenever work arrives.
         if state.is_none() {
-            state = probe_ollama(&agent, &cfg);
+            state = probe_models(&cl, &cfg);
             if let Some((model, _)) = &state {
-                caps = announce(&agent, &cfg, &over, &ev, &wr, model);
+                caps = announce(&cl, &over, &ev, &wr, model);
                 if cfg.prewarm {
-                    warm_marked(&agent, &cfg, model, &ev, &wr);
+                    warm_marked(&cl, &cfg, model, &ev, &wr);
                 }
             }
         }
@@ -380,7 +383,7 @@ fn worker(
                     Some((model, _)) => {
                         *model = m.clone();
                         cfg.model = Some(m);
-                        caps = announce(&agent, &cfg, &over, &ev, &wr, model);
+                        caps = announce(&cl, &over, &ev, &wr, model);
                         pending_warm = true;
                     }
                     None => unreachable_engine(&ev, &wr, &cfg),
@@ -398,10 +401,10 @@ fn worker(
                 },
                 Job::Rebind => {
                     cfg.model = None;
-                    state = probe_ollama(&agent, &cfg);
+                    state = probe_models(&cl, &cfg);
                     match &state {
                         Some((model, _)) => {
-                            caps = announce(&agent, &cfg, &over, &ev, &wr, model);
+                            caps = announce(&cl, &over, &ev, &wr, model);
                             pending_warm = true;
                         }
                         None => unreachable_engine(&ev, &wr, &cfg),
@@ -460,7 +463,7 @@ fn worker(
             && cfg.prewarm
             && let Some((model, _)) = &state
         {
-            warm_marked(&agent, &cfg, model, &ev, &wr);
+            warm_marked(&cl, &cfg, model, &ev, &wr);
         }
         if let Some(Job::Ask {
             question,
@@ -482,7 +485,7 @@ fn worker(
             });
             notify(&wr);
             let result = generate(
-                &agent, &cfg, &caps, model, &question, &context, &memories, &pinned, &cards,
+                &cl, &cfg, &caps, model, &question, &context, &memories, &pinned, &cards,
                 &ev, &wr, proactive, pin_ask,
             );
             let _ = ev.send(Event::Idle);
@@ -537,7 +540,7 @@ fn worker(
         // user asked for it), then ingest. One at a time either way, so
         // a new ask never waits behind more than a single job.
         if run_research(
-            &agent,
+            &cl,
             &cfg,
             &caps,
             &state,
@@ -549,7 +552,7 @@ fn worker(
             continue;
         }
         run_one_digest(
-            &agent,
+            &cl,
             &cfg,
             &caps,
             &state,
@@ -571,7 +574,7 @@ fn worker(
 /// a lane that can hang the backlog behind it.
 #[allow(clippy::too_many_arguments)]
 fn run_research(
-    agent: &ureq::Agent,
+    cl: &Client,
     cfg: &EngineConfig,
     caps: &Caps,
     state: &Option<(String, Vec<String>)>,
@@ -603,7 +606,7 @@ fn run_research(
     });
     notify(wr);
     let out = research_once(
-        agent, cfg, caps, model, &question, &context, &memories, &pinned,
+        cl, cfg, caps, model, &question, &context, &memories, &pinned,
     );
     let _ = ev.send(Event::Idle);
     let _ = ev.send(Event::Researching(None));
@@ -627,7 +630,7 @@ fn run_research(
 /// a command, one line, and the reasoning kept separately.
 #[allow(clippy::too_many_arguments)]
 fn research_once(
-    agent: &ureq::Agent,
+    cl: &Client,
     cfg: &EngineConfig,
     caps: &Caps,
     model: &str,
@@ -651,30 +654,27 @@ fn research_once(
          PASS",
         local_now()
     );
-    let mut body = serde_json::json!({
-        "model": model,
-        "prompt": prompt,
-        "stream": false,
-        "options": {
-            "temperature": 0.3,
-            "num_predict": (budget + caps.allowance(&cfg.thinking, cfg.thinking_tokens)) as i64,
-            "num_ctx": cfg.num_ctx as i64,
-        },
+    let body = cl.be.wire.body(&Gen {
+        model,
+        prompt: &prompt,
+        stream: false,
+        temperature: 0.3,
+        max_tokens: budget + caps.allowance(&cfg.thinking, cfg.thinking_tokens),
+        num_ctx: cfg.num_ctx,
+        stop: &[],
+        think: caps.think_field(&cfg.thinking),
+        effort: caps.effort_field(&cfg.thinking),
+        keep_alive: &cfg.keep_alive,
     });
-    if let Some(think) = caps.think_field(&cfg.thinking) {
-        body["think"] = think;
-    }
-    if !cfg.keep_alive.is_empty() {
-        body["keep_alive"] = serde_json::json!(cfg.keep_alive);
-    }
-    let resp = agent
-        .post(&format!("{}/api/generate", cfg.host))
+    let resp = cl
+        .post(&cl.gen_url())
         .timeout(Duration::from_secs(cfg.slow_max_secs))
         .send_string(&body.to_string())
         .map_err(|e| e.to_string())?;
     let text = resp.into_string().map_err(|e| e.to_string())?;
     let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let raw = v["response"].as_str().unwrap_or("").trim();
+    let raw = cl.be.wire.text(&v).unwrap_or_default();
+    let raw = raw.trim();
     if raw.is_empty() || raw.trim_end_matches(['.', '!']) == "PASS" {
         return Err("nothing better".to_string());
     }
@@ -714,7 +714,7 @@ fn split_finding(raw: &str) -> (String, Option<String>, String) {
 /// outline it has had since the moment it was made.
 #[allow(clippy::too_many_arguments)]
 fn run_one_digest(
-    agent: &ureq::Agent,
+    cl: &Client,
     cfg: &EngineConfig,
     caps: &Caps,
     state: &Option<(String, Vec<String>)>,
@@ -747,7 +747,7 @@ fn run_one_digest(
         warm: false,
     });
     notify(wr);
-    let text = digest_once(agent, cfg, caps, model, &label, &source, target, card).ok();
+    let text = digest_once(cl, cfg, caps, model, &label, &source, target, card).ok();
     let _ = ev.send(Event::Idle);
     let _ = ev.send(Event::Digest { id, text, card });
     if queue.is_empty() {
@@ -761,7 +761,7 @@ fn run_one_digest(
 /// means it never disturbs the prefix cache the asks depend on.
 #[allow(clippy::too_many_arguments)]
 fn digest_once(
-    agent: &ureq::Agent,
+    cl: &Client,
     cfg: &EngineConfig,
     caps: &Caps,
     model: &str,
@@ -801,31 +801,27 @@ fn digest_once(
              ===\nCompressed reference:"
         )
     };
-    let mut body = serde_json::json!({
-        "model": model,
-        "prompt": prompt,
-        "stream": false,
-        "options": {
-            "temperature": 0.1,
-            "num_predict": budget as i64,
-            "num_ctx": cfg.num_ctx as i64,
-        },
+    let body = cl.be.wire.body(&Gen {
+        model,
+        prompt: &prompt,
+        stream: false,
+        temperature: 0.1,
+        max_tokens: budget,
+        num_ctx: cfg.num_ctx,
+        stop: &[],
+        // Reasoning here would spend the budget arguing with itself
+        // about a document it is only meant to shorten.
+        think: caps.think_field("off"),
+        effort: caps.effort_field("off"),
+        keep_alive: &cfg.keep_alive,
     });
-    // Reasoning here would spend the budget arguing with itself about a
-    // document it is only meant to shorten.
-    if let Some(think) = caps.think_field("off") {
-        body["think"] = think;
-    }
-    if !cfg.keep_alive.is_empty() {
-        body["keep_alive"] = serde_json::json!(cfg.keep_alive);
-    }
-    let resp = agent
-        .post(&format!("{}/api/generate", cfg.host))
+    let resp = cl
+        .post(&cl.gen_url())
         .send_string(&body.to_string())
         .map_err(|e| e.to_string())?;
     let text = resp.into_string().map_err(|e| e.to_string())?;
     let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let out = v["response"].as_str().unwrap_or("").trim().to_string();
+    let out = cl.be.wire.text(&v).unwrap_or_default().trim().to_string();
     if out.is_empty() {
         return Err("empty digest".to_string());
     }
@@ -836,18 +832,17 @@ fn digest_once(
 /// do. Capability resolution is metadata only (`/api/show` does not load
 /// weights), so this stays off the slow path that once pinned the worker.
 fn announce(
-    agent: &ureq::Agent,
-    cfg: &EngineConfig,
+    cl: &Client,
     over: &Overrides,
     ev: &mpsc::Sender<Event>,
     wr: &OwnedFd,
     model: &str,
 ) -> Caps {
     let _ = ev.send(Event::Ready {
-        provider: "ollama".to_string(),
+        provider: cl.be.label().to_string(),
         model: model.to_string(),
     });
-    let caps = caps_for(model, show_thinks(agent, cfg, model), over);
+    let caps = caps_for(model, show_thinks(cl, model), over);
     let _ = ev.send(Event::Caps(caps.clone()));
     notify(wr);
     caps
@@ -856,9 +851,16 @@ fn announce(
 /// Does the provider itself say this model reasons? ollama's `/api/show`
 /// carries a `capabilities` list on recent servers. None means it
 /// wouldn't say (old server, or the call failed) — the table decides.
-fn show_thinks(agent: &ureq::Agent, cfg: &EngineConfig, model: &str) -> Option<bool> {
-    let resp = agent
-        .post(&format!("{}/api/show", cfg.host))
+fn show_thinks(cl: &Client, model: &str) -> Option<bool> {
+    // Only ollama will say. An OpenAI-compatible listing is names and
+    // nothing else, so None here is the honest answer and the family
+    // table in models.rs stays authoritative — which is exactly the
+    // precedence it was already built for (Source::Table).
+    if cl.be.wire != Wire::Ollama {
+        return None;
+    }
+    let resp = cl
+        .post(&format!("{}/api/show", cl.be.host))
         .timeout(Duration::from_secs(2))
         .send_string(&serde_json::json!({"model": model}).to_string())
         .ok()?;
@@ -908,7 +910,7 @@ fn unreachable_engine(ev: &mpsc::Sender<Event>, wr: &OwnedFd, cfg: &EngineConfig
 /// ask doesn't pay the cold start. Best-effort; blocks only the worker.
 /// Bracketed by Busy/Idle: the load is the crash fuse's dangerous window.
 fn warm_marked(
-    agent: &ureq::Agent,
+    cl: &Client,
     cfg: &EngineConfig,
     model: &str,
     ev: &mpsc::Sender<Event>,
@@ -919,33 +921,90 @@ fn warm_marked(
         warm: true,
     });
     notify(wr);
-    let mut body = serde_json::json!({"model": model});
-    if !cfg.keep_alive.is_empty() {
-        body["keep_alive"] = serde_json::json!(cfg.keep_alive);
-    }
-    let _ = agent
-        .post(&format!("{}/api/generate", cfg.host))
-        .send_string(&body.to_string());
+    // ollama loads a model on an empty generate; an OpenAI-compatible
+    // server has no such call, so the warm is the smallest real request
+    // that will do it — one token, thrown away.
+    let body = match cl.be.wire {
+        Wire::Ollama => {
+            let mut b = serde_json::json!({"model": model});
+            if !cfg.keep_alive.is_empty() {
+                b["keep_alive"] = serde_json::json!(cfg.keep_alive);
+            }
+            b
+        }
+        Wire::OpenAi => cl.be.wire.body(&Gen {
+            model,
+            prompt: "",
+            stream: false,
+            temperature: 0.0,
+            max_tokens: 1,
+            num_ctx: cfg.num_ctx,
+            stop: &[],
+            think: None,
+            effort: None,
+            keep_alive: "",
+        }),
+    };
+    let _ = cl.post(&cl.gen_url()).send_string(&body.to_string());
     let _ = ev.send(Event::Idle);
     notify(wr);
 }
 
-fn probe_ollama(agent: &ureq::Agent, cfg: &EngineConfig) -> Option<(String, Vec<String>)> {
-    let resp = agent
-        .get(&format!("{}/api/tags", cfg.host))
+/// Which server are we talking to, and where. Resolved ONCE, because a
+/// host alone cannot say which dialect answers on it — and because a
+/// probe that ran per-call would put a network round trip on the ask
+/// path. An explicit provider is honoured without probing (so a user
+/// who names it gets a clear "unreachable" rather than a silent
+/// fallback to the other one); `auto` tries ollama first, then the
+/// OpenAI-compatible port, since ollama is the zero-config default and
+/// LM Studio has to be running deliberately.
+fn resolve_backend(agent: ureq::Agent, cfg: &EngineConfig) -> Client {
+    let key = if cfg.api_key_env.is_empty() {
+        String::new()
+    } else {
+        std::env::var(&cfg.api_key_env).unwrap_or_default()
+    };
+    let mk = |wire: Wire| Backend {
+        host: match wire {
+            Wire::Ollama => cfg.host.clone(),
+            Wire::OpenAi => cfg.openai_host.clone(),
+        },
+        wire,
+        key: key.clone(),
+    };
+    if let Some(wire) = Wire::parse(&cfg.provider) {
+        return Client {
+            agent,
+            be: mk(wire),
+        };
+    }
+    let mut cl = Client {
+        agent,
+        be: mk(Wire::Ollama),
+    };
+    if reachable(&cl) {
+        return cl;
+    }
+    cl.be = mk(Wire::OpenAi);
+    cl
+}
+
+fn reachable(cl: &Client) -> bool {
+    cl.get(&cl.models_url())
+        .timeout(Duration::from_secs(1))
+        .call()
+        .is_ok()
+}
+
+fn probe_models(cl: &Client, cfg: &EngineConfig) -> Option<(String, Vec<String>)> {
+    let resp = cl
+        .get(&cl.models_url())
         .timeout(Duration::from_secs(1))
         .call()
         .ok()?;
     let v: serde_json::Value = serde_json::from_str(&resp.into_string().ok()?).ok()?;
-    let installed: Vec<String> = v["models"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|m| m["name"].as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let model = pick_model(&v, cfg.model.as_deref(), &cfg.favorites)?;
+    let installed = cl.be.wire.models(&v);
+    let model = pick_model(cl.be.wire, &v, &installed, cfg.model.as_deref(), &cfg.favorites)?;
     Some((model, installed))
 }
 
@@ -954,24 +1013,32 @@ fn probe_ollama(agent: &ureq::Agent, cfg: &EngineConfig) -> Option<(String, Vec<
 /// SMALLEST installed model — one-line status-bar answers want the
 /// watcher-tier default; heavyweights are opt-in.
 fn pick_model(
-    tags: &serde_json::Value,
+    wire: Wire,
+    listing: &serde_json::Value,
+    names: &[String],
     configured: Option<&str>,
     favorites: &[String],
 ) -> Option<String> {
     if let Some(m) = configured {
         return Some(m.to_string());
     }
-    let models = tags["models"].as_array()?;
-    let names: Vec<&str> = models.iter().filter_map(|m| m["name"].as_str()).collect();
     for fav in favorites {
         if let Some(hit) = names
             .iter()
-            .find(|n| **n == fav.as_str() || n.split(':').next() == Some(fav.as_str()))
+            .find(|n| n.as_str() == fav.as_str() || n.split(':').next() == Some(fav.as_str()))
         {
-            return Some(hit.to_string());
+            return Some(hit.clone());
         }
     }
-    models
+    // Smallest-installed needs a size, and only ollama reports one. An
+    // OpenAI-compatible listing is names and nothing else, so the
+    // fallback there is simply the first — the server's own order, which
+    // for LM Studio is the model you last loaded.
+    if wire == Wire::OpenAi {
+        return names.first().cloned();
+    }
+    listing["models"]
+        .as_array()?
         .iter()
         .filter_map(|m| {
             let name = m["name"].as_str()?;
@@ -1000,7 +1067,7 @@ Suggest it; never assume it happened.\n\n";
 
 #[allow(clippy::too_many_arguments)]
 fn generate(
-    agent: &ureq::Agent,
+    cl: &Client,
     cfg: &EngineConfig,
     caps: &Caps,
     model: &str,
@@ -1068,53 +1135,50 @@ fn generate(
     // decides the shape of the request and the size of the top-up
     // (models.rs); a model that cannot reason is not sent the field at
     // all, because some providers reject it rather than ignore it.
-    let mut body = serde_json::json!({
-        "model": model,
-        "prompt": prompt,
-        "stream": cfg.stream,
-        "options": {
-            "temperature": 0.2,
-            "num_predict": (cfg.max_tokens
-                + caps.allowance(&cfg.thinking, cfg.thinking_tokens)) as i64,
-            "num_ctx": cfg.num_ctx as i64,
-            "stop": ["\n\n"],
-        },
+    let body = cl.be.wire.body(&Gen {
+        model,
+        prompt: &prompt,
+        stream: cfg.stream,
+        temperature: 0.2,
+        max_tokens: cfg.max_tokens + caps.allowance(&cfg.thinking, cfg.thinking_tokens),
+        num_ctx: cfg.num_ctx,
+        stop: &["\n\n"],
+        think: caps.think_field(&cfg.thinking),
+        effort: caps.effort_field(&cfg.thinking),
+        keep_alive: &cfg.keep_alive,
     });
-    if let Some(think) = caps.think_field(&cfg.thinking) {
-        body["think"] = think;
-    }
-    if !cfg.keep_alive.is_empty() {
-        body["keep_alive"] = serde_json::json!(cfg.keep_alive);
-    }
-    let resp = agent
-        .post(&format!("{}/api/generate", cfg.host))
+    let resp = cl
+        .post(&cl.gen_url())
         .send_string(&body.to_string())
         .map_err(|e| e.to_string())?;
 
     if !cfg.stream {
         let text = resp.into_string().map_err(|e| e.to_string())?;
         let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        return v["response"]
-            .as_str()
+        return cl
+            .be
+            .wire
+            .text(&v)
             .map(|s| (s.trim().to_string(), None))
             .ok_or_else(|| "malformed engine response".to_string());
     }
 
-    // Streaming: one JSON object per line; forward throttled partials so
-    // the bar fills in as tokens arrive.
+    // Streaming: line-delimited either way — one JSON object per line
+    // from ollama, `data: {...}` SSE from an OpenAI-compatible server.
+    // Forward throttled partials so the bar fills in as tokens arrive.
     let reader = std::io::BufReader::new(resp.into_reader());
     let mut acc = String::new();
     let mut last_emit = Instant::now();
     let mut early: Option<String> = None;
     for line in reader.lines() {
         let line = line.map_err(|e| e.to_string())?;
-        if line.trim().is_empty() {
+        // A line we cannot read is a keep-alive or a blank separator,
+        // not a failure: SSE is full of both, and aborting the stream
+        // over one would lose an answer that was arriving fine.
+        let Some(chunk) = cl.be.wire.chunk(&line) else {
             continue;
-        }
-        let v: serde_json::Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
-        if let Some(tok) = v["response"].as_str() {
-            acc.push_str(tok);
-        }
+        };
+        acc.push_str(&chunk.text);
         // The payoff of command-first: the CMD line completes long
         // before the prose does, so the suggestion can be pullable
         // while the explanation is still arriving. Proactive turns wait
@@ -1127,7 +1191,7 @@ fn generate(
             let _ = ev.send(Event::Command(cmd));
             notify(wr);
         }
-        if v["done"].as_bool() == Some(true) {
+        if chunk.done {
             break;
         }
         if !proactive && !acc.is_empty() && last_emit.elapsed() >= Duration::from_millis(150) {
@@ -1304,7 +1368,15 @@ mod answer_tests {
 #[cfg(test)]
 mod pick_tests {
     use super::pick_model;
+    use crate::wire::Wire;
     use serde_json::json;
+
+    /// The names the wire would have extracted from that listing —
+    /// pick_model is handed them rather than re-deriving, because the
+    /// two providers report them under different keys.
+    fn names(tags: &serde_json::Value) -> Vec<String> {
+        Wire::Ollama.models(tags)
+    }
 
     fn no_favs() -> Vec<String> {
         Vec::new()
@@ -1318,7 +1390,7 @@ mod pick_tests {
             {"name": "qwen2.5:7b", "size": 4_700_000_000u64},
         ]});
         assert_eq!(
-            pick_model(&tags, None, &no_favs()).as_deref(),
+            pick_model(Wire::Ollama, &tags, &names(&tags), None, &no_favs()).as_deref(),
             Some("llama3.2:1b")
         );
     }
@@ -1327,7 +1399,7 @@ mod pick_tests {
     fn configured_model_wins() {
         let tags = json!({"models": [{"name": "llama3.2:1b", "size": 1u64}]});
         assert_eq!(
-            pick_model(&tags, Some("gemma3:12b"), &["llama3.2:1b".to_string()]).as_deref(),
+            pick_model(Wire::Ollama, &tags, &names(&tags), Some("gemma3:12b"), &["llama3.2:1b".to_string()]).as_deref(),
             Some("gemma3:12b")
         );
     }
@@ -1340,7 +1412,7 @@ mod pick_tests {
         ]});
         let favs = vec!["notinstalled:1b".to_string(), "qwen2.5".to_string()];
         assert_eq!(
-            pick_model(&tags, None, &favs).as_deref(),
+            pick_model(Wire::Ollama, &tags, &names(&tags), None, &favs).as_deref(),
             Some("qwen2.5:7b"),
             "favorite matches through the :tag"
         );
@@ -1350,7 +1422,7 @@ mod pick_tests {
     fn missing_sizes_still_pick_something() {
         let tags = json!({"models": [{"name": "mystery"}]});
         assert_eq!(
-            pick_model(&tags, None, &no_favs()).as_deref(),
+            pick_model(Wire::Ollama, &tags, &names(&tags), None, &no_favs()).as_deref(),
             Some("mystery")
         );
     }

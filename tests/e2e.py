@@ -576,6 +576,124 @@ def test_tab_completion():
               "miniconda3" in want, repr(want))
 
 
+def test_engine_openai():
+    """LM Studio, llama.cpp's server and vLLM all speak the OpenAI `/v1`
+    wire, so one provider reaches all three. Proxied here by a fake that
+    is deliberately strict about the differences from ollama — it 400s
+    on ollama-only fields rather than ignoring them, which is what a real
+    strict server does and what would otherwise show up as a blank bar.
+
+    The load-bearing assertion is that the PROMPT is unchanged: goulash
+    targets /v1/completions, not /v1/chat/completions, precisely so the
+    stable prefix the KV cache depends on survives the move."""
+    print("OpenAI-compatible provider (fake LM Studio):")
+    if not shutil.which("zsh"):
+        print("  [SKIP] zsh not installed")
+        return
+    import http.server
+    import threading
+
+    seen = {"auth": None, "prompt": "", "path": None, "streamed": False}
+
+    class FakeOpenAI(http.server.BaseHTTPRequestHandler):
+        def _send(self, obj, code=200):
+            body = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/v1/models":
+                self._send({"object": "list", "data": [
+                    {"id": "lmstudio-model", "object": "model"},
+                    {"id": "second-model", "object": "model"},
+                ]})
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            req = json.loads(self.rfile.read(n) or b"{}")
+            seen["path"] = self.path
+            seen["auth"] = self.headers.get("Authorization")
+            # A strict OpenAI server rejects unknown fields. If goulash
+            # leaks ollama's dialect the failure has to be loud here,
+            # not a mysteriously empty answer in the band.
+            for bad in ("options", "keep_alive", "think", "num_ctx"):
+                if bad in req:
+                    self._send({"error": f"unknown field {bad}"}, code=400)
+                    return
+            if self.path != "/v1/completions":
+                self._send({"error": "wrong endpoint"}, code=404)
+                return
+            prompt = req.get("prompt", "")
+            if prompt:
+                seen["prompt"] = prompt
+            if not req.get("max_tokens"):
+                self._send({"error": "no max_tokens"}, code=400)
+                return
+            ans = f"OAI-{req.get('model')}\nCMD: echo from-openai"
+            if req.get("stream"):
+                seen["streamed"] = True
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                # Split mid-answer so an accumulating reader is actually
+                # exercised, and include a comment line + blank lines,
+                # which real SSE is full of.
+                for piece in (ans[:6], ans[6:]):
+                    self.wfile.write(
+                        b": keep-alive\n\n" + b"data: " + json.dumps(
+                            {"choices": [{"text": piece, "finish_reason": None}]}
+                        ).encode() + b"\n\n")
+                    self.wfile.flush()
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            else:
+                self._send({"choices": [{"text": ans, "finish_reason": "stop"}]})
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), FakeOpenAI)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    os.environ["GOULASH_TEST_KEY"] = "sk-test-123"
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write('[engine]\nprovider = "lmstudio"\n'
+                f'openai_host = "http://127.0.0.1:{port}"\n'
+                'api_key_env = "GOULASH_TEST_KEY"\n')
+    proc, mfd = spawn(["zsh"], home=home)
+    time.sleep(1.5)
+    os.write(mfd, b"# what is the answer\r")
+    out = read_until(mfd, rb"OAI-lmstudio-model", 8.0)
+    check("model picked from /v1/models and answered",
+          b"OAI-lmstudio-model" in out, out[-300:])
+    check("targets /v1/completions, not chat-completions",
+          seen["path"] == "/v1/completions", str(seen["path"]))
+    check("SSE stream decoded and accumulated", seen["streamed"], str(seen))
+    check("bearer token attached from api_key_env",
+          seen["auth"] == "Bearer sk-test-123", str(seen["auth"]))
+    # The reason for /v1/completions in the first place.
+    check("the stable prefix survives the wire change",
+          seen["prompt"].startswith("You are goulash")
+          and "Session log" in seen["prompt"],
+          repr(seen["prompt"][:80]))
+    os.write(mfd, b"#/status\r")
+    out = read_until(mfd, rb"blocks this session", 5.0)
+    check("#/status names the openai provider", b"lmstudio-model" in out, out[-300:])
+    os.write(mfd, b"\x1b")
+    time.sleep(0.3)
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+    srv.shutdown()
+
+
 def test_engine_ollama():
     print("engine probe + # aside answered (fake ollama):")
     if not shutil.which("zsh"):
@@ -1633,6 +1751,7 @@ def main():
         test_rc_loading,
         test_tab_completion,
         test_engine_ollama,
+        test_engine_openai,
         test_model_menu,
         test_model_capabilities,
         test_chat_mode,

@@ -91,6 +91,26 @@ impl Caps {
         }
     }
 
+    /// The same intent for an OpenAI-compatible server, which spells it
+    /// `reasoning_effort` and takes only the level form. A `Think::Bool`
+    /// model has no standard way to say this over that wire, so it is
+    /// omitted rather than guessed at — this is a *spelling* difference,
+    /// not a fourth dialect, so `models.rs` stays the one place that
+    /// knows what a model can do. The budget allowance applies either
+    /// way, which is the half that actually prevents a blank bar.
+    pub fn effort_field(&self, level: &str) -> Option<&'static str> {
+        if self.think != Think::Levels {
+            return None;
+        }
+        match level {
+            "low" => Some("low"),
+            "medium" => Some("medium"),
+            "high" => Some("high"),
+            "on" | "true" => Some("medium"),
+            _ => None,
+        }
+    }
+
     /// Tokens to add to the response budget to cover masked reasoning.
     /// A model that always reasons gets its allowance even at `off`,
     /// because the spend happens either way.

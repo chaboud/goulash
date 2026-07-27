@@ -6,6 +6,73 @@ Provider choice is a plugin boundary: Anthropic / OpenAI / others / local
 (llama.cpp, ollama, platform engines). Different roles can bind to
 different providers — see the two-tier split below.
 
+### Implemented: two wires, several servers (`src/wire.rs`)
+
+```toml
+[engine]
+provider    = "auto"                     # auto | ollama | openai | none
+                                         # lmstudio/llamacpp/vllm = openai
+host        = "http://127.0.0.1:11434"   # ollama
+openai_host = "http://127.0.0.1:1234"    # LM Studio's default port
+api_key_env = ""                         # env var holding a bearer token
+```
+
+**One OpenAI-compatible wire reaches LM Studio, llama.cpp's server and
+vLLM**, because all three expose the same `/v1`. `auto` tries ollama
+first (it is the zero-config default) and falls back to the
+OpenAI-compatible port; naming a provider explicitly skips the probe, so
+a user who says `lmstudio` gets a clear "unreachable" instead of a silent
+fallback to the other one.
+
+**The load-bearing choice is `/v1/completions`, not
+`/v1/chat/completions`.** goulash sends a raw prompt, and that is not
+incidental — the whole design below is a stable prefix plus prefix KV
+caching. Chat-completions hands prompt assembly to the server's template,
+which moves the prefix boundary out from under us and can silently stop
+the cache from hitting. Same prompt bytes, different envelope; a unit
+test asserts the two wires produce byte-identical `prompt` fields, and
+the e2e fake asserts the preamble still arrives intact.
+
+What the wires do *not* share:
+
+| | ollama | OpenAI-compatible |
+|---|---|---|
+| budget | `options.num_predict` | `max_tokens` |
+| context window | `options.num_ctx` | server-side, not per-request |
+| residency | `keep_alive` | server-side |
+| reasoning | `think` (bool or level) | `reasoning_effort` (level only) |
+| stream | newline-delimited JSON | SSE, `data:` … `[DONE]` |
+| model list | `/api/tags` (+ sizes) | `/v1/models` (names only) |
+| capabilities | `/api/show` | *nothing* |
+
+Three consequences worth stating, because each is a place the naive port
+would break:
+
+- **Sending ollama's fields to a strict server is a 400, not a shrug** —
+  so the OpenAI body omits them rather than letting them ride. The e2e
+  fake rejects them deliberately, and that assertion has been checked by
+  deliberately leaking one.
+- **No `/api/show` means no provider opinion on reasoning**, so
+  `Source::Table` in [model-capabilities](model-capabilities.md) simply
+  stays authoritative — the precedence chain was already built for a
+  provider that won't say.
+- **No sizes means no smallest-installed default.** There the fallback is
+  the first model the server lists, which for LM Studio is the one you
+  last loaded — the closest thing it has to an intent.
+
+`reasoning_effort` is a **spelling**, not a fourth dialect:
+`Caps::effort_field` derives it from the model's existing `Think::Levels`
+classification, so `models.rs` stays the single place that knows what a
+model can do. A `Think::Bool` model has no standard way to say this over
+that wire, so it is omitted rather than guessed at — the budget
+allowance, which is the half that actually prevents a blank bar, applies
+either way.
+
+An **empty `api_key_env` is also the trust signal**: a backend that
+needs no auth is on this machine, which is exactly the distinction
+[working-context](working-context.md) needs before it decides whether
+pinned file content can go out unfiltered.
+
 ## Functional out of the box: the probe chain
 
 Goulash must operate with **zero config editing** on first run. At

@@ -13,6 +13,7 @@ mod state;
 mod status;
 mod term;
 mod vendor;
+mod wire;
 
 use std::os::fd::AsRawFd;
 use std::process::ExitCode;

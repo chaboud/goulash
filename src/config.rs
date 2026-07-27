@@ -26,10 +26,21 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct EngineConfig {
-    /// "auto" probes for a local engine (ollama today); "ollama" requires
-    /// it; "none" disables LLM features entirely.
+    /// "auto" probes each known local engine in turn; "ollama",
+    /// "openai" (also spelled lmstudio / llamacpp / vllm — one wire,
+    /// several servers) pin one; "none" disables LLM features entirely.
     pub provider: String,
+    /// Where ollama answers.
     pub host: String,
+    /// Where an OpenAI-compatible server answers. LM Studio's default
+    /// port; llama.cpp's server and vLLM speak the same `/v1`.
+    pub openai_host: String,
+    /// Name of the environment variable holding a bearer token, for the
+    /// case where the endpoint is NOT on this machine. Empty for LM
+    /// Studio and ollama, which want no auth — and the same emptiness
+    /// is what marks a backend local enough to be trusted with pinned
+    /// file content (wiki: working-context.md).
+    pub api_key_env: String,
     /// Model name; overrides favorites and auto-pick.
     pub model: Option<String>,
     /// Preference-ordered favorites: the first one installed wins during
@@ -106,6 +117,8 @@ impl Default for EngineConfig {
         Self {
             provider: "auto".to_string(),
             host: "http://127.0.0.1:11434".to_string(),
+            openai_host: "http://127.0.0.1:1234".to_string(),
+            api_key_env: String::new(),
             model: None,
             favorites: Vec::new(),
             keep_alive: "30m".to_string(),

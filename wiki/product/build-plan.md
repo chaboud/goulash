@@ -302,26 +302,27 @@ Field-driven, roughly in order of leverage:
    which needs the sigil-swap Tab widget (prototyped, not shipped);
    bash Down-arrow via `bind -x` and `READLINE_LINE` (bash reaches
    suggestions through Alt-Down today).
-10. **OpenAI-compatible provider.** The engine is ollama-only and
-   hardcoded to it: `/api/generate` for asks, `/api/tags` for the
-   model list, `/api/show` for the capability probe, and ollama's own
-   `think` field for the [reasoning dial](../architecture/model-capabilities.md).
-   The OpenAI `/v1/chat/completions` shape is what everything else
-   speaks — llama.cpp's server, vLLM, LM Studio, together with the
-   hosted APIs — so one more provider unlocks most of the field at
-   once. Work: a `Provider` seam behind `ask`/`stream`/`list`/`probe`
-   (four call sites in `src/engine.rs`), `[engine] provider =
-   ollama|openai` plus `base_url` / `api_key_env`, SSE parsing for the
-   stream, `GET /v1/models` for the picker, and a capability story
-   where there is no `/api/show` — the family table in `src/models.rs`
-   already carries the dialect, so `Source::Table` simply stays
-   authoritative and `Source::Provider` never fires.
-   Two things it forces into the open: **`reasoning_effort` vs
-   `think`** (a third dialect for `Caps::think_field`), and the
-   **trusted-provider flag** the `#@` design already assumes — a
-   remote endpoint is exactly the case where pinned file content
-   needs the skip-list and the explicit confirm, where a local one
-   needs neither.
+10. ~~**OpenAI-compatible provider.**~~ **Built** (`src/wire.rs`) —
+   [llm-engine](../architecture/llm-engine.md#implemented-two-wires-several-servers-srcwirers).
+   One wire reaches **LM Studio, llama.cpp's server and vLLM**, since
+   all three expose the same `/v1`. The engine now builds a `Gen` and
+   reads back text; it never learns which server answered.
+   The choice that mattered: **`/v1/completions`, not
+   `/v1/chat/completions`** — chat framing would hand prompt assembly
+   to the server's template and move the prefix boundary the KV cache
+   depends on. A unit test asserts both wires emit byte-identical
+   `prompt` fields.
+   `reasoning_effort` turned out to be a *spelling* rather than a
+   fourth dialect (`Caps::effort_field` derives it from the existing
+   `Think::Levels`), so `models.rs` stays the one place that knows
+   what a model can do.
+   **Still open**: the per-lane split (fast on one endpoint, slow on
+   another — the "billing vs mailing address" idea) layers on cleanly
+   and was left out of v1; and the **trusted-provider flag**, for
+   which an empty `api_key_env` is now the signal but which `#@` does
+   not yet act on.
+   **Unverified**: proxied by a strict fake in e2e, never pointed at a
+   real LM Studio.
 
 ## Milestone 5 — memory hierarchy + watcher tier
 Rolling cleanup loop (local model if available) setting region markers;
