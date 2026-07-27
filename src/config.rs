@@ -511,9 +511,7 @@ mod persist_tests {
 
     #[test]
     fn a_slow_table_that_changes_nothing_does_not_split() {
-        let e = engine_from(
-            "[engine]\nmodel = \"m\"\n[engine.slow_lane]\nmodel = \"m\"\n",
-        );
+        let e = engine_from("[engine]\nmodel = \"m\"\n[engine.slow_lane]\nmodel = \"m\"\n");
         assert!(
             !e.lanes_split(),
             "restating the same values is not a reason to bind twice"
