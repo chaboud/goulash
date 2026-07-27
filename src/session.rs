@@ -3105,16 +3105,25 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 dirty = false;
                 idle_ticks = 0;
             } else {
-                idle_ticks += 1;
-                // Unprovoked insurance repaint: it rescues a bar we lost
-                // to output we mis-parsed, but it also writes into a
-                // stream the line editor believes it owns, at a moment
-                // nothing asked for. `#/debug` turns it off.
-                if dbg.idle_repaint && idle_ticks >= 4 && winch_at.is_none() {
+                // Saturating, and the reset is OUTSIDE the debug guard.
+                // Both matter: this counter used to be bumped
+                // unconditionally and cleared only on the repaint path,
+                // so turning `idle_repaint` off left it climbing with
+                // nothing to stop it — u8 overflow, and a panic after
+                // ~64 seconds of genuine idle. A debug toggle must never
+                // be able to change a counter's lifetime.
+                idle_ticks = idle_ticks.saturating_add(1);
+                if idle_ticks >= 4 {
                     idle_ticks = 0;
-                    write_all(STDOUT, &fixup_bytes(
-                        &layout, parser.screen(), &last_rows, &dbg.cursor_save,
-                    ))?;
+                    // Unprovoked insurance repaint: it rescues a bar we
+                    // lost to output we mis-parsed, but it also writes
+                    // into a stream the line editor believes it owns, at
+                    // a moment nothing asked for. `#/debug` turns it off.
+                    if dbg.idle_repaint && winch_at.is_none() {
+                        write_all(STDOUT, &fixup_bytes(
+                            &layout, parser.screen(), &last_rows, &dbg.cursor_save,
+                        ))?;
+                    }
                 }
             }
         }

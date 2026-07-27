@@ -1909,6 +1909,39 @@ def test_resize_hygiene():
     drain_exit(proc, mfd)
 
 
+def test_idle_with_repaint_off():
+    """A crash found by a user sitting still. `idle_ticks` was a u8 bumped
+    unconditionally but cleared only inside the repaint branch, so turning
+    `idle_repaint` off left it climbing with nothing to stop it: overflow
+    panic after ~64 seconds of genuine idle (256 ticks x 250ms).
+
+    Slow by nature — it has to outlast the counter — but a crash that
+    needs only "leave it alone for a minute" earns a minute."""
+    print("survives a long idle with idle_repaint off:")
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write("[debug]\nidle_repaint = false\n")
+    proc, mfd = spawn(["bash"], home=home)
+    deadline = time.time() + 75
+    while time.time() < deadline and proc.poll() is None:
+        r, _, _ = select.select([mfd], [], [], 0.5)
+        if r:
+            try:
+                os.read(mfd, 65536)
+            except OSError:
+                break
+    check("still running after 75s idle", proc.poll() is None,
+          f"exited rc={proc.poll()}")
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        os.close(mfd)
+    except OSError:
+        pass
+
+
 def test_non_tty():
     print("refuses to run without a tty:")
     r = subprocess.run([BIN, "true"], capture_output=True)
@@ -1939,6 +1972,7 @@ def main():
         test_working_context,
         test_memory,
         test_resize_hygiene,
+        test_idle_with_repaint_off,
         test_non_tty,
     ):
         try:
