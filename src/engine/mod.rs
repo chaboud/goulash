@@ -324,16 +324,16 @@ fn candidates(cfg: &EngineConfig) -> Vec<(Box<dyn Provider>, String)> {
     match cfg.provider.as_str() {
         "ollama" => vec![(Box::new(Ollama), cfg.host.clone())],
         "openai" | "lmstudio" => {
-            vec![(Box::new(OpenAiCompat { chat: true }), cfg.host.clone())]
+            vec![(Box::new(OpenAiCompat::default()), cfg.host.clone())]
         }
         _ => vec![
             (Box::new(Ollama), cfg.host.clone()),
             (
-                Box::new(OpenAiCompat { chat: true }),
+                Box::new(OpenAiCompat::default()),
                 "http://127.0.0.1:1234".to_string(),
             ),
             (
-                Box::new(OpenAiCompat { chat: true }),
+                Box::new(OpenAiCompat::default()),
                 "http://127.0.0.1:8080".to_string(),
             ),
         ],

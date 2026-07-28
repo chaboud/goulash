@@ -51,6 +51,11 @@ pub struct GenStats {
     pub prompt_eval_ms: Option<u64>,
     pub eval_tokens: Option<u64>,
     pub eval_ms: Option<u64>,
+    /// Tokens spent on reasoning rather than the visible answer. LM Studio
+    /// reports this; ollama does not. It is the meter behind the
+    /// thinking-vs-response budget question — a model can burn its whole
+    /// `max_tokens` here and return nothing.
+    pub reasoning_tokens: Option<u64>,
     pub stop_reason: Option<String>,
 }
 
@@ -224,6 +229,8 @@ fn ollama_stats(v: &serde_json::Value) -> GenStats {
         prompt_eval_ms: ms("prompt_eval_duration"),
         eval_tokens: v["eval_count"].as_u64(),
         eval_ms: ms("eval_duration"),
+        // ollama folds thinking into eval_count; no separate meter.
+        reasoning_tokens: None,
         stop_reason: v["done_reason"].as_str().map(String::from),
     }
 }
@@ -240,6 +247,23 @@ pub struct OpenAiCompat {
     /// and may cost cache hits. Hosted providers only offer chat, so the
     /// cost of that mapping is worth measuring rather than assuming.
     pub chat: bool,
+    /// Send `chat_template_kwargs: {enable_thinking: false}` on chat.
+    ///
+    /// **Default off, on evidence.** Measured against LM Studio +
+    /// qwen3-1.7b, this kwarg *empties* `content` and routes the whole
+    /// answer into `reasoning_content` — the exact empty-answer failure it
+    /// was meant to prevent. Without it the same model answers normally.
+    /// See bench/results/step0/LMSTUDIO.md.
+    pub suppress_reasoning: bool,
+}
+
+impl Default for OpenAiCompat {
+    fn default() -> Self {
+        Self {
+            chat: true,
+            suppress_reasoning: false,
+        }
+    }
 }
 
 impl Provider for OpenAiCompat {
@@ -279,7 +303,7 @@ impl Provider for OpenAiCompat {
             max_tokens: 1,
             num_ctx: 0,
             stop: Vec::new(),
-            think: Some(false),
+            think: None,
             keep_alive: String::new(),
         };
         let _ = self.generate(agent, host, &req, &mut |_| {});
@@ -305,9 +329,9 @@ impl Provider for OpenAiCompat {
         });
         if self.chat {
             body["messages"] = serde_json::json!([{"role": "user", "content": req.prompt}]);
-            // Qwen3-family reasoning suppression on LM Studio. Servers
-            // that don't know the field ignore it; Pass A records which.
-            if req.think == Some(false) {
+            // Opt-in only: see the field docs. Servers that don't know the
+            // kwarg ignore it, but the ones that honor it may hurt.
+            if self.suppress_reasoning && req.think == Some(false) {
                 body["chat_template_kwargs"] = serde_json::json!({"enable_thinking": false});
             }
         } else {
@@ -359,6 +383,7 @@ impl Provider for OpenAiCompat {
             if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
                 stats.prompt_tokens = u["prompt_tokens"].as_u64();
                 stats.eval_tokens = u["completion_tokens"].as_u64();
+                stats.reasoning_tokens = u["completion_tokens_details"]["reasoning_tokens"].as_u64();
             }
             let choice = &v["choices"][0];
             if let Some(reason) = choice["finish_reason"].as_str() {
@@ -380,9 +405,15 @@ impl Provider for OpenAiCompat {
 
     fn caps(&self) -> Caps {
         Caps {
+            // Verified honored on LM Studio (finish_reason=stop).
             stop_sequences: true,
-            // Best-effort via chat_template_kwargs; Pass A verifies.
-            reasoning_control: self.chat,
+            // No *working* control: the only lever (enable_thinking) empties
+            // the answer rather than suppressing the thinking. Reasoning
+            // spend is observable after the fact via GenStats.reasoning_tokens.
+            reasoning_control: false,
+            // `stats` exists in the response but carries no timing — it is
+            // `{}` on chat and speculative-decode counters on completions.
+            // Cache measurement here must use client-side TTFT.
             reports_prompt_eval_time: false,
             context_len_is_load_time: true,
         }
@@ -404,6 +435,7 @@ fn openai_stats(v: &serde_json::Value) -> GenStats {
     GenStats {
         prompt_tokens: v["usage"]["prompt_tokens"].as_u64(),
         eval_tokens: v["usage"]["completion_tokens"].as_u64(),
+        reasoning_tokens: v["usage"]["completion_tokens_details"]["reasoning_tokens"].as_u64(),
         ..GenStats::default()
     }
 }

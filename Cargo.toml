@@ -11,7 +11,13 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 keywords = ["shell", "terminal", "pty", "llm", "assistant"]
 categories = ["command-line-utilities"]
-exclude = ["wiki/", "tests/", ".github/", "Formula/", "scripts/"]
+exclude = ["wiki/", "tests/", ".github/", "Formula/", "scripts/", "bench/"]
+
+# The characterization harness. Kept out of the published package and out
+# of goulash's dependency tree, but built against the real lib so it
+# exercises the shipped prompt builder, providers and answer parser.
+[workspace]
+members = ["bench"]
 
 [dependencies]
 base64 = "0.22.1"

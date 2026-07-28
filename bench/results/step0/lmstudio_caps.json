@@ -1,0 +1,12 @@
+{
+  "/v1/completions (raw prompt)": true,
+  "/v1/chat/completions": true,
+  "usage.prompt_tokens (non-stream)": true,
+  "any prompt-eval TIMING in response": true,
+  "SSE streaming": true,
+  "stream_options.include_usage": true,
+  "stop sequences honored": true,
+  "chat_template_kwargs accepted": true,
+  "  -> thinking actually suppressed": true,
+  "thinking leaks WITHOUT the kwarg": true
+}
