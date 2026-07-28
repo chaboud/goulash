@@ -1,0 +1,8 @@
+ blocks  tokens   cold_ms   warm_ms   us/tok   saved
+     10     543     294.4      25.6     47.1     91%
+     40    2196    1148.8     564.3    257.0     51%
+    120    6857    4138.3     699.2    102.0     83%
+    240   14154   10569.2     944.5     66.7     91%
+
+  tokens grew 26.1x, warm floor grew 36.9x
+  => floor SCALES: reuse is partial; prompt SIZE dominates ordering.
