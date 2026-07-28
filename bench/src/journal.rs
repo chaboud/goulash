@@ -168,6 +168,11 @@ impl Journal {
             .collect()
     }
 
+    /// Number of rows in a run directory without opening it for writing.
+    pub fn count(dir: &Path) -> usize {
+        Self::rows(dir).len()
+    }
+
     /// The prompt sent for one key — `replay` shows it verbatim so a
     /// grade can be checked against the exact input that produced it.
     pub fn prompt_for(dir: &Path, key: &str) -> Option<String> {
@@ -178,5 +183,106 @@ impl Journal {
             .filter_map(|l| serde_json::from_str::<serde_json::Value>(&l).ok())
             .find(|v| v["key"].as_str() == Some(key))
             .and_then(|v| v["prompt"].as_str().map(String::from))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(key: &str, text: &str) -> Row {
+        Row {
+            key: key.to_string(),
+            pass: "pass-b".into(),
+            text: text.into(),
+            command: Some("ls -S".into()),
+            ..Row::default()
+        }
+    }
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("goulash-bench-test-{name}"));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    /// The core resume guarantee: rows survive a process boundary and a
+    /// reopened journal knows exactly what already landed.
+    #[test]
+    fn rows_survive_reopen() {
+        let d = tmp("reopen");
+        {
+            let mut j = Journal::open(&d).unwrap();
+            j.record(&row("a/1", "first"), "PROMPT-1").unwrap();
+            j.record(&row("a/2", "second"), "PROMPT-2").unwrap();
+        } // journal dropped: simulates the process dying here
+
+        let j = Journal::open(&d).unwrap();
+        assert!(j.is_done("a/1") && j.is_done("a/2"));
+        assert!(!j.is_done("a/3"), "unseen key must not be claimed done");
+        assert_eq!(j.completed_in("pass-b"), 2);
+        assert_eq!(j.completed_in("pass-a"), 0, "counts must be per pass");
+    }
+
+    /// Resume must recover the recorded *answer*, not just the key —
+    /// the session log is rebuilt from it, and a wrong replay silently
+    /// changes every prompt built afterwards.
+    #[test]
+    fn resume_recovers_answer_text_for_log_replay() {
+        let d = tmp("replay");
+        {
+            let mut j = Journal::open(&d).unwrap();
+            j.record(&row("a/1", "disk is mostly target/"), "P").unwrap();
+        }
+        let j = Journal::open(&d).unwrap();
+        let prev = j.recorded("a/1").expect("row must be recoverable");
+        assert_eq!(prev.text, "disk is mostly target/");
+        assert_eq!(prev.command.as_deref(), Some("ls -S"));
+    }
+
+    /// A hard kill can leave a half-written final line. That row must be
+    /// treated as absent and redone, not silently skipped.
+    #[test]
+    fn torn_final_line_is_redone_not_skipped() {
+        let d = tmp("torn");
+        {
+            let mut j = Journal::open(&d).unwrap();
+            j.record(&row("a/1", "complete"), "P").unwrap();
+        }
+        // Simulate a truncated write of a second row.
+        let mut f = OpenOptions::new()
+            .append(true)
+            .open(d.join("journal.jsonl"))
+            .unwrap();
+        write!(f, "{{\"key\":\"a/2\",\"pass\":\"pass-b\",\"tex").unwrap();
+        drop(f);
+
+        let j = Journal::open(&d).unwrap();
+        assert!(j.is_done("a/1"), "intact row still counts");
+        assert!(!j.is_done("a/2"), "torn row must be redone");
+    }
+
+    /// Re-recording a key (a redone cell) must not double-count it.
+    #[test]
+    fn rerecording_a_key_is_idempotent_for_counting() {
+        let d = tmp("idem");
+        let mut j = Journal::open(&d).unwrap();
+        j.record(&row("a/1", "v1"), "P").unwrap();
+        j.record(&row("a/1", "v2"), "P").unwrap();
+        assert_eq!(j.completed_in("pass-b"), 1);
+        assert_eq!(j.recorded("a/1").unwrap().text, "v2", "latest wins");
+    }
+
+    #[test]
+    fn prompts_are_recoverable_for_audit() {
+        let d = tmp("prompts");
+        {
+            let mut j = Journal::open(&d).unwrap();
+            j.record(&row("a/1", "x"), "THE EXACT PROMPT").unwrap();
+        }
+        assert_eq!(
+            Journal::prompt_for(&d, "a/1").as_deref(),
+            Some("THE EXACT PROMPT")
+        );
     }
 }
