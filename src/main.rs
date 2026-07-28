@@ -1,16 +1,4 @@
-mod config;
-mod engine;
-mod integrate;
-mod memory;
-mod osc;
-mod pty;
-mod record;
-mod sense;
-mod session;
-mod state;
-mod status;
-mod term;
-mod vendor;
+use goulash::{config, session};
 
 use std::os::fd::AsRawFd;
 use std::process::ExitCode;
