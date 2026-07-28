@@ -47,6 +47,19 @@ fn probes() -> Vec<Probe> {
             think: None,
             max_tokens: 256,
         },
+        // Disentangles the two empty-answer mechanisms seen in the first
+        // run. With `think` omitted, qwen3.5 returns eval_tokens=4 with
+        // stop_reason=stop (it opens with a blank line and the stop
+        // sequence guillotines it), while gemma4:12b-mlx burns all 256
+        // tokens with stop_reason=length (pure reasoning spend). Dropping
+        // the stop sequence too separates "truncated" from "never spoke".
+        Probe {
+            id: "no-think-no-stop",
+            question: "how do I list files by size, largest first",
+            stop: Vec::new(),
+            think: None,
+            max_tokens: 256,
+        },
         // Does the model respect a tight budget, and what does it drop?
         Probe {
             id: "tight-budget",

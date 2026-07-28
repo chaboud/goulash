@@ -9,6 +9,48 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 
+/// How a row actually turned out.
+///
+/// Recomputed from stored fields rather than trusting `Row::empty`, which
+/// conflates two different outcomes: `mistral-nemo` replies to ordinary
+/// questions with a bare `REMEMBER:` line, which `extract_memory_ops`
+/// strips — leaving no prose and no command, but a memory write. Goulash
+/// itself does *not* treat that as an error (engine.rs checks `remembers`
+/// too), so the user sees nothing and silently gains a memory.
+#[derive(PartialEq, Clone, Copy)]
+pub enum Outcome {
+    Answered,
+    /// Nothing but a memory write — the prompt's memory block hijacked it.
+    MemoryOnly,
+    /// Truncated by the stop sequence before emitting anything.
+    EmptyByStop,
+    /// Spent the whole budget without emitting content (thinking).
+    EmptyByBudget,
+    Empty,
+    Error,
+}
+
+pub fn outcome(r: &Row) -> Outcome {
+    if r.error.is_some() {
+        return Outcome::Error;
+    }
+    let nothing = r.text.trim().is_empty() && r.command.is_none();
+    if !nothing {
+        return Outcome::Answered;
+    }
+    if !r.remembers.is_empty() || !r.forgets.is_empty() {
+        return Outcome::MemoryOnly;
+    }
+    match r.stop_reason.as_deref() {
+        // Budget exhausted with nothing to show: reasoning ate it.
+        Some("length") => Outcome::EmptyByBudget,
+        // A handful of tokens then the stop sequence fired: the model
+        // opened with a blank line and got guillotined.
+        Some("stop") if r.eval_tokens.unwrap_or(0) < 32 => Outcome::EmptyByStop,
+        _ => Outcome::Empty,
+    }
+}
+
 fn median(mut v: Vec<u64>) -> Option<u64> {
     if v.is_empty() {
         return None;
@@ -55,8 +97,12 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
     // ---- per model
     out.push_str("## Per model\n\n");
     out.push_str(
-        "| model | provider | tier | p50 ttft | p50 total | empty | fenced | 1-line | CMD: | reasoning tok |\n\
-         |---|---|---|---|---|---|---|---|---|---|\n",
+        "`empty→stop` = truncated by the stop sequence before emitting anything.\n\
+         `empty→budget` = spent the whole budget thinking. `mem-only` = replied\n\
+         with a bare REMEMBER: line instead of answering. Load time is excluded\n\
+         from latency (the first call per model pays it).\n\n\
+         | model | provider | tier | p50 ttft | p50 total | answered | empty→stop | empty→budget | mem-only | fenced | 1-line | CMD: | reasoning tok |\n\
+         |---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
     );
     let mut by_model: BTreeMap<(String, String), Vec<&Row>> = BTreeMap::new();
     for r in &sweep {
@@ -68,15 +114,29 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
     for ((model, provider), rs) in &by_model {
         let n = rs.len();
         let ok: Vec<&&Row> = rs.iter().filter(|r| r.error.is_none()).collect();
-        let ttft = median(ok.iter().filter_map(|r| r.ttft_ms).collect());
-        let total = median(ok.iter().map(|r| r.total_ms).collect());
+        // Subtract model load: the first call per model pays it, and
+        // leaving it in makes a cold cell look like a slow one.
+        let ttft = median(
+            ok.iter()
+                .filter_map(|r| r.ttft_ms.map(|t| t.saturating_sub(r.load_ms.unwrap_or(0))))
+                .collect(),
+        );
+        let total = median(
+            ok.iter()
+                .map(|r| r.total_ms.saturating_sub(r.load_ms.unwrap_or(0)))
+                .collect(),
+        );
         let reasoning: u64 = ok.iter().filter_map(|r| r.reasoning_tokens).sum();
+        let count = |o: Outcome| rs.iter().filter(|r| outcome(r) == o).count();
         out.push_str(&format!(
-            "| `{model}` | {provider} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| `{model}` | {provider} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             rs.first().map(|r| r.tier.as_str()).unwrap_or("-"),
             ttft.map(|v| format!("{v}ms")).unwrap_or("-".into()),
             total.map(|v| format!("{v}ms")).unwrap_or("-".into()),
-            pct(rs.iter().filter(|r| r.empty).count(), n),
+            pct(count(Outcome::Answered), n),
+            pct(count(Outcome::EmptyByStop), n),
+            pct(count(Outcome::EmptyByBudget), n),
+            pct(count(Outcome::MemoryOnly), n),
             pct(rs.iter().filter(|r| r.fenced).count(), n),
             pct(rs.iter().filter(|r| r.prose_lines <= 1).count(), n),
             pct(rs.iter().filter(|r| r.has_cmd_tag).count(), n),
@@ -112,7 +172,7 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
             median(ok.iter().filter_map(|r| r.prompt_eval_ms).collect())
                 .map(|v| format!("{v}ms"))
                 .unwrap_or("-".into()),
-            pct(rs.iter().filter(|r| r.empty).count(), rs.len()),
+            pct(rs.iter().filter(|r| outcome(r) != Outcome::Answered && r.error.is_none()).count(), rs.len()),
             pct(rs.iter().filter(|r| r.prose_lines <= 1).count(), rs.len()),
             pct(rs.iter().filter(|r| r.has_cmd_tag).count(), rs.len()),
         ));
