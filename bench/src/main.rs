@@ -85,6 +85,19 @@ pub fn load_catalog() -> Catalog {
         std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
     let mut cat: Catalog =
         toml::from_str(&text).unwrap_or_else(|e| panic!("parse catalog.toml: {e}"));
+    // Footprint ceiling. This box has 24 GB shared with a desktop, and a
+    // 14 GB model does not just measure slowly — it makes the machine
+    // unusable while it runs.
+    if let Ok(cap) = std::env::var("GOULASH_BENCH_MAX_GB") {
+        if let Ok(max) = cap.parse::<f64>() {
+            let before = cat.cell.len();
+            cat.cell.retain(|c| c.gb <= max);
+            eprintln!(
+                "catalog capped at {max} GB: {} of {before} cell(s) kept",
+                cat.cell.len()
+            );
+        }
+    }
     if let Ok(filter) = std::env::var("GOULASH_BENCH_ONLY") {
         let pats: Vec<String> = filter
             .split(',')

@@ -132,12 +132,47 @@ impl Journal {
 
     /// Record the plan before doing any work, so an interrupted run can
     /// still be audited for coverage.
+    ///
+    /// Merges rather than overwrites. A filtered invocation (a memory cap,
+    /// a single-model rerun) plans fewer cells than full coverage, and
+    /// truncating the manifest to that subset would quietly redefine
+    /// "complete" as whatever the last narrow run happened to cover.
     pub fn write_manifest(&self, keys: &[String]) -> std::io::Result<()> {
-        let mut f = File::create(self.dir.join("manifest.jsonl"))?;
-        for k in keys {
+        let path = self.dir.join("manifest.jsonl");
+        let mut all: Vec<String> = Vec::new();
+        if let Ok(f) = File::open(&path) {
+            all.extend(
+                BufReader::new(f)
+                    .lines()
+                    .map_while(Result::ok)
+                    .filter_map(|l| serde_json::from_str::<serde_json::Value>(&l).ok())
+                    .filter_map(|v| v["key"].as_str().map(String::from)),
+            );
+        }
+        all.extend(keys.iter().cloned());
+        all.sort();
+        all.dedup();
+        let mut f = File::create(&path)?;
+        for k in &all {
             writeln!(f, "{}", serde_json::json!({ "key": k }))?;
         }
         f.sync_all()
+    }
+
+    /// Planned cells still missing — the honest answer to "is this done?"
+    /// even after a run that was narrowed by a filter.
+    pub fn outstanding(dir: &Path) -> Vec<String> {
+        let done: HashMap<String, Row> = Self::completed_keys(&dir.join("journal.jsonl"));
+        let Ok(f) = File::open(dir.join("manifest.jsonl")) else {
+            return Vec::new();
+        };
+        BufReader::new(f)
+            .lines()
+            .map_while(Result::ok)
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(&l).ok())
+            .filter_map(|v| v["key"].as_str().map(String::from))
+            .filter(|k| !done.contains_key(k))
+            .collect()
     }
 
     /// Durable before returning: an interrupt after this call cannot lose

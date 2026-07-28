@@ -217,7 +217,12 @@ pub fn run_one(
         num_ctx: NUM_CTX,
         stop: stop.to_vec(),
         think,
-        keep_alive: "30m".to_string(),
+        // Deliberately short. Residency only has to outlast one cell's
+        // turns — the sweep unloads explicitly when it moves on. A long
+        // keep_alive means an interrupted run strands a multi-GB model in
+        // memory for the rest of that window, on a machine someone is
+        // still trying to use.
+        keep_alive: "3m".to_string(),
     };
 
     let outcome = provider.generate(agent, &cell.host, &req, &mut |_| {});
