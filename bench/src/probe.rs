@@ -81,9 +81,60 @@ fn probes() -> Vec<Probe> {
         Probe {
             id: "no-command-needed",
             question: "what does the -P flag do in grep",
-            stop: nl,
+            stop: nl.clone(),
             think: Some(false),
             max_tokens: 256,
+        },
+        // ---- long-command headroom
+        //
+        // max_tokens does NO display work: the band clamps prose at render
+        // (session.rs:569) and the paste path sends the command whole
+        // (session.rs:1550), so a 300-char ffmpeg line already reaches the
+        // prompt intact. The 256 ceiling is purely a generation backstop —
+        // and the only thing capping command length.
+        //
+        // Each of these wants a genuinely long answer. Run at the shipped
+        // ceiling and at 4x to separate "the model is terse" from "the
+        // budget cut it off".
+        Probe {
+            id: "long-ffmpeg-256",
+            question: "convert input.mov to a web-friendly h264 mp4 at 1080p, \
+                       aac audio, faststart for streaming",
+            stop: nl.clone(),
+            think: Some(false),
+            max_tokens: 256,
+        },
+        Probe {
+            id: "long-ffmpeg-1024",
+            question: "convert input.mov to a web-friendly h264 mp4 at 1080p, \
+                       aac audio, faststart for streaming",
+            stop: nl.clone(),
+            think: Some(false),
+            max_tokens: 1024,
+        },
+        Probe {
+            id: "long-jq-256",
+            question: "from data.json give me name and bytes for every failed \
+                       item, sorted by bytes descending, as tab-separated output",
+            stop: nl.clone(),
+            think: Some(false),
+            max_tokens: 256,
+        },
+        Probe {
+            id: "long-jq-1024",
+            question: "from data.json give me name and bytes for every failed \
+                       item, sorted by bytes descending, as tab-separated output",
+            stop: nl.clone(),
+            think: Some(false),
+            max_tokens: 1024,
+        },
+        Probe {
+            id: "long-find-1024",
+            question: "find every .rs file changed in the last week, skipping \
+                       target/, and show TODO matches with line numbers",
+            stop: nl,
+            think: Some(false),
+            max_tokens: 1024,
         },
     ]
 }

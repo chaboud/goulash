@@ -51,6 +51,34 @@ pub fn outcome(r: &Row) -> Outcome {
     }
 }
 
+/// Did the budget cut the command off mid-flight?
+///
+/// Computed from stored fields rather than a new column, so it applies to
+/// rows already on disk. `stop_reason == "length"` alone is not enough —
+/// a model can hit the ceiling *after* a complete command while still
+/// rambling prose. These are the signatures of a command that stops
+/// mid-token: unbalanced quoting, a dangling pipe/continuation, or a
+/// trailing bare flag.
+pub fn command_truncated(r: &Row) -> bool {
+    let Some(cmd) = r.command.as_deref() else {
+        return false;
+    };
+    let c = cmd.trim_end();
+    if c.is_empty() {
+        return false;
+    }
+    let odd = |ch: char| c.matches(ch).count() % 2 == 1;
+    odd('\'')
+        || odd('"')
+        || c.ends_with('|')
+        || c.ends_with('\\')
+        || c.ends_with("&&")
+        || c.ends_with('-')
+        || c.matches('(').count() != c.matches(')').count()
+        // Hit the ceiling with no terminal punctuation at all.
+        || (r.stop_reason.as_deref() == Some("length") && !c.ends_with(['\'', '"', ';']))
+}
+
 fn median(mut v: Vec<u64>) -> Option<u64> {
     if v.is_empty() {
         return None;
@@ -176,6 +204,51 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
             pct(rs.iter().filter(|r| r.prose_lines <= 1).count(), rs.len()),
             pct(rs.iter().filter(|r| r.has_cmd_tag).count(), rs.len()),
         ));
+    }
+
+    // ---- command headroom: is the ceiling capping the payload?
+    let long: Vec<&Row> = rows
+        .iter()
+        .filter(|r| r.step.starts_with("long-") && r.error.is_none())
+        .collect();
+    if !long.is_empty() {
+        out.push_str(
+            "\n## Command headroom\n\n\
+             `max_tokens` does no display work — the band clamps prose at render\n\
+             and the paste path sends the command whole — so the ceiling only\n\
+             ever caps the payload. Each question is run at the shipped 256 and\n\
+             at 1024 to separate \"terse model\" from \"budget cut it off\".\n\n\
+             | model | probe | cmd chars | stop | truncated |\n\
+             |---|---|---|---|---|\n",
+        );
+        let mut sorted = long.clone();
+        sorted.sort_by(|a, b| (&a.model, &a.step).cmp(&(&b.model, &b.step)));
+        for r in &sorted {
+            out.push_str(&format!(
+                "| `{}` | {} | {} | {} | {} |\n",
+                r.model,
+                r.step,
+                r.command.as_deref().map(str::len).unwrap_or(0),
+                r.stop_reason.as_deref().unwrap_or("-"),
+                if command_truncated(r) { "**yes**" } else { "" },
+            ));
+        }
+        for budget in ["256", "1024"] {
+            let at: Vec<&&Row> = long.iter().filter(|r| r.step.ends_with(budget)).collect();
+            if at.is_empty() {
+                continue;
+            }
+            let cut = at.iter().filter(|r| command_truncated(r)).count();
+            let longest = at
+                .iter()
+                .filter_map(|r| r.command.as_deref().map(str::len))
+                .max()
+                .unwrap_or(0);
+            out.push_str(&format!(
+                "\nAt `max_tokens = {budget}`: {cut}/{} truncated, longest command {longest} chars.\n",
+                at.len()
+            ));
+        }
     }
 
     // ---- cache: prompt-eval against a growing prefix (ollama only)
