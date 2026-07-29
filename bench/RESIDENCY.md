@@ -102,3 +102,58 @@ Findings only — no product change made. `pick_model`
 still sent unconditionally. The residency-aware selection above is a
 proposal with measurements attached, not something this project
 implemented.
+
+---
+
+## Unloading a model does not release its GPU allocation
+
+Found while chasing three memory-pressure alerts during a long run.
+
+At the point of the third alert:
+
+| source | value |
+|---|---|
+| `Pages wired down` | **20.44 GB** of 24 |
+| GPU driver `Alloc system memory` | **20.4 GB** |
+| GPU driver `In use system memory` | **18.3 GB** |
+| sum of *all* process RSS | **6.96 GB** |
+| models actually resident | one, 4.6 GB |
+
+`keep_alive: 0` and `lms unload --all` both do exactly what they claim —
+the model leaves, `/api/ps` goes empty — but the GPU allocation behind it
+is not returned. Wired memory is kernel-locked and non-pageable, so it
+cannot be swapped out either; the machine simply loses it. Across
+hundreds of load/unload cycles it accrued until only ~1.5 GB was free and
+swap had climbed to 4.5 GB.
+
+**Restarting both servers reclaims it:**
+
+| | before | after |
+|---|---|---|
+| wired | 20.0 GB | **3.6 GB** |
+| free | 8% | **82%** |
+| GPU alloc | 20.4 GB | **2.5 GB** |
+| GPU in use | 18.3 GB | **0.8 GB** |
+
+Neither engine exposes a lighter lever. The bench now restarts both
+between passes.
+
+### Why this matters beyond the bench
+
+Any long-lived process that cycles models hits this — and goulash cycles
+models by design: `#/model` switching, the crash fuse rebinding, the
+probe chain re-binding after a server restart. A goulash session left
+open for a day, with a few model switches, will leak wired memory the
+user cannot see in Activity Monitor's process list and cannot reclaim
+without restarting ollama.
+
+It also sharpens the residency argument above: **adopting an
+already-resident model avoids the load/unload cycle entirely**, which is
+the only way to not accumulate this at all.
+
+### Caveat on late Pass B timings
+
+Cells that ran while wired memory was high were competing with swap.
+Latency for the last stretch of Pass B may be inflated; the run
+completed at 1368/1368 but its tail should be checked for upward drift
+before any cross-cell latency comparison is trusted.
