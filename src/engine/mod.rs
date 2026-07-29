@@ -10,7 +10,9 @@ pub use prompt::{
     MemPos, PREAMBLE, PromptShape, build_prompt, directive, extract_memory_ops, hms, local_now,
     split_answer,
 };
-pub use provider::{Caps, GenRequest, GenStats, ModelInfo, Ollama, OpenAiCompat, Provider};
+pub use provider::{
+    Caps, GenRequest, GenStats, ModelInfo, Ollama, OpenAiCompat, Provider, Think,
+};
 
 /// Generation settings the product ships with. Deliberately constants
 /// rather than config.toml knobs: the bench varies them through
@@ -18,7 +20,10 @@ pub use provider::{Caps, GenRequest, GenStats, ModelInfo, Ollama, OpenAiCompat, 
 /// is a question the measurement answers.
 pub const DEFAULT_TEMPERATURE: f32 = 0.2;
 pub const DEFAULT_STOP: &[&str] = &["\n\n"];
-pub const DEFAULT_THINK: Option<bool> = Some(false);
+pub const DEFAULT_THINK: Think = Think::Off;
+/// Allowance for reasoning, on top of the display budget, whenever
+/// reasoning is enabled. Unused while DEFAULT_THINK is Off.
+pub const DEFAULT_REASONING_TOKENS: usize = 1024;
 
 /// The LLM engine: a worker thread so inference latency never touches the
 /// PTY loop. Events come back over an mpsc channel; a self-pipe byte wakes
@@ -413,6 +418,7 @@ fn generate(
         num_ctx: cfg.num_ctx,
         stop: DEFAULT_STOP.iter().map(|s| s.to_string()).collect(),
         think: DEFAULT_THINK,
+        reasoning_tokens: DEFAULT_REASONING_TOKENS,
         keep_alive: cfg.keep_alive.clone(),
     };
     // Throttle partials so the bar fills in without repainting per token.

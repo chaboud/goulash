@@ -18,7 +18,7 @@
 use crate::journal::{Journal, cell_key};
 use crate::load_catalog;
 use crate::sweep::{agent, provider_for, run_one, seed_memory, unload_all};
-use goulash::engine::{MemPos, PromptShape};
+use goulash::engine::{MemPos, PromptShape, Think};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -212,7 +212,8 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
                 &memories,
                 &paths,
                 &["\n\n".to_string()],
-                Some(false),
+                Think::Off,
+                0,
                 256,
             );
         }

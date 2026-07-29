@@ -8,6 +8,27 @@
 use std::io::BufRead;
 use std::time::{Duration, Instant};
 
+/// Reasoning control.
+///
+/// Separate from [`GenRequest::max_tokens`] on purpose. The token cap
+/// exists to bound what lands in the status band, but reasoning and
+/// visible output draw on the same meter, so a reasoning model spends the
+/// *display* budget thinking and emits nothing. Measured: 25% of empty
+/// answers ended at `stop_reason = length`, while answers that do arrive
+/// use a median of 32 tokens — the cap was never what kept them short.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Think {
+    /// Send nothing; the model's own default applies.
+    #[default]
+    Default,
+    /// Suppress reasoning (ollama `think: false`).
+    Off,
+    On,
+    /// Graded effort — ollama accepts these for some models, and the
+    /// OpenAI shape spells it `reasoning_effort`.
+    Level(&'static str),
+}
+
 pub struct ModelInfo {
     pub name: String,
     /// On-disk bytes. OpenAI-compatible servers don't report this, so it
@@ -29,11 +50,28 @@ pub struct GenRequest {
     pub max_tokens: usize,
     pub num_ctx: usize,
     pub stop: Vec<String>,
-    /// `Some(false)` suppresses reasoning. Reasoning models otherwise
-    /// spend the whole token budget in a separate `thinking` field and
-    /// return an empty response — a blank bar in the field.
-    pub think: Option<bool>,
+    /// Reasoning control; see [`Think`].
+    pub think: Think,
+    /// Extra tokens allowed *on top of* `max_tokens` when reasoning is
+    /// enabled, so thinking does not consume the display budget.
+    ///
+    /// Providers meter reasoning and output together, so this is applied
+    /// by widening the wire-level cap. The visible answer stays short
+    /// because the prompt asks for one line — not because the budget
+    /// starves it.
+    pub reasoning_tokens: usize,
     pub keep_alive: String,
+}
+
+impl GenRequest {
+    /// What actually goes on the wire: display budget plus the reasoning
+    /// allowance, since no provider meters them separately.
+    pub fn wire_max_tokens(&self) -> usize {
+        match self.think {
+            Think::Off => self.max_tokens,
+            _ => self.max_tokens.saturating_add(self.reasoning_tokens),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -139,7 +177,7 @@ impl Provider for Ollama {
     ) -> Result<(String, GenStats), String> {
         let mut options = serde_json::json!({
             "temperature": req.temperature,
-            "num_predict": req.max_tokens as i64,
+            "num_predict": req.wire_max_tokens() as i64,
             "num_ctx": req.num_ctx as i64,
         });
         if !req.stop.is_empty() {
@@ -151,8 +189,12 @@ impl Provider for Ollama {
             "stream": req.stream,
             "options": options,
         });
-        if let Some(t) = req.think {
-            body["think"] = serde_json::json!(t);
+        match req.think {
+            Think::Default => {}
+            Think::Off => body["think"] = serde_json::json!(false),
+            Think::On => body["think"] = serde_json::json!(true),
+            // ollama accepts a level string for models that grade effort.
+            Think::Level(l) => body["think"] = serde_json::json!(l),
         }
         if !req.keep_alive.is_empty() {
             body["keep_alive"] = serde_json::json!(req.keep_alive);
@@ -303,7 +345,8 @@ impl Provider for OpenAiCompat {
             max_tokens: 1,
             num_ctx: 0,
             stop: Vec::new(),
-            think: None,
+            think: Think::Default,
+            reasoning_tokens: 0,
             keep_alive: String::new(),
         };
         let _ = self.generate(agent, host, &req, &mut |_| {});
@@ -325,13 +368,13 @@ impl Provider for OpenAiCompat {
             "model": req.model,
             "stream": req.stream,
             "temperature": req.temperature,
-            "max_tokens": req.max_tokens as i64,
+            "max_tokens": req.wire_max_tokens() as i64,
         });
         if self.chat {
             body["messages"] = serde_json::json!([{"role": "user", "content": req.prompt}]);
             // Opt-in only: see the field docs. Servers that don't know the
             // kwarg ignore it, but the ones that honor it may hurt.
-            if self.suppress_reasoning && req.think == Some(false) {
+            if self.suppress_reasoning && req.think == Think::Off {
                 body["chat_template_kwargs"] = serde_json::json!({"enable_thinking": false});
             }
         } else {
@@ -339,6 +382,9 @@ impl Provider for OpenAiCompat {
         }
         if !req.stop.is_empty() {
             body["stop"] = serde_json::json!(req.stop);
+        }
+        if let Think::Level(l) = req.think {
+            body["reasoning_effort"] = serde_json::json!(l);
         }
         if req.stream {
             body["stream_options"] = serde_json::json!({"include_usage": true});
@@ -462,5 +508,48 @@ fn openai_stats(v: &serde_json::Value) -> GenStats {
         eval_tokens: v["usage"]["completion_tokens"].as_u64(),
         reasoning_tokens: v["usage"]["completion_tokens_details"]["reasoning_tokens"].as_u64(),
         ..GenStats::default()
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    fn req(think: Think) -> GenRequest {
+        GenRequest {
+            model: "m".into(),
+            prompt: "p".into(),
+            stream: false,
+            temperature: 0.2,
+            max_tokens: 256,
+            num_ctx: 8192,
+            stop: vec![],
+            think,
+            reasoning_tokens: 1024,
+            keep_alive: String::new(),
+        }
+    }
+
+    /// The shipped path must be byte-identical to before this existed:
+    /// reasoning off means the allowance is not added.
+    #[test]
+    fn reasoning_allowance_does_not_leak_into_the_display_budget() {
+        assert_eq!(req(Think::Off).wire_max_tokens(), 256);
+    }
+
+    /// When reasoning is on, thinking draws on its OWN allowance — the
+    /// display budget is not what starves the answer.
+    #[test]
+    fn reasoning_widens_the_wire_cap_only_when_enabled() {
+        assert_eq!(req(Think::On).wire_max_tokens(), 1280);
+        assert_eq!(req(Think::Level("low")).wire_max_tokens(), 1280);
+        assert_eq!(req(Think::Default).wire_max_tokens(), 1280);
+    }
+
+    #[test]
+    fn saturates_rather_than_overflowing() {
+        let mut r = req(Think::On);
+        r.max_tokens = usize::MAX;
+        assert_eq!(r.wire_max_tokens(), usize::MAX);
     }
 }

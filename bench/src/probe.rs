@@ -7,6 +7,7 @@
 use crate::journal::{Journal, cell_key};
 use crate::load_catalog;
 use crate::sweep::{agent, provider_for, run_one, shapes, unload_all};
+use goulash::engine::Think;
 use std::path::Path;
 
 /// A single tolerance question, and the setting it varies.
@@ -14,7 +15,8 @@ struct Probe {
     id: &'static str,
     question: &'static str,
     stop: Vec<String>,
-    think: Option<bool>,
+    think: Think,
+    reasoning: usize,
     max_tokens: usize,
 }
 
@@ -26,7 +28,8 @@ fn probes() -> Vec<Probe> {
             id: "baseline",
             question: "how do I list files by size, largest first",
             stop: nl.clone(),
-            think: Some(false),
+            think: Think::Off,
+            reasoning: 0,
             max_tokens: 256,
         },
         // The top suspect. A model that opens with a blank line, or
@@ -36,7 +39,8 @@ fn probes() -> Vec<Probe> {
             id: "no-stop",
             question: "how do I list files by size, largest first",
             stop: Vec::new(),
-            think: Some(false),
+            think: Think::Off,
+            reasoning: 0,
             max_tokens: 256,
         },
         // Is think:false doing anything, or is it inert / harmful?
@@ -44,7 +48,8 @@ fn probes() -> Vec<Probe> {
             id: "no-think-field",
             question: "how do I list files by size, largest first",
             stop: nl.clone(),
-            think: None,
+            think: Think::Default,
+            reasoning: 0,
             max_tokens: 256,
         },
         // Disentangles the two empty-answer mechanisms seen in the first
@@ -57,7 +62,8 @@ fn probes() -> Vec<Probe> {
             id: "no-think-no-stop",
             question: "how do I list files by size, largest first",
             stop: Vec::new(),
-            think: None,
+            think: Think::Default,
+            reasoning: 0,
             max_tokens: 256,
         },
         // Does the model respect a tight budget, and what does it drop?
@@ -65,7 +71,8 @@ fn probes() -> Vec<Probe> {
             id: "tight-budget",
             question: "how do I list files by size, largest first",
             stop: nl.clone(),
-            think: Some(false),
+            think: Think::Off,
+            reasoning: 0,
             max_tokens: 32,
         },
         // Fence bait: the parser's bare-command fallback strips single
@@ -74,7 +81,8 @@ fn probes() -> Vec<Probe> {
             id: "fence-bait",
             question: "show me the command to extract .items[].name from data.json",
             stop: nl.clone(),
-            think: Some(false),
+            think: Think::Off,
+            reasoning: 0,
             max_tokens: 256,
         },
         // Should produce prose and NO command.
@@ -82,7 +90,8 @@ fn probes() -> Vec<Probe> {
             id: "no-command-needed",
             question: "what does the -P flag do in grep",
             stop: nl.clone(),
-            think: Some(false),
+            think: Think::Off,
+            reasoning: 0,
             max_tokens: 256,
         },
         // ---- long-command headroom
@@ -101,7 +110,8 @@ fn probes() -> Vec<Probe> {
             question: "convert input.mov to a web-friendly h264 mp4 at 1080p, \
                        aac audio, faststart for streaming",
             stop: nl.clone(),
-            think: Some(false),
+            think: Think::Off,
+            reasoning: 0,
             max_tokens: 256,
         },
         Probe {
@@ -109,7 +119,8 @@ fn probes() -> Vec<Probe> {
             question: "convert input.mov to a web-friendly h264 mp4 at 1080p, \
                        aac audio, faststart for streaming",
             stop: nl.clone(),
-            think: Some(false),
+            think: Think::Off,
+            reasoning: 0,
             max_tokens: 1024,
         },
         Probe {
@@ -117,7 +128,8 @@ fn probes() -> Vec<Probe> {
             question: "from data.json give me name and bytes for every failed \
                        item, sorted by bytes descending, as tab-separated output",
             stop: nl.clone(),
-            think: Some(false),
+            think: Think::Off,
+            reasoning: 0,
             max_tokens: 256,
         },
         Probe {
@@ -125,7 +137,8 @@ fn probes() -> Vec<Probe> {
             question: "from data.json give me name and bytes for every failed \
                        item, sorted by bytes descending, as tab-separated output",
             stop: nl.clone(),
-            think: Some(false),
+            think: Think::Off,
+            reasoning: 0,
             max_tokens: 1024,
         },
         Probe {
@@ -133,7 +146,8 @@ fn probes() -> Vec<Probe> {
             question: "find every .rs file changed in the last week, skipping \
                        target/, and show TODO matches with line numbers",
             stop: nl,
-            think: Some(false),
+            think: Think::Off,
+            reasoning: 0,
             max_tokens: 1024,
         },
     ]
@@ -206,6 +220,7 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
                 &paths,
                 &p.stop,
                 p.think,
+                p.reasoning,
                 p.max_tokens,
             );
         }

@@ -8,7 +8,7 @@
 use crate::journal::{Journal, Row, cell_key};
 use crate::{Cell, NOW, Step, load_catalog, load_scenarios};
 use goulash::engine::{
-    GenRequest, MemPos, Ollama, OpenAiCompat, PromptShape, Provider, build_prompt,
+    GenRequest, MemPos, Ollama, OpenAiCompat, PromptShape, Provider, Think, build_prompt,
     extract_memory_ops, split_answer,
 };
 use goulash::memory::MemoryStore;
@@ -279,7 +279,8 @@ pub fn run_one(
     memories: &str,
     paths: &std::collections::HashSet<String>,
     stop: &[String],
-    think: Option<bool>,
+    think: Think,
+    reasoning_tokens: usize,
     max_tokens: usize,
 ) -> Option<(String, Option<String>, Vec<String>, Vec<u64>)> {
     let key = cell_key(pass, &cell.provider, &cell.model, shape_name, step_id);
@@ -293,6 +294,7 @@ pub fn run_one(
         num_ctx: NUM_CTX,
         stop: stop.to_vec(),
         think,
+        reasoning_tokens,
         // Deliberately short. Residency only has to outlast one cell's
         // turns — the sweep unloads explicitly when it moves on. A long
         // keep_alive means an interrupted run strands a multi-GB model in
@@ -427,7 +429,8 @@ fn run_session(
                     &memory.context_block(),
                     paths,
                     &stop,
-                    Some(false),
+                    Think::Off,
+                    0,
                     MAX_TOKENS,
                 );
                 if let Some((text, command, remembers, forgets)) = parsed {
