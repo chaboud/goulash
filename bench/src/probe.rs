@@ -6,9 +6,10 @@
 
 use crate::journal::{Journal, cell_key};
 use crate::load_catalog;
-use crate::sweep::{NUM_CTX, agent, preload_lmstudio, provider_for, run_one, shapes, unload_all};
+use crate::sweep::{NUM_CTX, agent, await_headroom, preload_lmstudio, provider_for, run_one, shapes, unload_all};
 use goulash::engine::Think;
 use std::path::Path;
+use std::time::Duration;
 
 /// A single tolerance question, and the setting it varies.
 struct Probe {
@@ -201,6 +202,7 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
             continue;
         }
         println!("  {} ({}, {:.1} GB)", cell.model, cell.provider, cell.gb);
+        await_headroom(15, Duration::from_secs(900));
         if cell.provider.starts_with("openai") {
             preload_lmstudio(&cell.model, NUM_CTX, "3m");
         }

@@ -15,7 +15,7 @@ use goulash::memory::MemoryStore;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Shipped defaults, mirrored from `engine::DEFAULT_*`.
 const MAX_TOKENS: usize = 256;
@@ -243,6 +243,48 @@ pub fn unload_all(agent: &ureq::Agent, ollama_host: &str) {
     let _ = std::process::Command::new(lms)
         .args(["unload", "--all"])
         .output();
+}
+
+/// Yield the machine back to whoever else is using it.
+///
+/// The sweep is a background citizen: it is allowed to take hours, but it
+/// is not allowed to make the desktop unusable. Before loading the next
+/// model, wait for free memory to recover past a floor. A model load is
+/// the moment the footprint jumps, so it is the right place to check —
+/// and waiting costs only wall-clock, which this run has plenty of.
+///
+/// Returns the free percentage it proceeded at, for logging.
+pub fn await_headroom(min_free_pct: u64, max_wait: Duration) -> u64 {
+    let start = Instant::now();
+    let mut waited = false;
+    loop {
+        let Some(pct) = free_pct() else { return 100 };
+        if pct >= min_free_pct || start.elapsed() >= max_wait {
+            if waited {
+                println!(
+                    "    resumed at {pct}% free after {}s",
+                    start.elapsed().as_secs()
+                );
+            }
+            return pct;
+        }
+        if !waited {
+            println!("    waiting for memory: {pct}% free, want {min_free_pct}%");
+            waited = true;
+        }
+        std::thread::sleep(Duration::from_secs(10));
+    }
+}
+
+/// System-wide free memory percentage, via `memory_pressure`. None if the
+/// tool is unavailable (non-macOS), in which case the caller proceeds.
+fn free_pct() -> Option<u64> {
+    let out = std::process::Command::new("memory_pressure").output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .find(|l| l.contains("free percentage"))
+        .and_then(|l| l.rsplit(':').next())
+        .and_then(|v| v.trim().trim_end_matches('%').parse().ok())
 }
 
 /// Pin an LM Studio model's context length before its cells run.
@@ -551,6 +593,7 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
             cell.gb,
             if cell.contends { ", contends" } else { "" }
         );
+        await_headroom(15, Duration::from_secs(900));
         if cell.provider.starts_with("openai") {
             preload_lmstudio(&cell.model, NUM_CTX, "3m");
         }

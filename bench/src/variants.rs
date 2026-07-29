@@ -17,10 +17,11 @@
 
 use crate::journal::{Journal, cell_key};
 use crate::load_catalog;
-use crate::sweep::{NUM_CTX, agent, preload_lmstudio, provider_for, run_one, seed_memory, unload_all};
+use crate::sweep::{NUM_CTX, agent, await_headroom, preload_lmstudio, provider_for, run_one, seed_memory, unload_all};
 use goulash::engine::{MemPos, PromptShape, Think};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 
 pub struct Variant {
     pub id: &'static str,
@@ -194,6 +195,7 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
             continue;
         }
         println!("  {} ({}) — {} to go", cell.model, cell.provider, todo.len());
+        await_headroom(15, Duration::from_secs(900));
         if cell.provider.starts_with("openai") {
             preload_lmstudio(&cell.model, NUM_CTX, "3m");
         }
