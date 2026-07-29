@@ -24,8 +24,14 @@ cargo build -p goulash-bench
 
 ./target/debug/goulash-bench report bench/results/2026-07-28
 ./target/debug/goulash-bench blind  bench/results/2026-07-28
+./target/debug/goulash-bench grade  bench/results/2026-07-28
 ./target/debug/goulash-bench replay bench/results/2026-07-28 <key|blind-id>
 ```
+
+Prefer `bench/run.sh DIR`, which runs both passes and unloads every model
+on both engines on any exit path — including SIGTERM. Without that a
+killed run strands a multi-GB model resident (LM Studio JIT-loads at a
+1-hour TTL).
 
 Narrow the catalog for a smoke test or to rerun one model:
 
@@ -67,7 +73,14 @@ src/sweep.rs     pass B: scripted sessions, model-major
 src/probe.rs     pass A: setting-tolerance probes
 src/report.rs    report card, blind corpus, replay
 results/step0/   pre-sweep findings that shaped the design
+QUIRKS.md        pass-A verdict: which settings need per-model handling
+HEADROOM.md      what actually caps a long CMD (not max_tokens)
+RESUME.md        current state, and which of my claims to distrust
 ```
+
+One sweep per results directory: `Journal::open` takes an exclusive lock.
+Two concurrent sweeps contend for the GPU and unload each other's models,
+which silently corrupts both sets of timings.
 
 ## Prompt shapes
 
