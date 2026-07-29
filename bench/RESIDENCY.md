@@ -157,3 +157,46 @@ Cells that ran while wired memory was high were competing with swap.
 Latency for the last stretch of Pass B may be inflated; the run
 completed at 1368/1368 but its tail should be checked for upward drift
 before any cross-cell latency comparison is trusted.
+
+### Does the accumulated pressure invalidate the timings? No.
+
+Fixed prompt, `qwen3.5:0.8b`, 7 reps per condition, nothing else on the
+GPU (`bench/results/step0/pressure_probe.py`):
+
+| condition | free | wired | prompt_eval | eval |
+|---|---|---|---|---|
+| clean | 77% | 5.4 GB | 563.0 ms | 199.5 ms |
+| **pressured** (12B loaded alongside) | 42% | 14.0 GB | **575.9 ms** | 198.0 ms |
+| clean again | 77% | 5.2 GB | 575.0 ms | 198.5 ms |
+
+**+2% prompt-eval, -1% eval.** The two clean measurements bracket the
+pressured one, so this is reproducible rather than lucky. Memory pressure
+does not materially affect inference latency as long as the working model
+still fits — which matches the mechanism: wired pages cost *capacity*,
+not speed, until the active set has to swap.
+
+Corroborating: within-model latency drift across Pass B was a median
+**+1%**, and the two latest-running ollama cells showed +0% and -23%.
+
+**Limitation, stated rather than buried:** the probe reached 42% free /
+14 GB wired. The worst state observed during Pass B was ~5% free / 20 GB
+wired, which this did not reproduce. So the result rules out an effect at
+moderate pressure, not at the extreme. Given two independent measures
+agreeing at ~+1-2%, the Pass B latency numbers are treated as sound; a
+re-run of the six cells that ran past the 1.5h mark remains a cheap
+option (~340 generations, ~40 min) if that assumption is ever load-bearing
+for a decision.
+
+### What actually dominates latency: contention, not memory
+
+The first attempt at this probe reported "clean" at 1326 ms against
+"pressured" at 660 ms — a nonsense ordering caused by a concurrent
+validation sweep holding the GPU during the first measurement. Wired
+memory across the three samples was 14.2, 22.2 and 5.4 GB with no
+monotonic relationship to latency at all.
+
+**Concurrent GPU work moves latency by ~2x; memory pressure moves it by
+~2%.** The probe now refuses to start when any bench process is running,
+because relying on remembering to check has failed three times in this
+project (two concurrent sweeps, one mid-flight unload, one confounded
+probe).
