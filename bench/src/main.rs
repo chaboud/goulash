@@ -23,13 +23,11 @@ use std::path::PathBuf;
 /// bytes and drift every latency comparison.
 pub const NOW: &str = "2026-07-28 09:00:00";
 
-/// Mirrors the shape `memory.rs:148` emits, with the live slot count that
-/// makes `MemPos::BeforeLog` invalidate the whole log prefix behind it.
-pub const MEMORIES: &str = "Pinned memories \u{2014} yours to manage (2/25 slots, \u{2264}240 chars \
-each). Save one by outputting a line 'REMEMBER: <note>'. Delete one \
-with 'FORGET: <id>'. To revise one, output both: 'FORGET: <id>' plus \
-a 'REMEMBER:' line with the new text.\n  [1] prefers fd over find\n  \
-[2] works mostly in Rust repositories\n\n";
+// Memories come from a live `MemoryStore` (see `sweep::seed_memory`), not
+// a constant. An earlier revision pinned them to a fixed string, which
+// silently neutered the S2 arm: with the block never changing there is no
+// prefix invalidation to price, and S2-vs-S1 degenerates into comparing
+// two static prefixes.
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct Cell {

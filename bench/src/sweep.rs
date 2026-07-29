@@ -6,11 +6,12 @@
 //! and the same run doubles as the quality corpus.
 
 use crate::journal::{Journal, Row, cell_key};
-use crate::{Cell, MEMORIES, NOW, Step, load_catalog, load_scenarios};
+use crate::{Cell, NOW, Step, load_catalog, load_scenarios};
 use goulash::engine::{
     GenRequest, MemPos, Ollama, OpenAiCompat, PromptShape, Provider, build_prompt,
     extract_memory_ops, split_answer,
 };
+use goulash::memory::MemoryStore;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
@@ -133,6 +134,37 @@ fn hash(s: &str) -> u64 {
     h.finish()
 }
 
+/// A live memory store, seeded like a user who has been running goulash
+/// for a while.
+///
+/// This has to be the *real* `MemoryStore`, not a fixed string: its
+/// `context_block()` leads with a live `(N/25 slots)` count, so every
+/// REMEMBER/FORGET rewrites the block — and under `MemPos::BeforeLog`
+/// that sits ahead of the entire session log and invalidates the prefix
+/// behind it. Pricing that invalidation is the whole point of the S2 arm,
+/// and it cannot be measured against a constant.
+///
+/// `load(None)` leaves `path` unset, so nothing touches disk.
+pub fn seed_memory() -> MemoryStore {
+    let mut m = MemoryStore::load(None);
+    m.enabled = true;
+    let _ = m.add("prefers fd over find", "user");
+    let _ = m.add("works mostly in Rust repositories", "user");
+    m
+}
+
+/// Apply a turn's memory ops exactly as `session.rs` does: forgets first,
+/// because a revision is FORGET + REMEMBER in one reply and the delete
+/// must free the slot before the add when the store is full.
+pub fn apply_memory_ops(store: &mut MemoryStore, remembers: &[String], forgets: &[u64]) {
+    for id in forgets {
+        store.delete(*id);
+    }
+    for note in remembers {
+        let _ = store.add(note, "llm");
+    }
+}
+
 /// The unprompted-commentary question, copied from `Engine::ask_proactive`.
 const PROACTIVE_Q: &str = "Without being asked, briefly review the most recent \
 command and its result — one short observation, tip, or wry aside is always \
@@ -201,13 +233,14 @@ pub fn run_one(
     question: &str,
     proactive: bool,
     log: &str,
+    memories: &str,
     paths: &std::collections::HashSet<String>,
     stop: &[String],
     think: Option<bool>,
     max_tokens: usize,
-) -> Option<(String, Option<String>)> {
+) -> Option<(String, Option<String>, Vec<String>, Vec<u64>)> {
     let key = cell_key(pass, &cell.provider, &cell.model, shape_name, step_id);
-    let prompt = build_prompt(shape, MEMORIES, log, question, NOW, proactive);
+    let prompt = build_prompt(shape, memories, log, question, NOW, proactive);
     let req = GenRequest {
         model: cell.model.clone(),
         prompt: prompt.clone(),
@@ -249,8 +282,8 @@ pub fn run_one(
             row.raw = raw;
             row.text = text.clone();
             row.command = command.clone();
-            row.remembers = remembers;
-            row.forgets = forgets;
+            row.remembers = remembers.clone();
+            row.forgets = forgets.clone();
             row.ttft_ms = stats.ttft_ms;
             row.total_ms = stats.total_ms;
             row.load_ms = stats.load_ms;
@@ -264,7 +297,7 @@ pub fn run_one(
             row.fenced = fenced;
             row.prose_lines = prose_lines;
             row.has_cmd_tag = has_cmd_tag;
-            Some((text, command))
+            Some((text, command, remembers, forgets))
         }
         Err(e) => {
             row.error = Some(e);
@@ -292,6 +325,7 @@ fn run_session(
     let provider = provider_for(cell);
     let stop: Vec<String> = vec!["\n\n".to_string()];
     let mut log = SessionLog::new();
+    let mut memory = seed_memory();
 
     for (i, step) in steps.iter().enumerate() {
         match step.kind.as_str() {
@@ -315,10 +349,13 @@ fn run_session(
                 }
                 let key = cell_key("pass-b", &cell.provider, &cell.model, shape_name, &step.id);
                 if let Some(prev) = j.recorded(&key) {
-                    // Replay the recorded answer's effect on the log so
-                    // later turns build byte-identical prompts to the
-                    // original run. Without this, resuming silently
-                    // changes the thing being measured.
+                    // Replay the recorded answer's effect on the log AND on
+                    // the memory store, so later turns build byte-identical
+                    // prompts to the original run. Skipping the memory ops
+                    // would leave a resumed session with a different slot
+                    // count — which is exactly the string S2 exists to
+                    // measure, silently changed.
+                    apply_memory_ops(&mut memory, &prev.remembers, &prev.forgets);
                     let one_line = prev.text.split_whitespace().collect::<Vec<_>>().join(" ");
                     if !prev.empty
                         && !one_line.trim_matches(['.', '!']).eq_ignore_ascii_case("PASS")
@@ -340,12 +377,14 @@ fn run_session(
                     &question,
                     proactive,
                     &log.text,
+                    &memory.context_block(),
                     paths,
                     &stop,
                     Some(false),
                     MAX_TOKENS,
                 );
-                if let Some((text, command)) = parsed {
+                if let Some((text, command, remembers, forgets)) = parsed {
+                    apply_memory_ops(&mut memory, &remembers, &forgets);
                     let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
                     if !one_line.trim_matches(['.', '!']).eq_ignore_ascii_case("PASS") {
                         log.answer(&one_line, command.as_deref());
@@ -426,4 +465,83 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
     }
     println!("pass-b complete: {}/{}", j.completed_in("pass-b"), total);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The property the entire S2 arm rests on: once a memory op lands,
+    /// S1 must lose its cached prefix while S2 keeps it. If this fails,
+    /// the S2 measurement is meaningless — which is exactly what happened
+    /// when memories were a fixed constant.
+    #[test]
+    fn memory_mutation_invalidates_s1_prefix_but_not_s2() {
+        let log = "$ ls [exit 0, 09:00:00]\nCargo.toml src\n";
+        let mut mem = seed_memory();
+        let before = mem.context_block();
+        apply_memory_ops(&mut mem, &["prefers ripgrep".to_string()], &[]);
+        let after = mem.context_block();
+        assert_ne!(before, after, "a REMEMBER must change the block");
+        assert!(
+            after.contains("3/25 slots"),
+            "the slot count is what makes it volatile, got: {}",
+            after.lines().next().unwrap_or("")
+        );
+
+        let shared = |a: &str, b: &str| {
+            a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count()
+        };
+
+        let s1 = PromptShape {
+            memories: MemPos::BeforeLog,
+            command_first: false,
+        };
+        let a1 = build_prompt(&s1, &before, log, "q", NOW, false);
+        let b1 = build_prompt(&s1, &after, log, "q", NOW, false);
+        assert!(
+            shared(&a1, &b1) < a1.find("Session log").unwrap(),
+            "S1 must diverge BEFORE the session log — that is the cost"
+        );
+
+        let s2 = PromptShape {
+            memories: MemPos::Suffix,
+            command_first: false,
+        };
+        let a2 = build_prompt(&s2, &before, log, "q", NOW, false);
+        let b2 = build_prompt(&s2, &after, log, "q", NOW, false);
+        assert!(
+            shared(&a2, &b2) > a2.find("Current local time").unwrap(),
+            "S2 must keep the whole log in its shared prefix"
+        );
+    }
+
+    /// Forgets before adds, so a revision (FORGET + REMEMBER in one reply)
+    /// frees its slot before refilling it — matching session.rs.
+    #[test]
+    fn forgets_apply_before_adds() {
+        let mut mem = seed_memory();
+        mem.set_limit(2);
+        apply_memory_ops(&mut mem, &["replacement note".to_string()], &[1]);
+        let texts: Vec<&str> = mem.slots.iter().map(|s| s.text.as_str()).collect();
+        assert!(!texts.contains(&"prefers fd over find"), "slot 1 forgotten");
+        assert!(
+            texts.contains(&"replacement note"),
+            "add succeeded because the delete freed the slot first, got {texts:?}"
+        );
+    }
+
+    /// Resume must reach the same memory state, or later prompts differ.
+    #[test]
+    fn replayed_ops_reproduce_the_same_block() {
+        let ops = [(vec!["one".to_string()], vec![]), (vec!["two".to_string()], vec![1u64])];
+        let build = || {
+            let mut m = seed_memory();
+            for (rem, forg) in &ops {
+                apply_memory_ops(&mut m, rem, forg);
+            }
+            m.context_block()
+        };
+        assert_eq!(build(), build(), "replay must be deterministic");
+    }
 }

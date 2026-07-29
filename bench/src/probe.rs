@@ -202,6 +202,7 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
                 p.question,
                 false,
                 CTX,
+                &crate::sweep::seed_memory().context_block(),
                 &paths,
                 &p.stop,
                 p.think,

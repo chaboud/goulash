@@ -1,0 +1,6 @@
+# Run outputs are large and machine-specific; the report card, grades and
+# findings are committed deliberately, the raw journals are not.
+*/journal.jsonl
+*/prompts.jsonl
+*/manifest.jsonl
+*/run.log
