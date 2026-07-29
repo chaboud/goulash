@@ -1,160 +1,136 @@
 # QUIRKS — do models need per-model adapters?
 
-From Pass A (192 probes, 26 cells, 2026-07-28). Each probe isolates one
-setting against a fixed tiny context; `bench/src/probe.rs` defines them.
+Complete Pass A: **288 probes, 24 cells** (17 ollama + 7 LM Studio),
+2026-07-29. Each probe isolates one setting against a fixed tiny context;
+`bench/src/probe.rs` defines them.
 
-**Answer: yes, but along two axes only — reasoning suppression and
-endpoint shape.** Everything else was uniform. No model needed
-per-model prompt wording, and none of the parser's suspected failure
-modes materialised.
+**Answer: no per-model table is needed. Two provider-level capabilities
+are, and one of them was invisible until both endpoints were measured.**
 
 ---
 
-## 1. `think: false` is load-bearing for half the catalog
+## 1. The chat template is what turns reasoning on
 
-Omitting the field empties the answer on **12 of 24** capped cells: every
-`qwen3.5` size, every `gemma4` variant, `qwen3:14b`, and the LM Studio
-`qwen/qwen3-8b` and `google/gemma-4-e4b`.
+The headline result, and it only appears when the same model is run
+through both LM Studio endpoints:
 
-It is inert (no reasoning to suppress) on `llama3.2:3b`, `gemma3:4b`,
-`gemma3:12b`, `mistral`, `llama3.1:8b`, `qwen/qwen3-1.7b`,
-`qwen/qwen3-4b`, `google/gemma-4-12b-qat`.
+| model | endpoint | answered | reasoning tokens |
+|---|---|---|---|
+| `qwen/qwen3-8b` | `/v1/completions` (raw) | **12/12** | **0** |
+| `qwen/qwen3-8b` | `/v1/chat/completions` | **1/12** | **1450** |
+| `google/gemma-4-e4b` | `/v1/completions` (raw) | **8/12** | **0** |
+| `google/gemma-4-e4b` | `/v1/chat/completions` | **0/12** | 546 |
 
-### The stop sequence is *not* the cause — corrected
+Same model, same weights, same server, same prompt text. Through raw
+completions the model does **no reasoning at all** and answers normally.
+Through the chat endpoint it spends everything on reasoning and returns
+empty `content` — 254 of 255 tokens on the baseline probe.
 
-An early reading of this data was wrong and is worth recording. With
-`think` omitted, `qwen3.5:0.8b` returns `eval_tokens=4,
-stop_reason=stop`, which looks exactly like the stop sequence
-guillotining a reply that opened with a blank line. It isn't. The
-`no-think-no-stop` probe removes `stop` as well:
+The model's chat template enables thinking; the raw endpoint bypasses the
+template entirely. That single fact explains the whole LM Studio
+empty-answer story, and it reframes the earlier
+`enable_thinking: false` finding (`results/step0/LMSTUDIO.md`): that
+kwarg is a *chat-template variable*, which is why it can only make things
+worse — it perturbs the template rather than disabling reasoning.
+
+**Consequence:** goulash should prefer `/v1/completions` for local
+OpenAI-compatible servers. It is also the better cache shape (the raw
+endpoint takes our stable-prefix string verbatim, the way ollama's
+`/api/generate` does). Hosted providers offer chat only, so a future
+Anthropic/OpenAI adapter inherits this problem and will need
+provider-specific reasoning control.
+
+Raw completions are not free: `google/gemma-4-e4b` sometimes *continues*
+the prompt instead of answering (`"how do I list files by size, largest
+first\nAnswer:"`), which is 4 of its 12 raw failures. `qwen3-8b`,
+`qwen3-4b`, `qwen3-1.7b` and `gemma-4-12b-qat` are clean on raw.
+
+## 2. `think: false` is load-bearing on ollama, for half the catalog
+
+Omitting the field empties the answer on 10 of 17 ollama cells: every
+`qwen3.5` size, `gemma4:e2b`/`:12b`/`:e4b`, `qwen3:14b`, `deepseek-r1`.
+
+Inert on `llama3.2:3b`, `gemma3:4b`, `gemma3:12b`, `mistral`,
+`llama3.1:8b` — nothing to suppress.
+
+### The stop sequence is exonerated
+
+`stop: ["\n\n"]` was the top pre-registered suspect and it is not the
+cause. With `think` omitted, `qwen3.5:0.8b` returns `eval_tokens=4,
+stop_reason=stop` — which looks exactly like the stop sequence cutting
+off a reply that opened with a blank line. Removing `stop` as well:
 
 | probe | eval_tokens | stop_reason | output |
 |---|---|---|---|
 | `no-think-field` (stop on) | 4 | `stop` | empty |
 | `no-think-no-stop` | 256 | `length` | empty |
 
-Without the stop sequence it spends the **entire budget** and still emits
-nothing. One mechanism — reasoning spend — with two failure signatures.
-Removing or widening `stop` would not have helped; only reasoning control
-does. Same result for all 13 affected cells.
+It spends the entire budget and still emits nothing. One mechanism —
+reasoning spend — with two signatures. Widening or dropping `stop` would
+not have helped.
 
-**`stop: ["\n\n"]` was the top pre-registered suspect going in, and it is
-exonerated.** It never truncated a non-reasoning model to empty.
+## 3. `mistral-nemo` answers questions with memory writes
 
-## 2. `think: false` does not work on `deepseek-r1:14b`
+Five of seven probes returned nothing but `REMEMBER: [3] prefers ls -Sh`.
+The pinned-memory block hijacks it. Goulash does **not** treat this as an
+error (`engine.rs` checks `remembers` before declaring failure), so the
+user asks a question, sees nothing, and silently gains a memory slot.
 
-Ollama accepts the field and the model reasons anyway, leaking the raw
-tag into the answer:
+Being tested in Pass P (`V4-memguard`): whether naming `REMEMBER:` a
+*tool* rather than leaving it to look like an instruction fixes it.
 
-```
-baseline (think:false) → "<think>\nOkay, the user is asking how to list files by size…"
-```
+## 4. Refusal on the smallest model
 
-`split_answer` then takes `<think>` as the prose line, so **the user's
-status bar shows `<think>`**. This is a visible product bug, not just a
-benchmark artifact.
+`qwen3.5:0.8b` on a plain ffmpeg-syntax question: *"I cannot convert
+video files to web-friendly formats like H264 MP4 directly in this
+terminal environment; I am an AI assistant and not capable of…"*
 
-Inverted fix: this is the one model that does **better** with `think`
-omitted *and* `stop` removed — that combination produced a real answer
-(`"To list files by size from largest to smallest: CMD: ls -lrta…"`).
-
-## 3. LM Studio: neither endpoint is clean
-
-Both `/v1/completions` and `/v1/chat/completions` fail, differently.
-
-**Raw completions → prompt echo and format bleed.** The model continues
-the text instead of answering:
-
-| model | raw output |
-|---|---|
-| `google/gemma-4-e4b` | `"how do I list files by size, largest first"` (echoes the question) |
-| `qwen/qwen3-1.7b` | `"CMD: ls -S\nAnswer: CMD: ls -S \| sort -nr"` (re-emits the `Answer:` scaffold) |
-
-**Chat template → reasoning-only empties**, now quantified via
-`usage.completion_tokens_details.reasoning_tokens`:
-
-| model | eval_tokens | reasoning_tokens | content |
-|---|---|---|---|
-| `qwen/qwen3-8b` | 255 | **254** | empty |
-| `google/gemma-4-e4b` | 7 | 4 | empty |
-
-254 of 255 tokens spent thinking. And per
-`results/step0/LMSTUDIO.md`, the available lever
-(`chat_template_kwargs: {enable_thinking: false}`) makes this *worse*, not
-better — it empties `content` outright.
-
-`google/gemma-4-12b-qat` works fine on raw completions, so this is
-model-specific rather than a blanket endpoint failure.
-
-## 4. `mistral-nemo` answers questions with memory writes
-
-Five of seven probes returned nothing but a memory-tool line:
-
-```
-REMEMBER: [3] prefers ls -Sh
-```
-
-The pinned-memory block in the prompt hijacks it. Goulash does **not**
-treat this as an error — `engine.rs` checks `remembers` before declaring
-failure — so the user asks a question, sees nothing, and silently gains a
-memory slot. Arguably worse than an error.
-
-Only `no-command-needed` (a pure-explanation question) got a real answer,
-and even that came back prefixed `goulash: `, mimicking the transcript
-format from the session log.
+It appears to think it is being asked to *perform* the conversion. Pass P
+`V1-not-executing` tests whether saying "you write command text, you
+never run anything" fixes it — or whether this is a capability floor and
+the model simply should not be the watcher default.
 
 ## 5. Non-findings worth recording
 
-- **Fencing: zero.** Not one of 192 probes wrapped a command in
-  ```` ``` ````. The parser's inability to strip a fenced block is real
-  but never fires. Deprioritise.
-- **`max_tokens: 32`** was honoured by every model that works at all; no
-  cell mangled its output under a tight budget.
-- **No model needed different prompt wording.** The shipped
-  preamble/directive worked everywhere it worked at all.
+- **Fencing: zero** across all 288 probes. The parser cannot strip a
+  ```` ``` ```` block; it never needs to. Deprioritise.
+- **`max_tokens: 32`** honoured by every cell that works at all.
+- **No model needed different prompt wording to work** — the shipped
+  preamble worked everywhere it worked at all. (Whether *better* wording
+  helps the failures is Pass P's question, not this one's.)
 
-## 6. Over-vending commands
+## 6. Measurement honesty: ~6% flake at the empty/ok boundary
 
-Asked `"what does the -P flag do in grep"` — a pure explanation question
-with a `CMD:` line explicitly optional — **10 of 26 cells attached a
-command anyway**, including every `gemma4` variant, `gemma3:12b`,
-`devstral:24b` and `mistral-nemo`. Correctness of the prose is left to
-blind grading; the over-vending itself is mechanical and counted here.
+The same 17 ollama cells ran `no-think-field` in two independent runs.
+**One flipped** (`gemma4:e4b-mlx`: empty → ok). At temperature 0.2, a
+cell sitting near the boundary is not perfectly reproducible.
 
-## 7. Cells excluded, and why their data is untrustworthy
+So single-probe results are directional, not definitive. The family-level
+patterns (all qwen3.5, all gemma4) rest on 4-5 cells agreeing and are
+solid; any single cell's verdict carries roughly a 1-in-16 flip risk.
+
+## 7. Cells excluded
 
 `gpt-oss:20b`, `deepseek-coder:33b-q3_K_S`, `gemma3:27b`, `devstral:24b`
-ran in the first uncapped pass, **while the machine was memory-saturated**
-(6% free, actively swapping). Their results are contaminated and are not
-reported as model behaviour:
-
-- `deepseek-coder:33b` — `stop_reason=None`, `eval_tokens=None`: the
-  stream never delivered a terminal chunk.
-- `gemma3:27b` — `"UseUse"`, garbled.
-- `gpt-oss:20b` — 55 tokens generated, empty `response`. Plausibly the
-  harmony-format channel split rather than memory pressure, but not
-  separable from the contamination here.
-
-Rerun under `GOULASH_BENCH_MAX_GB=24` on an idle machine before drawing
-any conclusion about these four.
+(13-17 GB) and `qwen/qwen3.6-35b-a3b` (22 GB) are above the 12 GB cap and
+have no trustworthy data. Their only prior results came from a run during
+memory saturation. Rerun with `GOULASH_BENCH_MAX_GB=24` on an idle
+machine.
 
 ---
 
 ## Verdict
 
-A per-model *quirks table* is **not** needed. Two provider-level
-capabilities are:
+No per-model quirks table. Two provider-level capabilities:
 
-| lever | who needs it |
+| capability | who needs it |
 |---|---|
-| reasoning suppression that actually works | qwen3.5 · gemma4 · qwen3 families (12 cells) |
-| a working reasoning control on OpenAI-compat | all LM Studio reasoning models — none exists today |
-| endpoint choice (chat vs raw) per model | `gemma-4-e4b` echoes on raw; `12b-qat` is fine |
+| working reasoning suppression | ollama: `think:false` (works). OpenAI-compat: **use `/v1/completions`** — the chat template is what enables reasoning, and no request-level kwarg reliably disables it. |
+| endpoint choice per model | `gemma-4-e4b` echoes the prompt on raw; the qwen3 family and `gemma-4-12b-qat` are clean. |
 
-Plus two goulash-side bugs the sweep surfaced, both independent of model
-choice:
+Plus two goulash-side bugs, independent of model choice:
 
-1. `<think>` reaches the status bar when suppression fails
-   (`split_answer` has no notion of a reasoning tag).
+1. `<think>` reaches the status bar when suppression fails —
+   `split_answer` has no notion of a reasoning tag.
 2. A memory-only reply renders as silence plus an unannounced memory
    write.
