@@ -296,6 +296,23 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
         }
     }
 
+    // Coverage against the merged manifest: a filtered run (memory cap,
+    // single-model rerun) covers less than full coverage, and the report
+    // should say so rather than implying the matrix is complete.
+    let missing = Journal::outstanding(dir);
+    if !missing.is_empty() {
+        let mut by_pass: BTreeMap<String, usize> = BTreeMap::new();
+        for k in &missing {
+            *by_pass
+                .entry(k.split('/').next().unwrap_or("?").to_string())
+                .or_default() += 1;
+        }
+        out.push_str("\n## Coverage gaps\n\nPlanned but not yet run:\n\n");
+        for (pass, n) in by_pass {
+            out.push_str(&format!("- {pass}: {n} cell(s)\n"));
+        }
+    }
+
     let path = dir.join("report.md");
     std::fs::write(&path, &out)?;
     println!("{out}");

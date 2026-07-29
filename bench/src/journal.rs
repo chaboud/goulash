@@ -235,11 +235,6 @@ impl Journal {
             .collect()
     }
 
-    /// Number of rows in a run directory without opening it for writing.
-    pub fn count(dir: &Path) -> usize {
-        Self::rows(dir).len()
-    }
-
     /// The prompt sent for one key — `replay` shows it verbatim so a
     /// grade can be checked against the exact input that produced it.
     pub fn prompt_for(dir: &Path, key: &str) -> Option<String> {

@@ -31,6 +31,7 @@ pub fn shapes() -> Vec<(&'static str, PromptShape)> {
             PromptShape {
                 memories: MemPos::BeforeLog,
                 command_first: false,
+                ..PromptShape::default()
             },
         ),
         // Prices the memory.rs:148 prefix invalidation.
@@ -39,6 +40,7 @@ pub fn shapes() -> Vec<(&'static str, PromptShape)> {
             PromptShape {
                 memories: MemPos::Suffix,
                 command_first: false,
+                ..PromptShape::default()
             },
         ),
         // Command first: latency-to-useful, and whether it costs quality.
@@ -47,6 +49,7 @@ pub fn shapes() -> Vec<(&'static str, PromptShape)> {
             PromptShape {
                 memories: MemPos::BeforeLog,
                 command_first: true,
+                ..PromptShape::default()
             },
         ),
     ]
@@ -515,6 +518,7 @@ mod tests {
         let s1 = PromptShape {
             memories: MemPos::BeforeLog,
             command_first: false,
+            ..PromptShape::default()
         };
         let a1 = build_prompt(&s1, &before, log, "q", NOW, false);
         let b1 = build_prompt(&s1, &after, log, "q", NOW, false);
@@ -526,6 +530,7 @@ mod tests {
         let s2 = PromptShape {
             memories: MemPos::Suffix,
             command_first: false,
+            ..PromptShape::default()
         };
         let a2 = build_prompt(&s2, &before, log, "q", NOW, false);
         let b2 = build_prompt(&s2, &after, log, "q", NOW, false);

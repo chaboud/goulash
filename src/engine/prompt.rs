@@ -41,6 +41,15 @@ pub struct PromptShape {
     /// emitting it first means truncation eats the explanation instead of
     /// the command, and the suggestion chip can populate mid-stream.
     pub command_first: bool,
+    /// Replace the shipped preamble. `None` uses [`PREAMBLE`].
+    ///
+    /// Wording is a lever like any other: small models refuse plausible
+    /// shell questions, or answer them with a `REMEMBER:` line, and how
+    /// firmly the output grammar is specified plausibly moves both. An
+    /// override lets that be measured instead of argued about.
+    pub preamble: Option<&'static str>,
+    /// Replace the shipped directive. `None` uses [`directive`].
+    pub directive: Option<&'static str>,
 }
 
 /// The contract, repeated at point-of-use: small models lose instructions
@@ -87,14 +96,17 @@ pub fn build_prompt(
     now: &str,
     proactive: bool,
 ) -> String {
-    let d = directive(shape.command_first, proactive);
+    let d = shape
+        .directive
+        .unwrap_or_else(|| directive(shape.command_first, proactive));
+    let preamble = shape.preamble.unwrap_or(PREAMBLE);
     let (before_log, after_log, in_suffix) = match shape.memories {
         MemPos::BeforeLog => (memories, "", ""),
         MemPos::AfterLog => ("", memories, ""),
         MemPos::Suffix => ("", "", memories),
     };
     format!(
-        "{PREAMBLE}{before_log}Session log (oldest first):\n{context}\n{after_log}\
+        "{preamble}{before_log}Session log (oldest first):\n{context}\n{after_log}\
          Current local time: {now}\n{in_suffix}Question: {question}\n{d}\nAnswer:"
     )
 }
@@ -280,6 +292,7 @@ mod shape_tests {
             let shape = PromptShape {
                 memories: pos,
                 command_first: false,
+                ..PromptShape::default()
             };
             let got = build_prompt(&shape, "", "$ ls", "q", NOW, false);
             assert_eq!(
@@ -297,6 +310,7 @@ mod shape_tests {
         let shape = PromptShape {
             memories: MemPos::Suffix,
             command_first: false,
+            ..PromptShape::default()
         };
         let a = build_prompt(&shape, "slots 1/25\n\n", "$ ls", "q", NOW, false);
         let b = build_prompt(&shape, "slots 2/25\n\n", "$ ls", "q", NOW, false);
@@ -326,11 +340,42 @@ mod shape_tests {
         );
     }
 
+    /// Overrides must replace exactly their own span and nothing else —
+    /// a variant that also perturbed the log would confound the
+    /// experiment it exists to run.
+    #[test]
+    fn overrides_replace_only_their_own_span() {
+        let base = build_prompt(&PromptShape::default(), "", "$ ls", "q", NOW, false);
+        let custom = PromptShape {
+            preamble: Some("CUSTOM PREAMBLE\n\n"),
+            ..PromptShape::default()
+        };
+        let got = build_prompt(&custom, "", "$ ls", "q", NOW, false);
+        assert!(got.starts_with("CUSTOM PREAMBLE"));
+        // Everything from the session log onward is untouched.
+        let tail = |s: &str| s[s.find("Session log").unwrap()..].to_string();
+        assert_eq!(tail(&got), tail(&base));
+
+        let d = PromptShape {
+            directive: Some("DO THE THING"),
+            ..PromptShape::default()
+        };
+        let got = build_prompt(&d, "", "$ ls", "q", NOW, false);
+        assert!(got.contains("DO THE THING"));
+        assert!(got.starts_with(PREAMBLE), "preamble untouched");
+        assert_eq!(
+            got[..got.find("Current local time").unwrap()],
+            base[..base.find("Current local time").unwrap()],
+            "the cached prefix must not move when only the directive changes"
+        );
+    }
+
     #[test]
     fn command_first_flips_the_directive_only() {
         let flipped = PromptShape {
             memories: MemPos::default(),
             command_first: true,
+            ..PromptShape::default()
         };
         let a = build_prompt(&PromptShape::default(), "", "$ ls", "q", NOW, false);
         let b = build_prompt(&flipped, "", "$ ls", "q", NOW, false);
