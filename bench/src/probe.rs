@@ -6,7 +6,7 @@
 
 use crate::journal::{Journal, cell_key};
 use crate::load_catalog;
-use crate::sweep::{agent, provider_for, run_one, shapes, unload};
+use crate::sweep::{agent, provider_for, run_one, shapes, unload_all};
 use std::path::Path;
 
 /// A single tolerance question, and the setting it varies.
@@ -209,7 +209,7 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
                 p.max_tokens,
             );
         }
-        unload(cell, &agent);
+        unload_all(&agent, "http://127.0.0.1:11434");
     }
     summarize(dir);
     Ok(())

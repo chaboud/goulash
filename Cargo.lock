@@ -78,6 +78,7 @@ name = "goulash-bench"
 version = "0.1.0"
 dependencies = [
  "goulash",
+ "libc",
  "serde",
  "serde_json",
  "toml",

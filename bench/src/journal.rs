@@ -32,6 +32,11 @@ pub struct Row {
     pub shape: String,
     pub step: String,
     pub turn_index: usize,
+    /// Unix seconds when the row landed. Not used in any measurement —
+    /// it exists so a run can be audited after the fact (e.g. "which rows
+    /// overlapped that other process?"), which was impossible when the
+    /// journal carried no wall-clock at all.
+    pub at: u64,
 
     /// What was asked, verbatim — so a grader never has to reconstruct it.
     pub question: String,
@@ -80,8 +85,14 @@ pub struct Journal {
 
 impl Journal {
     /// Open (or reopen) a run directory, loading whatever already landed.
+    ///
+    /// Takes an exclusive lock. Two sweeps running at once contend for the
+    /// same GPU and unload each other's models between cells, so every
+    /// latency number either of them records is garbage — and the damage
+    /// is silent, which is worse. Learned the hard way.
     pub fn open(dir: &Path) -> std::io::Result<Journal> {
         std::fs::create_dir_all(dir)?;
+        Self::acquire_lock(dir)?;
         let done = Self::completed_keys(&dir.join("journal.jsonl"));
         Ok(Journal {
             dir: dir.to_path_buf(),
@@ -93,6 +104,27 @@ impl Journal {
 
     fn append(path: &Path) -> std::io::Result<File> {
         OpenOptions::new().create(true).append(true).open(path)
+    }
+
+    /// Refuse to start if another sweep holds this directory. A stale lock
+    /// from a killed run is reclaimed — the pid is checked, not trusted.
+    fn acquire_lock(dir: &Path) -> std::io::Result<()> {
+        let lock = dir.join("sweep.lock");
+        if let Ok(text) = std::fs::read_to_string(&lock)
+            && let Ok(pid) = text.trim().parse::<i32>()
+            && pid != std::process::id() as i32
+            // SAFETY: kill(pid, 0) only tests for existence.
+            && unsafe { libc::kill(pid, 0) } == 0
+        {
+            return Err(std::io::Error::other(format!(
+                "another sweep (pid {pid}) is running in {}. \
+                 Two sweeps contend for the GPU and unload each other's \
+                 models, so both sets of timings would be worthless. \
+                 Stop it first, or use a different results directory.",
+                dir.display()
+            )));
+        }
+        std::fs::write(&lock, std::process::id().to_string())
     }
 
     /// Rows already recorded. A row that fails to parse is treated as

@@ -180,26 +180,41 @@ pub fn agent() -> ureq::Agent {
         .build()
 }
 
-/// Free a model's memory before the next one loads. On 24 GB this is the
-/// difference between measuring a model and measuring swap.
-pub fn unload(cell: &Cell, agent: &ureq::Agent) {
-    match cell.provider.as_str() {
-        "ollama" => {
-            let body = serde_json::json!({"model": cell.model, "keep_alive": 0});
-            let _ = agent
-                .post(&format!("{}/api/generate", cell.host))
-                .send_string(&body.to_string());
-        }
-        _ => {
-            let lms = format!(
-                "{}/.lmstudio/bin/lms",
-                std::env::var("HOME").unwrap_or_default()
-            );
-            let _ = std::process::Command::new(lms)
-                .args(["unload", "--all"])
-                .output();
+/// Free every resident model on BOTH engines before the next one loads.
+///
+/// Unloading only the finished cell's own provider is not enough: at the
+/// ollama -> LM Studio boundary the previous engine's model is still
+/// resident while the next one loads, and on 24 GB that overlap is the
+/// difference between measuring a model and measuring swap. It also
+/// covers a cell that died before its unload, and any model left over
+/// from an earlier interrupted run.
+///
+/// Queries what is actually loaded rather than assuming, so nothing
+/// depends on the catalog being in a particular order.
+pub fn unload_all(agent: &ureq::Agent, ollama_host: &str) {
+    if let Ok(resp) = agent
+        .get(&format!("{ollama_host}/api/ps"))
+        .timeout(Duration::from_secs(3))
+        .call()
+        && let Ok(text) = resp.into_string()
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+    {
+        for m in v["models"].as_array().unwrap_or(&Vec::new()) {
+            if let Some(name) = m["name"].as_str().or_else(|| m["model"].as_str()) {
+                let body = serde_json::json!({"model": name, "keep_alive": 0});
+                let _ = agent
+                    .post(&format!("{ollama_host}/api/generate"))
+                    .send_string(&body.to_string());
+            }
         }
     }
+    let lms = format!(
+        "{}/.lmstudio/bin/lms",
+        std::env::var("HOME").unwrap_or_default()
+    );
+    let _ = std::process::Command::new(lms)
+        .args(["unload", "--all"])
+        .output();
 }
 
 pub fn mechanical(raw: &str, text: &str, command: &Option<String>) -> (bool, bool, usize, bool) {
@@ -271,6 +286,10 @@ pub fn run_one(
         question: question.to_string(),
         prompt_chars: prompt.len(),
         prompt_hash: hash(&prompt),
+        at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
         ..Row::default()
     };
 
@@ -460,7 +479,7 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
                 &paths,
             );
         }
-        unload(cell, &agent);
+        unload_all(&agent, "http://127.0.0.1:11434");
         println!("    done ({}/{} overall)", j.completed_in("pass-b"), total);
     }
     println!("pass-b complete: {}/{}", j.completed_in("pass-b"), total);

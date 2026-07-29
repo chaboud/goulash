@@ -343,6 +343,15 @@ impl Provider for OpenAiCompat {
         if req.stream {
             body["stream_options"] = serde_json::json!({"include_usage": true});
         }
+        // Residency control. `keep_alive` is ollama's; LM Studio's
+        // equivalent is `ttl`, in seconds, applied to JIT-loaded models.
+        // Without it a JIT load sits resident for LM Studio's default
+        // hour — on a 24 GB machine that is someone else's RAM. Sent only
+        // when the caller asked for a specific residency; servers that do
+        // not know the field ignore it.
+        if let Some(secs) = keep_alive_secs(&req.keep_alive) {
+            body["ttl"] = serde_json::json!(secs);
+        }
 
         let started = Instant::now();
         let resp = agent
@@ -429,6 +438,22 @@ impl OpenAiCompat {
         let slot = if streaming { "delta" } else { "message" };
         choice[slot]["content"].as_str().map(String::from)
     }
+}
+
+/// ollama-style duration ("30m", "90s", "1h", "0") to whole seconds.
+/// Returns None for an empty string — meaning "server's own schedule".
+fn keep_alive_secs(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (num, mult) = match s.chars().last()? {
+        'h' => (&s[..s.len() - 1], 3600),
+        'm' => (&s[..s.len() - 1], 60),
+        's' => (&s[..s.len() - 1], 1),
+        _ => (s, 1),
+    };
+    num.trim().parse::<f64>().ok().map(|n| (n * mult as f64) as u64)
 }
 
 fn openai_stats(v: &serde_json::Value) -> GenStats {
