@@ -132,6 +132,7 @@ fn main() {
         "pass-b" => sweep::run(&dir),
         "report" => report::run(&dir),
         "blind" => report::blind(&dir),
+        "grade" => report::grade(&dir),
         "replay" => match args.get(2) {
             Some(key) => report::replay(&dir, key),
             None => {
@@ -141,7 +142,7 @@ fn main() {
         },
         _ => {
             println!(
-                "usage: goulash-bench <pass-a|pass-b|report|blind|replay> [DIR] [KEY]\n\
+                "usage: goulash-bench <pass-a|pass-b|report|blind|grade|replay> [DIR] [KEY]\n\
                  \n\
                  All passes are resumable: rerun the same command and only\n\
                  cells missing from journal.jsonl are executed."

@@ -6,7 +6,7 @@
 
 use crate::journal::{Journal, Row};
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::Path;
 
 /// How a row actually turned out.
@@ -412,5 +412,156 @@ pub fn replay(dir: &Path, key: &str) -> std::io::Result<()> {
     if let Some(e) = &row.error {
         println!("error   = {e}");
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- grading
+
+#[derive(serde::Deserialize, Clone)]
+pub struct Grade {
+    pub id: String,
+    /// Does the command actually do what was asked? 0-3.
+    pub correct: u8,
+    /// Is it how a practitioner would write it? 0-3.
+    pub idiom: u8,
+    /// Does the prose fit one status-bar line? 0-3.
+    pub fit: u8,
+    #[serde(default)]
+    pub why: String,
+}
+
+fn load_grades(dir: &Path) -> Vec<Grade> {
+    let Ok(f) = std::fs::File::open(dir.join("grades.jsonl")) else {
+        return Vec::new();
+    };
+    std::io::BufReader::new(f)
+        .lines()
+        .map_while(Result::ok)
+        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with("//"))
+        .filter_map(|l| serde_json::from_str::<Grade>(&l).ok())
+        .collect()
+}
+
+/// Join blind grades back to provenance and write the quality report.
+///
+/// Kept separate from `run` so the mechanical report never waits on
+/// grading, and so a grade can be traced to the exact answer that earned
+/// it: every row here carries the blind id, and `replay <id>` prints the
+/// prompt and raw response behind it.
+pub fn grade(dir: &Path) -> std::io::Result<()> {
+    let rows = Journal::rows(dir);
+    let grades = load_grades(dir);
+    if grades.is_empty() {
+        println!(
+            "no grades in {}.\nRun `blind` first, score blind.md into \
+             grades.jsonl, then rerun this.",
+            dir.join("grades.jsonl").display()
+        );
+        return Ok(());
+    }
+    let by_id: BTreeMap<String, &Row> =
+        rows.iter().map(|r| (blind_id(&r.key), r)).collect();
+    let _ = &by_id;
+
+    let mut joined: Vec<(&Grade, &Row)> = Vec::new();
+    let mut orphans = 0;
+    for g in &grades {
+        match by_id.get(&g.id) {
+            Some(r) => joined.push((g, r)),
+            None => orphans += 1,
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str("# Quality — blind-graded\n\n");
+    out.push_str(&format!(
+        "{} grades joined to {} rows{}. Scored on answer text alone, with\n\
+         model, provider and shape hidden; joined back afterwards. Each id\n\
+         is replayable: `goulash-bench replay DIR <id>`.\n\n",
+        joined.len(),
+        rows.len(),
+        if orphans > 0 {
+            format!(" ({orphans} orphan grade(s) ignored)")
+        } else {
+            String::new()
+        }
+    ));
+
+    let mean = |v: &[u8]| {
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().map(|&x| x as f64).sum::<f64>() / v.len() as f64
+        }
+    };
+
+    // ---- by model
+    out.push_str("## By model\n\n| model | provider | n | correct | idiom | fit |\n|---|---|---|---|---|---|\n");
+    let mut per_model: BTreeMap<(String, String), Vec<&Grade>> = BTreeMap::new();
+    for (g, r) in &joined {
+        per_model
+            .entry((r.model.clone(), r.provider.clone()))
+            .or_default()
+            .push(g);
+    }
+    let mut ranked: Vec<_> = per_model.iter().collect();
+    ranked.sort_by(|a, b| {
+        let s = |gs: &Vec<&Grade>| mean(&gs.iter().map(|g| g.correct).collect::<Vec<_>>());
+        s(b.1).partial_cmp(&s(a.1)).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for ((model, provider), gs) in ranked {
+        out.push_str(&format!(
+            "| `{model}` | {provider} | {} | {:.2} | {:.2} | {:.2} |\n",
+            gs.len(),
+            mean(&gs.iter().map(|g| g.correct).collect::<Vec<_>>()),
+            mean(&gs.iter().map(|g| g.idiom).collect::<Vec<_>>()),
+            mean(&gs.iter().map(|g| g.fit).collect::<Vec<_>>()),
+        ));
+    }
+
+    // ---- by shape: does CMD-first cost quality?
+    out.push_str(
+        "\n## By prompt shape\n\nThe question command-first has to answer: \
+         does moving `CMD:` ahead of the prose cost answer quality?\n\n\
+         | shape | n | correct | idiom | fit |\n|---|---|---|---|---|\n",
+    );
+    let mut per_shape: BTreeMap<String, Vec<&Grade>> = BTreeMap::new();
+    for (g, r) in &joined {
+        per_shape.entry(r.shape.clone()).or_default().push(g);
+    }
+    for (shape, gs) in &per_shape {
+        out.push_str(&format!(
+            "| {shape} | {} | {:.2} | {:.2} | {:.2} |\n",
+            gs.len(),
+            mean(&gs.iter().map(|g| g.correct).collect::<Vec<_>>()),
+            mean(&gs.iter().map(|g| g.idiom).collect::<Vec<_>>()),
+            mean(&gs.iter().map(|g| g.fit).collect::<Vec<_>>()),
+        ));
+    }
+
+    // ---- worst answers, named, with their provenance
+    let mut worst: Vec<&(&Grade, &Row)> = joined.iter().filter(|(g, _)| g.correct <= 1).collect();
+    worst.sort_by_key(|(g, _)| g.correct);
+    if !worst.is_empty() {
+        out.push_str(&format!(
+            "\n## Failures ({} scored 0-1 on correctness)\n\n",
+            worst.len()
+        ));
+        for (g, r) in worst.iter().take(40) {
+            out.push_str(&format!(
+                "- **{}** `{}` {} — {}\n  - `{}`\n  - _{}_\n",
+                g.correct,
+                r.model,
+                r.shape,
+                r.step,
+                r.command.as_deref().unwrap_or("(no command)"),
+                g.why
+            ));
+        }
+    }
+
+    std::fs::write(dir.join("quality.md"), &out)?;
+    println!("{out}");
+    println!("wrote {}", dir.join("quality.md").display());
     Ok(())
 }
