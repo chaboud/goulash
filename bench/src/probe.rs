@@ -6,7 +6,7 @@
 
 use crate::journal::{Journal, cell_key};
 use crate::load_catalog;
-use crate::sweep::{agent, provider_for, run_one, shapes, unload_all};
+use crate::sweep::{NUM_CTX, agent, preload_lmstudio, provider_for, run_one, shapes, unload_all};
 use goulash::engine::Think;
 use std::path::Path;
 
@@ -201,6 +201,9 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
             continue;
         }
         println!("  {} ({}, {:.1} GB)", cell.model, cell.provider, cell.gb);
+        if cell.provider.starts_with("openai") {
+            preload_lmstudio(&cell.model, NUM_CTX, "3m");
+        }
         let provider = provider_for(cell);
         for p in todo {
             run_one(

@@ -19,7 +19,7 @@ use std::time::Duration;
 
 /// Shipped defaults, mirrored from `engine::DEFAULT_*`.
 const MAX_TOKENS: usize = 256;
-const NUM_CTX: usize = 8192;
+pub const NUM_CTX: usize = 8192;
 const TAIL_CHARS: usize = 800;
 const CONTEXT_MAX_CHARS: usize = 12_000;
 
@@ -243,6 +243,53 @@ pub fn unload_all(agent: &ureq::Agent, ollama_host: &str) {
     let _ = std::process::Command::new(lms)
         .args(["unload", "--all"])
         .output();
+}
+
+/// Pin an LM Studio model's context length before its cells run.
+///
+/// `num_ctx` is an ollama option; the OpenAI request body has no
+/// equivalent, so on LM Studio it is simply not sent and each model loads
+/// at whatever context its own saved config specifies. Measured:
+/// `qwen/qwen3-1.7b` defaults to 8192 (matching what goulash asks for)
+/// while `google/gemma-4-e4b` defaults to **118272** — a KV cache large
+/// enough to dominate a 24 GB machine, and not remotely the same
+/// experiment as the ollama cells running at 8192.
+///
+/// Loading explicitly makes the comparison honest and the memory
+/// bounded. Best-effort: if `lms` is missing the cell still runs, just
+/// at the model's default.
+pub fn preload_lmstudio(model: &str, num_ctx: usize, keep_alive: &str) {
+    let lms = format!(
+        "{}/.lmstudio/bin/lms",
+        std::env::var("HOME").unwrap_or_default()
+    );
+    let ttl = keep_alive.trim_end_matches(['m', 's', 'h']);
+    let secs = match keep_alive.chars().last() {
+        Some('h') => ttl.parse::<u64>().unwrap_or(1) * 3600,
+        Some('s') => ttl.parse::<u64>().unwrap_or(60),
+        _ => ttl.parse::<u64>().unwrap_or(3) * 60,
+    };
+    let out = std::process::Command::new(&lms)
+        .args([
+            "load",
+            model,
+            "--context-length",
+            &num_ctx.to_string(),
+            "--ttl",
+            &secs.to_string(),
+            "-y",
+        ])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            println!("    preloaded {model} at ctx={num_ctx}");
+        }
+        Ok(o) => eprintln!(
+            "    ! preload {model} failed: {}",
+            String::from_utf8_lossy(&o.stderr).lines().next().unwrap_or("")
+        ),
+        Err(e) => eprintln!("    ! preload {model}: {e}"),
+    }
 }
 
 pub fn mechanical(raw: &str, text: &str, command: &Option<String>) -> (bool, bool, usize, bool) {
@@ -504,6 +551,9 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
             cell.gb,
             if cell.contends { ", contends" } else { "" }
         );
+        if cell.provider.starts_with("openai") {
+            preload_lmstudio(&cell.model, NUM_CTX, "3m");
+        }
         for (shape_name, shape) in &shapes {
             // Each session replays independently: fresh log, fresh memory
             // store. Sharing them across contexts would make later
