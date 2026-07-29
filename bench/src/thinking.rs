@@ -17,6 +17,18 @@
 //!    stay one line? That is the display contract, and if it holds, the
 //!    cap was never protecting it.
 //! 4. Does ollama honour a graded `think` level?
+//!
+//! **Correction after the first run.** The original probes all held the
+//! shipped `stop: ["\n\n"]`, which made the budget arms meaningless:
+//! with reasoning enabled, generation ends at ~4 tokens with
+//! `stop_reason=stop` and an empty response — the stop sequence fires
+//! inside or immediately before the thinking, so the allowance is never
+//! reached. T1-T5 therefore measured the stop sequence, not the budget.
+//! T7-T9 repeat the comparison with stop disabled.
+//!
+//! This also refines the Pass A verdict that `stop: ["\n\n"]` was
+//! "exonerated": it is harmless for ordinary output, and fatal the moment
+//! reasoning is switched on.
 
 use crate::journal::{Journal, cell_key};
 use crate::load_catalog;
@@ -29,6 +41,9 @@ use std::time::Duration;
 struct Probe {
     id: &'static str,
     think: Think,
+    /// Stop sequences. The shipped `["\n\n"]` is fatal with reasoning
+    /// enabled — see the module note — so the reasoning arms must vary it.
+    stop: Vec<String>,
     /// Display budget.
     max_tokens: usize,
     /// Allowance on top, when reasoning is enabled.
@@ -41,6 +56,7 @@ fn probes() -> Vec<Probe> {
         Probe {
             id: "T0-off-256",
             think: Think::Off,
+            stop: vec!["\n\n".to_string()],
             max_tokens: 256,
             reasoning: 0,
         },
@@ -48,6 +64,7 @@ fn probes() -> Vec<Probe> {
         Probe {
             id: "T1-on-256-noalw",
             think: Think::On,
+            stop: vec!["\n\n".to_string()],
             max_tokens: 256,
             reasoning: 0,
         },
@@ -55,6 +72,7 @@ fn probes() -> Vec<Probe> {
         Probe {
             id: "T2-on-256+1024",
             think: Think::On,
+            stop: vec!["\n\n".to_string()],
             max_tokens: 256,
             reasoning: 1024,
         },
@@ -62,6 +80,7 @@ fn probes() -> Vec<Probe> {
         Probe {
             id: "T3-on-256+4096",
             think: Think::On,
+            stop: vec!["\n\n".to_string()],
             max_tokens: 256,
             reasoning: 4096,
         },
@@ -69,14 +88,44 @@ fn probes() -> Vec<Probe> {
         Probe {
             id: "T4-low-256+1024",
             think: Think::Level("low"),
+            stop: vec!["\n\n".to_string()],
             max_tokens: 256,
             reasoning: 1024,
         },
         Probe {
             id: "T5-high-256+1024",
             think: Think::Level("high"),
+            stop: vec!["\n\n".to_string()],
             max_tokens: 256,
             reasoning: 1024,
+        },
+        // The arms that actually test the budget. With stop:["\n\n"] the
+        // reasoning arms above never reach their allowance — generation
+        // ends at ~4 tokens because the stop sequence fires inside (or
+        // immediately before) the thinking. Dropping stop is the only way
+        // to ask "is the budget enough".
+        Probe {
+            id: "T7-on-256+1024-nostop",
+            think: Think::On,
+            stop: Vec::new(),
+            max_tokens: 256,
+            reasoning: 1024,
+        },
+        Probe {
+            id: "T8-on-256+4096-nostop",
+            think: Think::On,
+            stop: Vec::new(),
+            max_tokens: 256,
+            reasoning: 4096,
+        },
+        // Control: reasoning off, no stop. Isolates the stop sequence's
+        // effect on ordinary (non-reasoning) output.
+        Probe {
+            id: "T9-off-256-nostop",
+            think: Think::Off,
+            stop: Vec::new(),
+            max_tokens: 256,
+            reasoning: 0,
         },
         // Reasoning off but a big display budget: isolates whether a
         // larger cap alone makes answers longer. If prose stays short
@@ -84,6 +133,7 @@ fn probes() -> Vec<Probe> {
         Probe {
             id: "T6-off-2048",
             think: Think::Off,
+            stop: vec!["\n\n".to_string()],
             max_tokens: 2048,
             reasoning: 0,
         },
@@ -176,7 +226,7 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
                 CTX,
                 &memories,
                 &paths,
-                &["\n\n".to_string()],
+                &p.stop,
                 p.think,
                 p.reasoning,
                 p.max_tokens,
