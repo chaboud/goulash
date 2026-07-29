@@ -52,6 +52,14 @@ pub struct Catalog {
 #[derive(Deserialize, Clone, Debug)]
 pub struct Step {
     pub kind: String,
+    /// Which scripted session this step belongs to. Steps are grouped by
+    /// session and each session replays with its own fresh log and memory
+    /// store, so one corpus can cover several distinct work contexts
+    /// (a rust repo, a data-wrangling session, git surgery) instead of
+    /// one long implausible one. Defaults to "main" so existing step ids
+    /// — and therefore existing journal keys — are unchanged.
+    #[serde(default = "default_session")]
+    pub session: String,
     #[serde(default)]
     pub id: String,
     pub hms: String,
@@ -65,6 +73,10 @@ pub struct Step {
     pub cwd: Option<String>,
     #[serde(default)]
     pub ask: Option<String>,
+}
+
+fn default_session() -> String {
+    "main".to_string()
 }
 
 #[derive(Deserialize)]

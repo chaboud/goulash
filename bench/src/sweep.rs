@@ -23,7 +23,32 @@ const NUM_CTX: usize = 8192;
 const TAIL_CHARS: usize = 800;
 const CONTEXT_MAX_CHARS: usize = 12_000;
 
+/// `GOULASH_BENCH_SHAPES=S3` (or `S1,S3`) restricts which prompt shapes
+/// run.
+///
+/// The three-shape cross-product only needs to happen once, on one
+/// session — it answers "which shape wins". Pressure-testing a finding
+/// across many more situations is a different question, and running it at
+/// three shapes would triple the cost to re-answer something already
+/// settled.
 pub fn shapes() -> Vec<(&'static str, PromptShape)> {
+    let all = all_shapes();
+    match std::env::var("GOULASH_BENCH_SHAPES") {
+        Ok(f) => {
+            let want: Vec<String> =
+                f.split(',').map(|s| s.trim().to_uppercase()).collect();
+            let kept: Vec<_> = all
+                .into_iter()
+                .filter(|(n, _)| want.iter().any(|w| w == n))
+                .collect();
+            eprintln!("shapes restricted to {:?}", kept.iter().map(|(n, _)| *n).collect::<Vec<_>>());
+            kept
+        }
+        Err(_) => all,
+    }
+}
+
+fn all_shapes() -> Vec<(&'static str, PromptShape)> {
     vec![
         // Shipped shape: memories ahead of the log.
         (
@@ -431,6 +456,10 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
         .iter()
         .filter(|s| s.kind == "ask" || s.kind == "proactive")
         .collect();
+    let mut sessions: Vec<String> =
+        scenarios.step.iter().map(|s| s.session.clone()).collect();
+    sessions.sort();
+    sessions.dedup();
     let mut planned: Vec<String> = Vec::new();
     for c in &catalog.cell {
         for (sn, _) in &shapes {
@@ -442,10 +471,11 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
     j.write_manifest(&planned)?;
     let total = planned.len();
     println!(
-        "pass-b: {} cells x {} shapes x {} asks = {total} generations ({} already done)",
+        "pass-b: {} cells x {} shapes x {} asks across {} session(s) = {total} generations ({} already done)",
         catalog.cell.len(),
         shapes.len(),
         asks.len(),
+        sessions.len(),
         j.completed_in("pass-b")
     );
 
@@ -472,15 +502,19 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
             if cell.contends { ", contends" } else { "" }
         );
         for (shape_name, shape) in &shapes {
-            run_session(
-                &mut j,
-                cell,
-                shape_name,
-                shape,
-                &scenarios.step,
-                &agent,
-                &paths,
-            );
+            // Each session replays independently: fresh log, fresh memory
+            // store. Sharing them across contexts would make later
+            // sessions carry irrelevant history and quietly change what
+            // is being measured.
+            for sess in &sessions {
+                let steps: Vec<Step> = scenarios
+                    .step
+                    .iter()
+                    .filter(|s| &s.session == sess)
+                    .cloned()
+                    .collect();
+                run_session(&mut j, cell, shape_name, shape, &steps, &agent, &paths);
+            }
         }
         unload_all(&agent, "http://127.0.0.1:11434");
         println!("    done ({}/{} overall)", j.completed_in("pass-b"), total);

@@ -174,3 +174,412 @@ id = "followup-refine"
 hms = "09:09:55"
 ask = "that disk usage one from earlier \u2014 same thing but skip hidden files"
 
+
+# ---- appended by harvest2.py: five more sessions ----
+
+[[step]]
+kind = "cwd"
+session = "data"
+hms = "09:00:00"
+cwd = "/var/folders/q9/r1w2q0qx63nfm48k0k_d6djm0000gn/T/goulash-corpus-vaet0iw5/data"
+
+[[step]]
+kind = "block"
+session = "data"
+hms = "09:00:10"
+cmd = "ls -la"
+exit = 0
+tail = "total 24\ndrwxr-xr-x  5 chaboud  staff   160 Jul 29 11:00 .\ndrwx------  3 chaboud  staff    96 Jul 29 11:00 ..\n-rw-r--r--  1 chaboud  staff  4076 Jul 29 11:00 access.log\n-rw-r--r--  1 chaboud  staff   439 Jul 29 11:00 report.json\n-rw-r--r--  1 chaboud  staff   601 Jul 29 11:00 sales.csv"
+
+[[step]]
+kind = "block"
+session = "data"
+hms = "09:00:30"
+cmd = "head -20 report.json"
+exit = 0
+tail = "{\n  \"items\": [\n    {\n      \"name\": \"alpha\",\n      \"status\": \"ok\",\n      \"bytes\": 1204,\n      \"tags\": [\n        \"a\"\n      ]\n    },\n    {\n      \"name\": \"bravo\",\n      \"status\": \"failed\",\n      \"bytes\": 88,\n      \"tags\": []\n    },\n    {\n      \"name\": \"delta\",\n      \"status\": \"failed\",\n      \"bytes\": 9910,"
+
+[[step]]
+kind = "ask"
+session = "data"
+id = "data-jq-nested"
+hms = "09:01:00"
+ask = "pull name and the first tag for items that have any tags"
+
+[[step]]
+kind = "ask"
+session = "data"
+id = "data-jq-sum"
+hms = "09:01:30"
+ask = "total up the bytes field across all items"
+
+[[step]]
+kind = "block"
+session = "data"
+hms = "09:02:00"
+cmd = "head -5 sales.csv"
+exit = 0
+tail = "region,rep,units,revenue\nr0,rep0,0,0.00\nr1,rep1,3,127.50\nr2,rep2,6,255.00\nr3,rep3,9,382.50"
+
+[[step]]
+kind = "ask"
+session = "data"
+id = "data-csv-group"
+hms = "09:02:20"
+ask = "sum revenue per region from sales.csv, highest first"
+
+[[step]]
+kind = "ask"
+session = "data"
+id = "data-csv-tofmt"
+hms = "09:02:50"
+ask = "turn sales.csv into tab separated without the header"
+
+[[step]]
+kind = "block"
+session = "data"
+hms = "09:03:10"
+cmd = "wc -l access.log"
+exit = 0
+tail = "60 access.log"
+
+[[step]]
+kind = "ask"
+session = "data"
+id = "data-log-status"
+hms = "09:03:30"
+ask = "count how many requests returned each status code"
+
+[[step]]
+kind = "ask"
+session = "data"
+id = "data-log-top-ip"
+hms = "09:04:00"
+ask = "which IPs hit us most, top 5"
+
+[[step]]
+kind = "ask"
+session = "data"
+id = "data-log-errors"
+hms = "09:04:30"
+ask = "show me only the 5xx lines with their timestamps"
+
+[[step]]
+kind = "ask"
+session = "data"
+id = "data-explain-jq"
+hms = "09:05:00"
+ask = "what does the -r flag do in jq"
+
+[[step]]
+kind = "ask"
+session = "data"
+id = "data-longbait"
+hms = "09:05:30"
+ask = "explain in detail how jq handles nested array indexing"
+
+[[step]]
+kind = "cwd"
+session = "git"
+hms = "10:00:00"
+cwd = "/var/folders/q9/r1w2q0qx63nfm48k0k_d6djm0000gn/T/goulash-corpus-vaet0iw5/repo"
+
+[[step]]
+kind = "block"
+session = "git"
+hms = "10:00:10"
+cmd = "git status --short"
+exit = 0
+tail = "M a.txt\n?? b.txt"
+
+[[step]]
+kind = "block"
+session = "git"
+hms = "10:00:30"
+cmd = "git log --oneline"
+exit = 0
+tail = "8334ea1 second\n9014118 first"
+
+[[step]]
+kind = "ask"
+session = "git"
+id = "git-undo-keep"
+hms = "10:01:00"
+ask = "undo the last commit but keep my changes staged"
+
+[[step]]
+kind = "ask"
+session = "git"
+id = "git-amend-msg"
+hms = "10:01:30"
+ask = "I typo'd the last commit message, fix it"
+
+[[step]]
+kind = "block"
+session = "git"
+hms = "10:02:00"
+cmd = "git diff --stat"
+exit = 0
+tail = "a.txt | 1 +\n 1 file changed, 1 insertion(+)"
+
+[[step]]
+kind = "ask"
+session = "git"
+id = "git-stash-part"
+hms = "10:02:20"
+ask = "stash just a.txt and leave b.txt alone"
+
+[[step]]
+kind = "ask"
+session = "git"
+id = "git-branch-from"
+hms = "10:02:50"
+ask = "make a branch from the commit before last and switch to it"
+
+[[step]]
+kind = "ask"
+session = "git"
+id = "git-find-deleted"
+hms = "10:03:20"
+ask = "find which commit deleted a file called config.yml"
+
+[[step]]
+kind = "block"
+session = "git"
+hms = "10:04:00"
+cmd = "git push"
+exit = 128
+tail = "fatal: No configured push destination.\nEither specify the URL from the command-line or configure a remote repository using\n\n    git remote add <name> <url>\n\nand then push using the remote name\n\n    git push <name>"
+
+[[step]]
+kind = "ask"
+session = "git"
+id = "git-push-fail"
+hms = "10:04:20"
+ask = "why did that fail"
+
+[[step]]
+kind = "proactive"
+session = "git"
+id = "git-after-push-fail"
+hms = "10:04:40"
+
+[[step]]
+kind = "ask"
+session = "git"
+id = "git-blame-line"
+hms = "10:05:00"
+ask = "who last touched line 2 of a.txt"
+
+[[step]]
+kind = "ask"
+session = "git"
+id = "git-explain-detached"
+hms = "10:05:30"
+ask = "what does detached HEAD actually mean"
+
+[[step]]
+kind = "cwd"
+session = "sys"
+hms = "11:00:00"
+cwd = "/var/folders/q9/r1w2q0qx63nfm48k0k_d6djm0000gn/T/goulash-corpus-vaet0iw5"
+
+[[step]]
+kind = "block"
+session = "sys"
+hms = "11:00:10"
+cmd = "df -h /"
+exit = 0
+tail = "Filesystem        Size    Used   Avail Capacity iused ifree %iused  Mounted on\n/dev/disk3s1s1   926Gi    16Gi    35Gi    31%    458k  372M    0%   /"
+
+[[step]]
+kind = "block"
+session = "sys"
+hms = "11:00:30"
+cmd = "uname -a"
+exit = 0
+tail = "Darwin Matthews-MacBook-Air.local 25.4.0 Darwin Kernel Version 25.4.0: Thu Mar 19 19:31:09 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T8132 arm64"
+
+[[step]]
+kind = "ask"
+session = "sys"
+id = "sys-port-holder"
+hms = "11:01:00"
+ask = "what's holding port 5432"
+
+[[step]]
+kind = "ask"
+session = "sys"
+id = "sys-kill-proc"
+hms = "11:01:30"
+ask = "kill the process using the most memory"
+
+[[step]]
+kind = "ask"
+session = "sys"
+id = "sys-perm-fix"
+hms = "11:02:00"
+ask = "make deploy.sh executable for everyone"
+
+[[step]]
+kind = "ask"
+session = "sys"
+id = "sys-disk-hog"
+hms = "11:02:30"
+ask = "find the ten biggest files under my home dir"
+
+[[step]]
+kind = "ask"
+session = "sys"
+id = "sys-net-listen"
+hms = "11:03:00"
+ask = "list everything listening on a TCP port"
+
+[[step]]
+kind = "ask"
+session = "sys"
+id = "sys-env-grep"
+hms = "11:03:30"
+ask = "show me every environment variable mentioning PATH"
+
+[[step]]
+kind = "ask"
+session = "sys"
+id = "sys-watch-cmd"
+hms = "11:04:00"
+ask = "re-run df every two seconds and show me changes"
+
+[[step]]
+kind = "ask"
+session = "sys"
+id = "sys-explain-loadavg"
+hms = "11:04:30"
+ask = "what do the three load average numbers mean"
+
+[[step]]
+kind = "cwd"
+session = "text"
+hms = "12:00:00"
+cwd = "/var/folders/q9/r1w2q0qx63nfm48k0k_d6djm0000gn/T/goulash-corpus-vaet0iw5/text"
+
+[[step]]
+kind = "block"
+session = "text"
+hms = "12:00:10"
+cmd = "ls"
+exit = 0
+tail = "app.log\nnotes.md"
+
+[[step]]
+kind = "block"
+session = "text"
+hms = "12:00:30"
+cmd = "grep -c TODO notes.md"
+exit = 0
+tail = "2"
+
+[[step]]
+kind = "ask"
+session = "text"
+id = "text-sed-replace"
+hms = "12:01:00"
+ask = "replace every TODO with DONE in notes.md, in place"
+
+[[step]]
+kind = "ask"
+session = "text"
+id = "text-awk-field"
+hms = "12:01:30"
+ask = "from app.log print just the timestamp and level columns"
+
+[[step]]
+kind = "ask"
+session = "text"
+id = "text-uniq-count"
+hms = "12:02:00"
+ask = "which modules produced the most ERROR lines"
+
+[[step]]
+kind = "ask"
+session = "text"
+id = "text-multiline"
+hms = "12:02:30"
+ask = "find lines mentioning ERROR plus the line after each"
+
+[[step]]
+kind = "ask"
+session = "text"
+id = "text-dedupe"
+hms = "12:03:00"
+ask = "remove duplicate lines from a file but keep the order"
+
+[[step]]
+kind = "ask"
+session = "text"
+id = "text-rename-bulk"
+hms = "12:03:30"
+ask = "rename every .log in here to .log.bak"
+
+[[step]]
+kind = "ask"
+session = "text"
+id = "text-explain-pipefail"
+hms = "12:04:00"
+ask = "what does set -o pipefail actually change"
+
+[[step]]
+kind = "cwd"
+session = "mem"
+hms = "13:00:00"
+cwd = "/var/folders/q9/r1w2q0qx63nfm48k0k_d6djm0000gn/T/goulash-corpus-vaet0iw5"
+
+[[step]]
+kind = "block"
+session = "mem"
+hms = "13:00:10"
+cmd = "ls -la"
+exit = 0
+tail = "total 0\ndrwx------     5 chaboud  staff    160 Jul 29 11:00 .\ndrwx------@ 1883 chaboud  staff  60256 Jul 29 11:00 ..\ndrwxr-xr-x     5 chaboud  staff    160 Jul 29 11:00 data\ndrwxr-xr-x     5 chaboud  staff    160 Jul 29 11:00 repo\ndrwxr-xr-x     4 chaboud  staff    128 Jul 29 11:00 text"
+
+[[step]]
+kind = "ask"
+session = "mem"
+id = "mem-remember-pref"
+hms = "13:01:00"
+ask = "remember that I prefer ripgrep over grep"
+
+[[step]]
+kind = "ask"
+session = "mem"
+id = "mem-note-phrasing"
+hms = "13:01:30"
+ask = "make a note of the fact that this box runs zsh"
+
+[[step]]
+kind = "ask"
+session = "mem"
+id = "mem-recall"
+hms = "13:02:00"
+ask = "what do you know about my preferences"
+
+[[step]]
+kind = "ask"
+session = "mem"
+id = "mem-dont-remember"
+hms = "13:02:30"
+ask = "how do I remember which flag is recursive for cp"
+
+[[step]]
+kind = "ask"
+session = "mem"
+id = "mem-forget-word"
+hms = "13:03:00"
+ask = "I keep forgetting the syntax for tar extract"
+
+[[step]]
+kind = "ask"
+session = "mem"
+id = "mem-save-file"
+hms = "13:03:30"
+ask = "save the output of ls to a file called listing.txt"
+
