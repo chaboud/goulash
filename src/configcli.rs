@@ -73,7 +73,6 @@ fn print_effective() -> i32 {
         ),
         ("engine.thinking".into(), e.thinking.clone()),
         ("engine.max_tokens".into(), e.max_tokens.to_string()),
-        ("engine.thinking_tokens".into(), e.thinking_tokens.to_string()),
         ("engine.command_first".into(), e.command_first.to_string()),
         ("engine.slow".into(), e.slow.clone()),
         ("engine.slow_max_steps".into(), e.slow_max_steps.to_string()),

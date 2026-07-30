@@ -102,14 +102,26 @@ pub struct EngineConfig {
     pub context_max_chars: usize,
     /// Per-block output-tail chars kept in the session log.
     pub tail_chars: usize,
-    /// Cap on the *response* — the part that lands in the band. Streaming
-    /// means a longer tail costs nothing until it is actually generated,
-    /// so this is a runaway backstop, not a latency lever.
+    /// Cap on ONE generation, reasoning and answer together.
+    ///
+    /// A **runaway backstop, not a brevity lever**. Brevity comes from
+    /// the directive asking for one short line and from the band
+    /// clamping at draw time; measured across ~4000 generations, answers
+    /// that arrive use a median of 32 tokens, so this ceiling does no
+    /// display work at all. Streaming means an unspent ceiling costs
+    /// nothing until it is actually generated.
+    ///
+    /// There is deliberately no separate thinking budget. Providers
+    /// meter reasoning and output on one counter, and **we cannot
+    /// control whether a model reasons**: a chat template turns it on
+    /// regardless of what we send, `deepseek-r1` reasons through
+    /// `think:false`, and the one kwarg that disables it on an
+    /// OpenAI-compatible server empties `content` instead. Splitting the
+    /// budget therefore only ever produced starvation — an empty answer
+    /// with the whole allowance spent thinking. So the cap is single and
+    /// generous, and whatever the engine does inside it is the engine's
+    /// business.
     pub max_tokens: usize,
-    /// Extra allowance for masked reasoning spend, added to `max_tokens`
-    /// when `thinking` is on. Thinking shares the provider's single
-    /// token meter, so without this a thinking model eats the answer.
-    pub thinking_tokens: usize,
     /// off | low | medium | high. Reasoning models put these tokens in a
     /// separate field and can spend the whole budget invisibly, which is
     /// why the default is off.
@@ -295,8 +307,10 @@ impl Default for EngineConfig {
             stream: true,
             context_max_chars: 12_000,
             tail_chars: 800,
-            max_tokens: 512,
-            thinking_tokens: 512,
+            // Generous on purpose: it is a backstop against a
+            // runaway, and a ceiling that binds is how a reasoning
+            // model returns nothing at all.
+            max_tokens: 8192,
             thinking: "off".to_string(),
             command_first: true,
             slow: "ingest".to_string(),

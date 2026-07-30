@@ -865,7 +865,7 @@ fn research_once(
         prompt: &prompt,
         stream: false,
         temperature: 0.3,
-        max_tokens: budget + caps.allowance(&cfg.thinking, cfg.thinking_tokens),
+        max_tokens: budget.max(cfg.max_tokens),
         num_ctx: ctx_for(cl, cfg, model),
         stop: &[],
         think: caps.think_field(&cfg.thinking),
@@ -1094,7 +1094,7 @@ fn empty_answer_reason(cfg: &EngineConfig, caps: &Caps) -> String {
         // the suspect, and it is the one thing the user can raise.
         Think::Levels | Think::Bool if asked || caps.always_reasons => format!(
             "empty answer from {model} \u{2014} it spent the budget \
-             reasoning; raise thinking_tokens (#/settings) or \
+             reasoning; raise max_tokens (#/settings) or \
              '#/thinking off'"
         ),
         // Asked to think, cannot. We should not have sent the field at
@@ -1557,7 +1557,7 @@ fn generate(
         prompt: &prompt,
         stream: cfg.stream,
         temperature: 0.2,
-        max_tokens: cfg.max_tokens + caps.allowance(&cfg.thinking, cfg.thinking_tokens),
+        max_tokens: cfg.max_tokens,
         num_ctx: ctx_for(cl, cfg, model),
         // No stop sequence. It was `["\n\n"]` here — the last path still
         // carrying it, after research/digest/warm had already dropped it.

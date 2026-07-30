@@ -283,7 +283,7 @@ const SETTINGS: &[(&str, &[&str])] = &[
     ("slow", &["ingest", "volunteer", "manual", "off"]),
     ("thinking", &["off", "low", "medium", "high"]),
     ("memory", &["off", "on"]),
-    ("max_tokens", &["256", "512", "1024", "2048"]),
+    ("max_tokens", &["2048", "4096", "8192", "16384"]),
     ("command_first", &["on", "off"]),
     ("stats", &["off", "on"]),
 ];
