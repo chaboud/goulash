@@ -219,6 +219,40 @@ start, probe chain live.
    is a natural companion, since 2.2% is rare enough to gate loudly
    without being noisy.
 
+8. **Context length: `num_ctx_min` (auto) and `num_ctx` (forced).** One
+   knob cannot express both things a user wants here, and the current
+   single `num_ctx = 8192` sent unconditionally is the worse of the two.
+
+   - **`num_ctx_min`** — *auto, but at least this.* Adopt whatever the
+     engine or a resident model is already configured for, and only
+     intervene when it is below the floor goulash needs to hold a session
+     log. This is the default.
+   - **`num_ctx`** — *forced, exactly this.* Pin it. For reproducibility,
+     for bounding memory on a small machine, and for benchmarking.
+
+   Why the split is load-bearing rather than cosmetic —
+   [RESIDENCY.md](../../bench/RESIDENCY.md):
+
+   - **`num_ctx` is part of a model's load identity.** Measured on
+     ollama: same model at ctx=8192 twice reuses the load (206 ms);
+     asking for 16384 forces a **full reload (1847 ms)**, and asking for
+     8192 again reloads a second time. Insisting on an exact context is
+     therefore what evicts a user's resident model and thrashes it back
+     and forth — the `auto` form exists precisely to avoid that.
+   - **KV is real but modest**: ~17.5 MB per 1k tokens (measured on
+     `qwen3.5:0.8b`; 2.25 GB at 131k, more than the weights). Big enough
+     that an unbounded context matters, small enough that goulash does
+     not need to fight for a *specific* small one.
+   - **Both engines already expose the knob to the user.** ollama takes
+     `num_ctx` per request; LM Studio fixes it at load
+     (`lms load --context-length`, or its saved per-model config) and
+     ignores the OpenAI request entirely. So `auto` means "respect what
+     they set", which is the only behaviour that works on both.
+   - LM Studio's per-model defaults vary wildly — `qwen3-1.7b` loads at
+     8192, `google/gemma-4-e4b` at **118272**. A floor catches the
+     pathological-small case without goulash having to override the
+     pathological-large one it cannot reach anyway.
+
 ## Next up — engine & ergonomics backlog
 
 Field-driven, roughly in order of leverage:
