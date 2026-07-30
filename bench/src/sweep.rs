@@ -17,8 +17,17 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// Shipped defaults, mirrored from `engine::DEFAULT_*`.
-const MAX_TOKENS: usize = 256;
+/// The shipped budgets, **read from the shipped config** rather than
+/// mirrored into a constant.
+///
+/// They used to be a hand-copied `const MAX_TOKENS: usize = 256`, which
+/// silently went stale when the product defaults moved and left the
+/// sweep measuring a configuration nobody runs. Reading `Config`
+/// directly makes that drift impossible.
+fn budgets() -> (usize, usize) {
+    let e = goulash::config::Config::default().engine;
+    (e.fast.response_tokens, e.slow.reasoning_tokens)
+}
 
 /// Long-context mode. The shipped budget keeps prompts under ~3k tokens —
 /// 36% of an 8192 window — so nothing in the normal corpus tests what
@@ -653,8 +662,8 @@ fn run_session(
                     paths,
                     &stop,
                     Think::Off,
-                    4096,
-                    MAX_TOKENS,
+                    budgets().1,
+                    budgets().0,
                 );
                 if let Some((text, command, remembers, forgets)) = parsed {
                     apply_memory_ops(&mut memory, &remembers, &forgets);

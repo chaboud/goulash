@@ -47,8 +47,8 @@ impl Default for TierConfig {
             ask: true,
             model: String::new(),
             thinking: "off".into(),
-            response_tokens: 512,
-            reasoning_tokens: 0,
+            response_tokens: 1024,
+            reasoning_tokens: 2048,
         }
     }
 }
@@ -126,8 +126,11 @@ pub struct EngineConfig {
     /// the directive and from the band clamping at draw time, not from
     /// starving the budget. (bench/THINKING.md)
     pub response_tokens: usize,
-    /// Allowance for reasoning, spent *on top of* `response_tokens` and
-    /// only when thinking is enabled.
+    /// Allowance for reasoning, spent *on top of* `response_tokens`.
+    ///
+    /// Applied unconditionally, including when thinking is `off`, because
+    /// `off` is a request the engine may ignore — see
+    /// [`GenRequest::wire_max_tokens`](crate::engine::provider::GenRequest::wire_max_tokens).
     ///
     /// Providers meter reasoning and output on one counter, so a shared
     /// cap means a reasoning model spends the display budget thinking and
@@ -201,7 +204,7 @@ impl Default for EngineConfig {
             stream: true,
             context_max_chars: 12_000,
             tail_chars: 800,
-            response_tokens: 512,
+            response_tokens: 1024,
             reasoning_tokens: 4096,
             thinking: "off".to_string(),
             num_ctx_min: 8192,
@@ -216,8 +219,14 @@ impl Default for EngineConfig {
                 // FAST exists to be immediate; thinking is what makes it
                 // not immediate.
                 thinking: "off".into(),
-                response_tokens: 512,
-                reasoning_tokens: 0,
+                response_tokens: 1024,
+                // Not zero, even though FAST asks for no thinking. "off"
+                // is a request the engine may ignore — a chat template
+                // reasons regardless — and a zero allowance turns that
+                // into an empty answer instead of a slow one. Smaller
+                // than SLOW's because FAST is not meant to think long,
+                // only to survive a model that does.
+                reasoning_tokens: 2048,
             },
             slow: TierConfig {
                 // Off by default on the heckle: an unprompted tip that
@@ -226,7 +235,7 @@ impl Default for EngineConfig {
                 ask: true,
                 model: String::new(),
                 thinking: "auto".into(),
-                response_tokens: 512,
+                response_tokens: 1024,
                 // 4096 is a floor: at 1024, 19 of 32 cells still ran out
                 // mid-thought. (bench/THINKING.md)
                 reasoning_tokens: 4096,

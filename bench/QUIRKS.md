@@ -40,6 +40,38 @@ endpoint takes our stable-prefix string verbatim, the way ollama's
 Anthropic/OpenAI adapter inherits this problem and will need
 provider-specific reasoning control.
 
+### Correction (2026-07-30): chat was starved, not broken
+
+The table above was measured at a 256-token ceiling, and it conflates
+two effects. The chat template really does turn reasoning on — that part
+holds. But the **empty answers were a budgeting bug on our side**, not a
+property of the endpoint.
+
+`GenRequest::wire_max_tokens` added the reasoning allowance only when
+`think != Off`. That asks "did we ask for reasoning" when the question
+that matters is "can reasoning happen" — and on the chat path the
+template answers yes no matter what we sent. So chat requests went out
+with a 256-token ceiling, reasoning spent 253 of them, and `content`
+came back empty with `finish=length`. Re-measured at the shipped 0.4.0
+budget, through the same endpoint and the same weights:
+
+| model | endpoint | before | after |
+|---|---|---|---|
+| `qwen/qwen3-8b` | chat | `eval=255 reason=253 length` → empty | `eval=1367 reason=896 stop` → answers |
+| `google/gemma-4-e4b` | chat | `eval=255 reason=253 length` → empty | `eval=1271 reason=659 stop` → answers |
+
+Reasoning wanted 659–896 tokens. It was never going to fit in 256.
+
+This weakens the "prefer raw" recommendation to a preference rather than
+a necessity: raw is still the better cache shape and still cheaper (no
+reasoning tokens at all), but chat is now *usable* rather than fatal,
+which matters because hosted providers offer nothing else.
+
+It also generalises past this endpoint. `deepseek-r1:14b` accepts
+ollama's `think:false` and reasons anyway (§2), so "off" is a request on
+every provider we speak to and a guarantee on none. The allowance is now
+applied unconditionally.
+
 Raw completions are not free: `google/gemma-4-e4b` sometimes *continues*
 the prompt instead of answering (`"how do I list files by size, largest
 first\nAnswer:"`), which is 4 of its 12 raw failures. `qwen3-8b`,

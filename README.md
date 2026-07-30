@@ -143,8 +143,8 @@ The ones worth knowing about:
 |---|---|---|
 | `engine.model` | *(auto)* | pin a model; unset means auto-pick |
 | `engine.thinking` | `off` | `off` / `auto` (only where the model supports it) / `forced` |
-| `engine.response_tokens` | `512` | cap on the visible answer |
-| `engine.reasoning_tokens` | `4096` | thinking allowance, spent *on top* and only when thinking is on |
+| `engine.response_tokens` | `1024` | cap on the visible answer |
+| `engine.reasoning_tokens` | `4096` | thinking allowance, spent *on top* of the answer budget |
 | `engine.num_ctx_min` | `8192` | smallest context goulash can work in |
 | `engine.num_ctx` | *(unset)* | pin a context exactly |
 | `engine.keep_alive` | `30m` | how long the model stays resident |

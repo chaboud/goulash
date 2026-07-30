@@ -52,8 +52,8 @@ pub struct GenRequest {
     pub stop: Vec<String>,
     /// Reasoning control; see [`Think`].
     pub think: Think,
-    /// Extra tokens allowed *on top of* `max_tokens` when reasoning is
-    /// enabled, so thinking does not consume the display budget.
+    /// Extra tokens allowed *on top of* `max_tokens` to absorb reasoning,
+    /// so thinking cannot consume the display budget.
     ///
     /// Providers meter reasoning and output together, so this is applied
     /// by widening the wire-level cap. The visible answer stays short
@@ -66,11 +66,28 @@ pub struct GenRequest {
 impl GenRequest {
     /// What actually goes on the wire: display budget plus the reasoning
     /// allowance, since no provider meters them separately.
+    ///
+    /// The allowance is **unconditional**, and deliberately so. It used to
+    /// be added only for `think != Off`, which asked the wrong question —
+    /// "did we ask for reasoning" rather than "can reasoning happen". No
+    /// engine lets us answer the second one with a yes/no:
+    ///
+    /// - OpenAI-compatible **chat** applies the model's template, and for
+    ///   qwen3/gemma-class weights that template reasons no matter what we
+    ///   sent. The one kwarg that disables it (`enable_thinking:false`)
+    ///   *empties* `content` instead, which is why we do not send it.
+    /// - Even ollama, which honours `think:false` for most models, does not
+    ///   for all: `deepseek-r1:14b` accepts the flag and reasons anyway.
+    ///
+    /// So "off" is a request, never a guarantee, and budgeting on it
+    /// produced the exact failure it was meant to prevent — 93% empty
+    /// answers on the chat path, every one of them `finish=length` with
+    /// the whole budget spent on reasoning we had not accounted for.
+    ///
+    /// Unused headroom is free: it caps a ceiling, it does not reserve
+    /// anything, and measured answers use a median of 32 tokens.
     pub fn wire_max_tokens(&self) -> usize {
-        match self.think {
-            Think::Off => self.max_tokens,
-            _ => self.max_tokens.saturating_add(self.reasoning_tokens),
-        }
+        self.max_tokens.saturating_add(self.reasoning_tokens)
     }
 }
 
@@ -597,20 +614,27 @@ mod budget_tests {
         }
     }
 
-    /// The shipped path must be byte-identical to before this existed:
-    /// reasoning off means the allowance is not added.
+    /// Thinking draws on its OWN allowance — the display budget is never
+    /// what starves the answer.
     #[test]
-    fn reasoning_allowance_does_not_leak_into_the_display_budget() {
-        assert_eq!(req(Think::Off).wire_max_tokens(), 256);
-    }
-
-    /// When reasoning is on, thinking draws on its OWN allowance — the
-    /// display budget is not what starves the answer.
-    #[test]
-    fn reasoning_widens_the_wire_cap_only_when_enabled() {
+    fn reasoning_widens_the_wire_cap() {
         assert_eq!(req(Think::On).wire_max_tokens(), 1280);
         assert_eq!(req(Think::Level("low")).wire_max_tokens(), 1280);
         assert_eq!(req(Think::Default).wire_max_tokens(), 1280);
+    }
+
+    /// **Off is a request, not a guarantee**, so the allowance survives
+    /// it. This asserted the opposite until it was measured: an OpenAI
+    /// chat template reasons whatever we send, and `deepseek-r1:14b`
+    /// reasons through ollama's `think:false`. Budgeting on our own
+    /// intent returned 93% empty answers on the chat path, each one
+    /// `finish=length` with the display budget spent on reasoning.
+    ///
+    /// The ceiling is not a reservation — unused headroom costs nothing,
+    /// and answers that arrive use a median of 32 tokens.
+    #[test]
+    fn the_allowance_survives_thinking_being_off() {
+        assert_eq!(req(Think::Off).wire_max_tokens(), 1280);
     }
 
     #[test]
