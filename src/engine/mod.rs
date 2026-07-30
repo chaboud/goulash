@@ -72,7 +72,12 @@ pub enum Event {
         proactive: bool,
         remembers: Vec<String>,
         forgets: Vec<u64>,
+        /// Which tier produced this. A `Slow` answer following a `Fast`
+        /// one for the same turn is an amend, not a new turn.
+        tier: Tier,
     },
+    /// A tier started work — drives the band's activity dots.
+    TierBusy(Tier),
     Error(String),
     Models(Vec<String>),
     /// Raw model output, emitted when [engine] debug = true.
@@ -88,12 +93,40 @@ pub enum Event {
     Idle,
 }
 
+/// Which tiers answer a turn, and how their results combine.
+///
+/// The pair is ONE job rather than two queued asks: the worker coalesces
+/// to the newest ask, so two separate jobs would see the FAST leg
+/// discarded the instant SLOW was enqueued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Plan {
+    /// `#` — FAST answers immediately, then SLOW amends underneath as
+    /// another slot. `hist_push`'s adjacent dedup means SLOW agreeing
+    /// with FAST is silently a no-op, so a second slot appears only when
+    /// the considered answer actually differs.
+    FastThenSlow,
+    /// `#?` — skip the immediate answer. SLOW reasons, then FAST
+    /// compresses its output into the one-line band contract. Solves
+    /// reasoning being verbose without capping how much it may think.
+    SlowViaFast,
+    /// Proactive commentary and internal asks: one cheap pass.
+    FastOnly,
+}
+
+/// Which tier produced an answer, for the band indicator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    Fast,
+    Slow,
+}
+
 pub enum Job {
     Ask {
         question: String,
         context: String,
         memories: String,
         proactive: bool,
+        plan: Plan,
     },
     SetModel(String),
     /// Change `thinking` mid-session. The worker owns its own config
@@ -126,12 +159,13 @@ impl Engine {
         })
     }
 
-    pub fn ask(&self, question: String, context: String, memories: String) {
+    pub fn ask(&self, question: String, context: String, memories: String, plan: Plan) {
         let _ = self.job_tx.send(Job::Ask {
             question,
             context,
             memories,
             proactive: false,
+            plan,
         });
     }
 
@@ -152,6 +186,9 @@ impl Engine {
             context,
             memories,
             proactive: true,
+            // SLOW gets a shot at an observation as well, landing under
+            // the FAST one inside the same turn.
+            plan: Plan::FastThenSlow,
         });
     }
 
@@ -281,6 +318,7 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
             context,
             memories,
             proactive,
+            plan,
         }) = latest_ask
         {
             let Some(b) = &state else {
@@ -292,50 +330,16 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                 warm: false,
             });
             notify(&wr);
-            let result = generate(
-                &agent, &cfg, b, preamble, &question, &context, &memories, &ev, &wr,
-                proactive,
+            let result = run_plan(
+                plan, &agent, &cfg, b, preamble, &question, &context, &memories, &ev, &wr,
+                proactive, &path_set,
             );
             let _ = ev.send(Event::Idle);
-            let _ = match result {
-                Ok(ans) => {
-                    if cfg.debug {
-                        let _ = ev.send(Event::Debug(ans.clone()));
-                    }
-                    let (rest, remembers, forgets) = extract_memory_ops(&ans);
-                    let (text, command) = split_answer(&rest, &path_set);
-                    if text.is_empty()
-                        && command.is_none()
-                        && remembers.is_empty()
-                        && forgets.is_empty()
-                    {
-                        if proactive {
-                            Ok(()) // silent pass
-                        } else {
-                            let model = &b.model;
-                            ev.send(Event::Error(format!(
-                                "empty answer from {model} (thinking model? try \
-                                 #/model or raise max_tokens)"
-                            )))
-                        }
-                    } else {
-                        ev.send(Event::Answer {
-                            text,
-                            command,
-                            proactive,
-                            remembers,
-                            forgets,
-                        })
-                    }
-                }
-                Err(e) => {
-                    if proactive {
-                        Ok(()) // commentary failures stay silent
-                    } else {
-                        ev.send(Event::Error(e))
-                    }
-                }
-            };
+            if let Err(e) = result
+                && !proactive
+            {
+                let _ = ev.send(Event::Error(e));
+            }
             notify(&wr);
         }
     }
@@ -466,6 +470,7 @@ fn pick_model(
 fn generate(
     agent: &ureq::Agent,
     cfg: &EngineConfig,
+    tier: &crate::config::TierConfig,
     b: &Bound,
     preamble: &'static str,
     question: &str,
@@ -474,8 +479,9 @@ fn generate(
     ev: &mpsc::Sender<Event>,
     wr: &OwnedFd,
     proactive: bool,
+    stream: bool,
 ) -> Result<String, String> {
-    let think = resolve_think(&cfg.thinking, b.can_think);
+    let think = resolve_think(&tier.thinking, b.can_think);
     let req = GenRequest {
         model: b.model.clone(),
         prompt: build_prompt(
@@ -489,13 +495,13 @@ fn generate(
             &local_now(),
             proactive,
         ),
-        stream: cfg.stream,
+        stream,
         temperature: DEFAULT_TEMPERATURE,
-        max_tokens: cfg.response_tokens,
+        max_tokens: tier.response_tokens,
         num_ctx: cfg.num_ctx.unwrap_or(cfg.num_ctx_min),
         stop: DEFAULT_STOP.iter().map(|s| s.to_string()).collect(),
         think,
-        reasoning_tokens: cfg.reasoning_tokens,
+        reasoning_tokens: tier.reasoning_tokens,
         keep_alive: cfg.keep_alive.clone(),
     };
     // Throttle partials so the bar fills in without repainting per token.
@@ -633,4 +639,144 @@ mod think_tests {
         assert_eq!(resolve_think("off", Some(true)), Think::Off);
         assert_eq!(resolve_think("nonsense", Some(true)), Think::Off);
     }
+}
+
+/// Compress a considered answer into the band's one-line contract.
+///
+/// `#?` lets SLOW reason as long as it needs, which is what makes the
+/// answer good and also what makes it too long. Rather than capping the
+/// reasoning, FAST rewrites the result — the cheap tier is a formatter
+/// here, not a thinker, so it costs about a second.
+const MEDIATE: &str = "Rewrite the following answer for a one-line terminal status \
+bar. Keep the shell command EXACTLY as written. Output the command first on a line \
+formatted exactly as: CMD: <command>. Then ONE short prose line. Drop everything \
+else.\n\nAnswer to rewrite:\n";
+
+type Parsed = (String, Option<String>, Vec<String>, Vec<u64>);
+
+fn parse(raw: &str, path_set: &std::collections::HashSet<String>) -> Parsed {
+    let (rest, remembers, forgets) = extract_memory_ops(raw);
+    let (text, command) = split_answer(&rest, path_set);
+    (text, command, remembers, forgets)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn one_tier(
+    tier: Tier,
+    agent: &ureq::Agent,
+    cfg: &EngineConfig,
+    b: &Bound,
+    preamble: &'static str,
+    question: &str,
+    context: &str,
+    memories: &str,
+    ev: &mpsc::Sender<Event>,
+    wr: &OwnedFd,
+    proactive: bool,
+    stream: bool,
+) -> Result<String, String> {
+    let t = match tier {
+        Tier::Fast => &cfg.fast,
+        Tier::Slow => &cfg.slow,
+    };
+    let _ = ev.send(Event::TierBusy(tier));
+    notify(wr);
+    generate(
+        agent, cfg, t, b, preamble, question, context, memories, ev, wr, proactive, stream,
+    )
+}
+
+/// Execute a [`Plan`], emitting one or two answers.
+#[allow(clippy::too_many_arguments)]
+fn run_plan(
+    plan: Plan,
+    agent: &ureq::Agent,
+    cfg: &EngineConfig,
+    b: &Bound,
+    preamble: &'static str,
+    question: &str,
+    context: &str,
+    memories: &str,
+    ev: &mpsc::Sender<Event>,
+    wr: &OwnedFd,
+    proactive: bool,
+    path_set: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    let emit = |raw: &str, tier: Tier| {
+        if cfg.debug {
+            let _ = ev.send(Event::Debug(raw.to_string()));
+        }
+        let (text, command, remembers, forgets) = parse(raw, path_set);
+        if text.is_empty() && command.is_none() && remembers.is_empty() && forgets.is_empty() {
+            if !proactive {
+                let _ = ev.send(Event::Error(format!(
+                    "empty answer from {} (try #/thinking or raise reasoning_tokens)",
+                    b.model
+                )));
+            }
+        } else {
+            let _ = ev.send(Event::Answer {
+                text,
+                command,
+                proactive,
+                remembers,
+                forgets,
+                tier,
+            });
+        }
+        notify(wr);
+    };
+
+    match plan {
+        Plan::FastOnly => {
+            let raw = one_tier(
+                Tier::Fast, agent, cfg, b, preamble, question, context, memories, ev, wr,
+                proactive, cfg.stream,
+            )?;
+            emit(&raw, Tier::Fast);
+        }
+        Plan::FastThenSlow => {
+            // FAST first so something is on screen immediately.
+            let fast = one_tier(
+                Tier::Fast, agent, cfg, b, preamble, question, context, memories, ev, wr,
+                proactive, cfg.stream,
+            )?;
+            emit(&fast, Tier::Fast);
+            // SLOW amends underneath. A failure here leaves the FAST
+            // answer standing rather than replacing it with an error —
+            // the user already has something usable.
+            if let Ok(slow) = one_tier(
+                Tier::Slow, agent, cfg, b, preamble, question, context, memories, ev, wr,
+                proactive, false,
+            ) {
+                emit(&slow, Tier::Slow);
+            }
+        }
+        Plan::SlowViaFast => {
+            // Not streamed: a reasoning model's first content token comes
+            // after the whole think, so partials would show nothing for
+            // seconds and then everything at once.
+            let slow = one_tier(
+                Tier::Slow, agent, cfg, b, preamble, question, context, memories, ev, wr,
+                proactive, false,
+            )?;
+            let (text, command, _, _) = parse(&slow, path_set);
+            let already_tight = command.is_some() && text.lines().count() <= 1;
+            if already_tight {
+                // Nothing to compress; skip the second call entirely.
+                emit(&slow, Tier::Slow);
+            } else {
+                match one_tier(
+                    Tier::Fast, agent, cfg, b, preamble,
+                    &format!("{MEDIATE}{slow}"), context, memories, ev, wr, proactive,
+                    cfg.stream,
+                ) {
+                    Ok(tidy) => emit(&tidy, Tier::Slow),
+                    // If mediation fails, the unmediated answer beats none.
+                    Err(_) => emit(&slow, Tier::Slow),
+                }
+            }
+        }
+    }
+    Ok(())
 }

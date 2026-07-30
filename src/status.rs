@@ -43,18 +43,40 @@ pub fn rule_row(text: Option<&str>, orange: bool, tip: Option<&str>, cols: usize
 /// Bottom row of the goulash area: terminal-default background with the
 /// static chrome — identity, shell, state, `#` geometry — right-justified
 /// in its own grey chip.
+/// Two cells of activity, right after the name.
+///
+/// FAST is a brief pulse; SLOW can run for tens of seconds while the
+/// model reasons, so its dots CYCLE — a static mark would read as a hang
+/// exactly when the user most needs to know something is happening.
+/// Filled/hollow rather than colour so it survives a mono terminal.
+pub fn tier_dots(slow: Option<bool>, phase: u8) -> &'static str {
+    match slow {
+        None => "\u{b7}\u{b7}",
+        // FAST: one filled dot, no animation — it is over too fast to see.
+        Some(false) => "\u{2022}\u{b7}",
+        // SLOW: rotate so the pair visibly moves.
+        Some(true) => match phase % 4 {
+            0 => "\u{b7}\u{b7}",
+            1 => "\u{2022}\u{b7}",
+            2 => "\u{2022}\u{2022}",
+            _ => "\u{b7}\u{2022}",
+        },
+    }
+}
+
 pub fn chrome_row(
     real: Size,
     inner_rows: u16,
     reserved: u16,
     shell_name: &str,
     state: &str,
+    dots: &str,
 ) -> String {
     // Width stops one cell short of the real edge (compose_rows explains
     // why); the geometry text still reports the true column count.
     let cols = (real.cols as usize).saturating_sub(1);
     let chrome = format!(
-        " goulash \u{2502} {shell_name} \u{2502} {state} # {}x{inner_rows}+{reserved} ",
+        " goulash {dots} \u{2502} {shell_name} \u{2502} {state} # {}x{inner_rows}+{reserved} ",
         real.cols
     );
     let clipped: String = chrome.chars().take(cols).collect();
@@ -113,5 +135,38 @@ mod tests {
         let row = rule_row(Some(" notice "), false, Some(" tip "), 40);
         assert!(row.contains(" notice ") && row.contains(" tip "));
         assert_eq!(width(&row), 40);
+    }
+}
+
+#[cfg(test)]
+mod tier_tests {
+    use super::tier_dots;
+
+    #[test]
+    fn idle_is_hollow_and_fast_is_static() {
+        assert_eq!(tier_dots(None, 0), "\u{b7}\u{b7}");
+        // FAST never animates: at ~1s it would flash once and confuse.
+        assert_eq!(tier_dots(Some(false), 0), tier_dots(Some(false), 7));
+    }
+
+    /// SLOW must visibly move — a static mark during a 30s think reads as
+    /// a hang, which is the exact moment the user needs reassurance.
+    #[test]
+    fn slow_cycles_through_four_distinct_frames() {
+        let f: Vec<&str> = (0..4).map(|p| tier_dots(Some(true), p)).collect();
+        assert_eq!(f.len(), 4);
+        assert_eq!(f.iter().collect::<std::collections::HashSet<_>>().len(), 4);
+        assert_eq!(tier_dots(Some(true), 4), f[0], "wraps");
+    }
+
+    /// Two cells always, so the chrome never reflows as the tier changes.
+    #[test]
+    fn width_is_constant() {
+        for d in [tier_dots(None, 0), tier_dots(Some(false), 0)]
+            .into_iter()
+            .chain((0..4).map(|p| tier_dots(Some(true), p)))
+        {
+            assert_eq!(d.chars().count(), 2, "{d:?}");
+        }
     }
 }

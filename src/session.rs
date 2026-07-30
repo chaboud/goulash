@@ -355,6 +355,7 @@ fn wrap_chars(s: &str, width: usize, max_rows: usize) -> Vec<String> {
 /// the terminal never resizes mid-session.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn compose_rows(
+    dots: &str,
     cfg: &Config,
     layout: &Layout,
     shell_name: &str,
@@ -450,6 +451,7 @@ fn compose_rows(
             reserved,
             shell_name,
             sense::label(st, hook),
+            dots,
         ));
         return rows;
     }
@@ -499,6 +501,7 @@ fn compose_rows(
             reserved_now,
             shell_name,
             sense::label(st, hook),
+            dots,
         ));
         return rows;
     }
@@ -527,6 +530,7 @@ fn compose_rows(
             reserved,
             shell_name,
             label,
+            dots,
         )];
     }
 
@@ -584,6 +588,7 @@ fn compose_rows(
         reserved,
         shell_name,
         label,
+        dots,
     ));
     rows
 }
@@ -1012,6 +1017,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut commentary = cfg.engine.commentary;
     let mut memory = MemoryStore::load(Config::dir());
     let mut live = LiveSettings::from(cfg);
+    // Which tier is working, and where the activity dots are in their
+    // cycle. FAST is a brief pulse; SLOW can run for tens of seconds, so
+    // the dots have to read as progress rather than a hang.
+    let mut active_tier: Option<engine::Tier> = None;
+    let mut tier_phase: u8 = 0;
     let mut band: Option<Band> = None;
     let mut menu: Option<Menu> = None;
     let mut chat: Option<Chat> = None;
@@ -1029,6 +1039,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     macro_rules! redraw {
         () => {{
             let rows = compose_rows(
+                status::tier_dots(
+                    active_tier.map(|t| t == engine::Tier::Slow),
+                    tier_phase,
+                ),
                 cfg,
                 &layout,
                 &shell_name,
@@ -1288,6 +1302,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 body.to_string(),
                                                 ctx_log.clone(),
                                                 memory.context_block(),
+                                                engine::Plan::FastThenSlow,
                                             );
                                             ctx_log.push_str(&format!(
                                                 "# {} [asked {}]\n",
@@ -1314,10 +1329,25 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             &mut live,
                                         );
                                     } else if let Some(eng) = engine.as_ref() {
+                                        // `#? question` skips the immediate
+                                        // answer and has SLOW reason, then
+                                        // FAST compress the result into the
+                                        // band contract — one slot, not two.
+                                        let (q, plan) = match body.strip_prefix('?') {
+                                            Some(deep) => (
+                                                deep.trim().to_string(),
+                                                engine::Plan::SlowViaFast,
+                                            ),
+                                            None => (
+                                                body.to_string(),
+                                                engine::Plan::FastThenSlow,
+                                            ),
+                                        };
                                         eng.ask(
-                                            body.to_string(),
+                                            q.clone(),
                                             ctx_log.clone(),
                                             memory.context_block(),
+                                            plan,
                                         );
                                         ctx_log.push_str(&format!(
                                             "# {} [asked {}]\n",
@@ -1608,7 +1638,12 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             if let Some(c) = chat.as_mut() {
                                 c.lines.push(format!("# {text}"));
                             }
-                            eng.ask(text.clone(), ctx_log.clone(), memory.context_block());
+                            eng.ask(
+                                text.clone(),
+                                ctx_log.clone(),
+                                memory.context_block(),
+                                engine::Plan::FastThenSlow,
+                            );
                             ctx_log.push_str(&format!("# {} [asked {}]\n", text, engine::hms()));
                         } else if let Some(c) = chat.as_mut() {
                             c.lines
@@ -1700,7 +1735,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         proactive,
                         remembers,
                         forgets,
+                        tier,
                     } => {
+                        // A Slow answer is an AMEND: it lands as the newest
+                        // slot, directly under the Fast one from the same
+                        // turn, so Down reaches both. hist_push's adjacent
+                        // dedup means an amend that agrees adds nothing.
+                        active_tier = Some(tier);
                         // The generation completed: the bound model earned
                         // its trust (ends probation, clears any distrust).
                         if let Some(m) = engine_model.as_ref() {
@@ -1751,13 +1792,40 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         text: one_line.clone(),
                                     },
                                 );
-                                suggestions.insert(0, (id, cmd.clone(), why.to_string()));
-                                suggestions.truncate(8);
+                                // An amend that AGREES with the answer it
+                                // follows is not a new option. sug_hist
+                                // already dedups adjacent repeats; the
+                                // pullable list has to as well, or a SLOW
+                                // pass that confirms FAST silently doubles
+                                // every entry.
+                                if suggestions.first().map(|(_, c, _)| c != &cmd).unwrap_or(true) {
+                                    suggestions.insert(0, (id, cmd.clone(), why.to_string()));
+                                    suggestions.truncate(8);
+                                }
                                 ctx_log.push_str(&format!("CMD: {cmd}\n"));
                             }
                             if let Some(c) = chat.as_mut() {
                                 c.stream = None;
-                                c.lines.push(format!("goulash: {one_line}"));
+                                // A SLOW amend supersedes the FAST line it
+                                // follows rather than appending a second
+                                // reply to one question. Identical text is
+                                // dropped entirely, so a considered pass
+                                // that merely confirms costs nothing
+                                // visible.
+                                let last_is_reply = c
+                                    .lines
+                                    .last()
+                                    .map(|l| l.starts_with("goulash: "))
+                                    .unwrap_or(false);
+                                let new_line = format!("goulash: {one_line}");
+                                if tier == engine::Tier::Slow && last_is_reply {
+                                    if c.lines.last() != Some(&new_line) {
+                                        let n = c.lines.len();
+                                        c.lines[n - 1] = new_line;
+                                    }
+                                } else {
+                                    c.lines.push(new_line);
+                                }
                             } else if proactive {
                                 band = Some(Band {
                                     question: None,
@@ -1795,7 +1863,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             warming = Some(model);
                         }
                     }
+                    engine::Event::TierBusy(t) => {
+                        active_tier = Some(t);
+                        tier_phase = 0;
+                        dirty = true;
+                    }
                     engine::Event::Idle => {
+                        active_tier = None;
                         fuse.idle();
                         if let Some(m) = warming.take() {
                             notice = Some(format!("{m} ready"));
@@ -1862,6 +1936,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         if n == 0 {
             if dirty {
                 let rows = compose_rows(
+                    status::tier_dots(
+                        active_tier.map(|t| t == engine::Tier::Slow),
+                        tier_phase,
+                    ),
                     cfg,
                     &layout,
                     &shell_name,
@@ -1883,6 +1961,17 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 }
                 dirty = false;
                 idle_ticks = 0;
+            } else if active_tier == Some(engine::Tier::Slow) {
+                // A SLOW turn can run for tens of seconds. Advance the
+                // dots ~every 500ms so it reads as progress, not a hang.
+                // This is the one case where an idle repaint earns its
+                // bytes — and it stops the moment Idle arrives.
+                idle_ticks += 1;
+                if idle_ticks >= 2 {
+                    idle_ticks = 0;
+                    tier_phase = tier_phase.wrapping_add(1);
+                    dirty = true;
+                }
             } else if output_since_repaint {
                 idle_ticks += 1;
                 if idle_ticks >= 4 {

@@ -515,8 +515,14 @@ def test_chat_mode():
             if "Without being asked" in p:
                 ans = "PASS"  # proactive commentary stays quiet
             else:
-                FakeOllama.asks += 1
-                n = FakeOllama.asks
+                # Key the answer off the QUESTION, not a request counter.
+                # A turn now runs two legs (fast, then a slow amend), so a
+                # per-request counter would hand them different commands
+                # and manufacture a second slot on every turn. Real tiers
+                # usually agree, and an agreeing amend is deduped away.
+                # +1 because the session appends the question to the log
+                # AFTER dispatching, so the first ask sees none of its own.
+                n = len([l for l in p.splitlines() if l.startswith("# ")]) + 1
                 ans = "ANS" + ("-CTX" if "goulash:" in p else "")
                 # distinct command per turn -> a browsable slot stack;
                 # the $(( )) form separates display from execution
@@ -585,6 +591,92 @@ def test_chat_mode():
     os.write(mfd, b"echo bye-$((2*2))\r")
     out = read_until(mfd, rb"bye-4", 5.0)
     check("esc exits chat, shell keys flow again", b"bye-4" in out, out[-300:])
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+    srv.shutdown()
+
+
+def test_slow_amend():
+    """A turn runs FAST then SLOW; a differing amend lands under it."""
+    print("FAST answers, SLOW amends under it in the same turn:")
+    if not shutil.which("zsh"):
+        print("  [SKIP] zsh not installed")
+        return
+    import http.server
+    import threading
+
+    class FakeTiers(http.server.BaseHTTPRequestHandler):
+        legs = []
+
+        def _send(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/api/tags":
+                self._send({"models": [{"name": "tiermodel", "size": 1}]})
+            elif self.path == "/api/ps":
+                self._send({"models": []})
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            req = json.loads(self.rfile.read(n) or b"{}")
+            if self.path == "/api/show":
+                self._send({"capabilities": ["completion", "thinking"]})
+                return
+            if "prompt" not in req:
+                self._send({"done": True})
+                return
+            if "Without being asked" in req["prompt"]:
+                self._send({"response": "PASS"})
+                return
+            # The tiers are distinguishable by their reasoning allowance:
+            # fast sends none, slow sends 4096 on top.
+            slow = req["options"]["num_predict"] > 512
+            FakeTiers.legs.append("slow" if slow else "fast")
+            cmd = "echo amended" if slow else "echo quick"
+            self._send({"response": f"{'considered' if slow else 'immediate'}\nCMD: {cmd}"})
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), FakeTiers)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    home = tempfile.mkdtemp(prefix="goulash-test-")
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write(f'[engine]\nprovider = "ollama"\n'
+                f'host = "http://127.0.0.1:{port}"\nmodel = "tiermodel"\n')
+    proc, mfd = spawn(["zsh"], home=home)
+    time.sleep(1.5)
+    os.write(mfd, b"# what now\r")
+    out = read_until(mfd, rb"echo amended", 10.0)
+    check("both tiers ran", FakeTiers.legs[:2] == ["fast", "slow"],
+          str(FakeTiers.legs))
+    check("the amend is what the band offers", b"echo amended" in out, out[-200:])
+    # Down reaches the amend first, then the immediate answer beneath it:
+    # two distinct slots for one turn.
+    os.write(mfd, b"\x1b[B")
+    out = read_until(mfd, rb"1/2", 4.0)
+    check("amend and original are both browsable (1/2)", b"1/2" in out, out[-200:])
+    os.write(mfd, b"\x1b[B")
+    out = read_until(mfd, rb"2/2", 4.0)
+    check("the original FAST answer is still reachable",
+          b"2/2" in out and b"echo quick" in out, out[-200:])
+    # Walk back up past both slots to the neutral empty line, then clear
+    # anything the browse left on the prompt before exiting.
+    os.write(mfd, b"\x1b[A")
+    time.sleep(0.3)
+    os.write(mfd, b"\x1b[A")
+    time.sleep(0.3)
+    os.write(mfd, b"\x03")
+    time.sleep(0.3)
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
     srv.shutdown()
@@ -755,6 +847,7 @@ def main():
         test_engine_ollama,
         test_model_menu,
         test_chat_mode,
+        test_slow_amend,
         test_memory,
         test_resize_hygiene,
         test_non_tty,

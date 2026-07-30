@@ -40,6 +40,17 @@ pub struct DivulgeConfig {
     pub full_path: bool,
 }
 
+impl Default for TierConfig {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            thinking: "off".into(),
+            response_tokens: 512,
+            reasoning_tokens: 0,
+        }
+    }
+}
+
 impl Default for DivulgeConfig {
     fn default() -> Self {
         Self {
@@ -48,6 +59,24 @@ impl Default for DivulgeConfig {
             full_path: false,
         }
     }
+}
+
+/// One inference tier.
+///
+/// FAST and SLOW run the SAME model by default, differing only in
+/// whether reasoning is on — so switching tiers costs nothing. Naming a
+/// different model per tier is allowed but means a load on every switch
+/// (206ms reuse vs 1847ms reload), so it is opt-in rather than the shape
+/// the design assumes.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct TierConfig {
+    /// Empty = use `[engine] model`.
+    pub model: String,
+    /// `off` | `auto` | `forced`.
+    pub thinking: String,
+    pub response_tokens: usize,
+    pub reasoning_tokens: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -118,6 +147,11 @@ pub struct EngineConfig {
     pub prefer_resident: bool,
     /// Machine facts told to the model. See [`DivulgeConfig`].
     pub divulge: DivulgeConfig,
+    /// The immediate tier. `#` answers from here first, always.
+    pub fast: TierConfig,
+    /// The considered tier. `#` amends with it underneath; `#?` goes
+    /// straight here and has FAST compress the result.
+    pub slow: TierConfig,
     /// Load the model in the background at bind/switch time so the first
     /// ask doesn't pay the cold start.
     pub prewarm: bool,
@@ -148,6 +182,22 @@ impl Default for EngineConfig {
             num_ctx: None,
             prefer_resident: false,
             divulge: DivulgeConfig::default(),
+            fast: TierConfig {
+                model: String::new(),
+                // FAST exists to be immediate; thinking is what makes it
+                // not immediate.
+                thinking: "off".into(),
+                response_tokens: 512,
+                reasoning_tokens: 0,
+            },
+            slow: TierConfig {
+                model: String::new(),
+                thinking: "auto".into(),
+                response_tokens: 512,
+                // 4096 is a floor: at 1024, 19 of 32 cells still ran out
+                // mid-thought. (bench/THINKING.md)
+                reasoning_tokens: 4096,
+            },
             prewarm: true,
             debug: false,
             commentary: true,
