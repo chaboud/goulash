@@ -1401,50 +1401,50 @@ fn ctx_for(cl: &Client, cfg: &EngineConfig, model: &str) -> usize {
     negotiate_ctx(cfg, found.filter(|c| *c > 0))
 }
 
-fn negotiate_ctx(cfg: &EngineConfig, resident: Option<usize>) -> usize {
-    if cfg.num_ctx > 0 {
-        return cfg.num_ctx;
-    }
-    match resident {
-        // Loaded and roomy enough: say nothing, keep the load.
-        Some(c) if c >= cfg.num_ctx_min => 0,
-        // Loaded but too small: the expensive case, on purpose.
-        Some(_) if cfg.nudge_small_context => cfg.num_ctx_min,
-        Some(_) => 0,
-        // Nothing to preserve — ask for the floor.
-        None => cfg.num_ctx_min,
-    }
-}
-
-fn generate(
-    cl: &Client,
-    cfg: &EngineConfig,
-    caps: &Caps,
-    model: &str,
-    question: &str,
-    context: &str,
+/// The prompt, assembled exactly as an ask sends it.
+///
+/// Carved out of `generate` so the characterization bench can build the
+/// **real** prompt rather than a copy of it. A harness with its own
+/// prompt builder measures the harness: the two drift the first time
+/// either is touched, and every conclusion drawn from the numbers
+/// silently stops applying to the shipped product.
+///
+/// `now` is a parameter rather than a call to `local_now()` for the same
+/// reason — the current time sits in the volatile suffix, so a live
+/// clock makes two runs of the same cell differ and turns a latency
+/// comparison into noise. The product passes the real clock; the bench
+/// freezes it.
+///
+/// Order is most-stable-first, which is what makes prefix caching work:
+/// preamble, machine facts, memories, pinned files, session log, then
+/// the volatile tail (time, cards, question, directive).
+#[allow(clippy::too_many_arguments)]
+pub fn build_prompt(
+    facts: &str,
     memories: &str,
     pinned: &str,
+    context: &str,
     cards: &str,
-    ev: &mpsc::Sender<Event>,
-    wr: &OwnedFd,
-    proactive: bool,
-    pin_ask: bool,
-) -> Result<(String, Option<String>), String> {
-    // Volatile parts (current time, question) go AFTER the stable prefix.
-    // The command directive is repeated at point-of-use: small models
-    // lose instructions that only appear at the top of a long prompt.
-    // Prompt shape (stable-prefix first): preamble, pinned memories,
-    // session log, then the volatile time/question/directive suffix.
-    // Two modes of ingress, two contracts: a `#` ask is usually fishing
-    // for a runnable command; unprompted commentary earns its CMD line.
-    // Command-first puts the payload where truncation cannot reach it —
-    // and lets the suggestion vend before the prose finishes.
-    let directive = match (cfg.command_first, proactive) {
+    question: &str,
+    directive: &str,
+    now: &str,
+) -> String {
+    format!(
+        "{PREAMBLE}{facts}{memories}{pinned}Session log (oldest first):\n{context}\n\
+         Current local time: {now}\n{cards}Question: {question}\n{directive}\nAnswer:"
+    )
+}
+
+/// Which directive a turn gets, by ingress and ordering. Public for the
+/// same reason as `build_prompt`: the bench sweeps `command_first`, and
+/// it has to sweep the real wording.
+pub fn directive_for(command_first: bool, proactive: bool, pin_ask: bool) -> &'static str {
+    match (command_first, proactive) {
         _ if pin_ask => {
             "Answer ONLY with PIN: / PINCLEAR lines plus at most one short \
              prose line. No CMD: line."
         }
+        
         // Nothing may follow `CMD: <command>` on these lines. Mimicry is
         // what teaches a small model the format, so a directive that
         // trails an em-dash and an explanation after the placeholder
@@ -1484,7 +1484,49 @@ fn generate(
              Include the CMD line ONLY if a genuinely useful next \
              command exists; otherwise send the SAY line alone."
         }
-    };
+    }
+}
+
+fn negotiate_ctx(cfg: &EngineConfig, resident: Option<usize>) -> usize {
+    if cfg.num_ctx > 0 {
+        return cfg.num_ctx;
+    }
+    match resident {
+        // Loaded and roomy enough: say nothing, keep the load.
+        Some(c) if c >= cfg.num_ctx_min => 0,
+        // Loaded but too small: the expensive case, on purpose.
+        Some(_) if cfg.nudge_small_context => cfg.num_ctx_min,
+        Some(_) => 0,
+        // Nothing to preserve — ask for the floor.
+        None => cfg.num_ctx_min,
+    }
+}
+
+fn generate(
+    cl: &Client,
+    cfg: &EngineConfig,
+    caps: &Caps,
+    model: &str,
+    question: &str,
+    context: &str,
+    memories: &str,
+    pinned: &str,
+    cards: &str,
+    ev: &mpsc::Sender<Event>,
+    wr: &OwnedFd,
+    proactive: bool,
+    pin_ask: bool,
+) -> Result<(String, Option<String>), String> {
+    // Volatile parts (current time, question) go AFTER the stable prefix.
+    // The command directive is repeated at point-of-use: small models
+    // lose instructions that only appear at the top of a long prompt.
+    // Prompt shape (stable-prefix first): preamble, pinned memories,
+    // session log, then the volatile time/question/directive suffix.
+    // Two modes of ingress, two contracts: a `#` ask is usually fishing
+    // for a runnable command; unprompted commentary earns its CMD line.
+    // Command-first puts the payload where truncation cannot reach it —
+    // and lets the suggestion vend before the prose finishes.
+    let directive = directive_for(cfg.command_first, proactive, pin_ask);
     // Stable-prefix order, most stable first: preamble, machine facts,
     // memories, working context, session log. A pin changes far less
     // often than the log, so it belongs above it in the prefix.
@@ -1498,10 +1540,8 @@ fn generate(
     // changes, which is approximately never — so they cost one cache
     // miss ever, and every later turn reads them for free.
     let facts = crate::facts::block(&cfg.divulge);
-    let prompt = format!(
-        "{PREAMBLE}{facts}{memories}{pinned}Session log (oldest first):\n{context}\n\
-         Current local time: {}\n{cards}Question: {question}\n{directive}\nAnswer:",
-        local_now()
+    let prompt = build_prompt(
+        &facts, memories, pinned, context, cards, question, directive, &local_now(),
     );
     let _ = ev.send(Event::Prompt {
         chars: prompt.chars().count(),
@@ -1679,7 +1719,7 @@ pub fn hms() -> String {
 
 /// Pull REMEMBER:/FORGET: tool lines out of an answer; returns the
 /// remaining text plus the requested memory operations.
-fn extract_memory_ops(raw: &str) -> (String, Vec<String>, Vec<u64>) {
+pub fn extract_memory_ops(raw: &str) -> (String, Vec<String>, Vec<u64>) {
     let mut rest = Vec::new();
     let mut remembers = Vec::new();
     let mut forgets = Vec::new();
@@ -1705,7 +1745,7 @@ fn extract_memory_ops(raw: &str) -> (String, Vec<String>, Vec<u64>) {
 /// here), and the first `CMD: ...` line is the command. Small models
 /// often reply with a bare command and no tag, so a fallback treats a
 /// short line whose first word is a PATH executable as the command.
-fn split_answer(
+pub fn split_answer(
     raw: &str,
     path_set: &std::collections::HashSet<String>,
 ) -> (String, Option<String>) {
