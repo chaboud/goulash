@@ -43,6 +43,8 @@ pub struct DivulgeConfig {
 impl Default for TierConfig {
     fn default() -> Self {
         Self {
+            watch: true,
+            ask: true,
             model: String::new(),
             thinking: "off".into(),
             response_tokens: 512,
@@ -71,6 +73,21 @@ impl Default for DivulgeConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct TierConfig {
+    /// Volunteer on ordinary command turns (the heckle).
+    ///
+    /// For FAST this is the unprompted tip. For SLOW it is amending one
+    /// that FAST already gave.
+    pub watch: bool,
+    /// Join a `#` ask automatically.
+    ///
+    /// FAST always does, so this only means anything for SLOW: whether a
+    /// plain `#` gets a considered second pass underneath the immediate
+    /// answer.
+    ///
+    /// Neither flag gates EXPLICIT invocation — `#?` always reaches SLOW,
+    /// because the user asking for it outranks a default about when to
+    /// volunteer.
+    pub ask: bool,
     /// Empty = use `[engine] model`.
     pub model: String,
     /// `off` | `auto` | `forced`.
@@ -183,6 +200,8 @@ impl Default for EngineConfig {
             prefer_resident: false,
             divulge: DivulgeConfig::default(),
             fast: TierConfig {
+                watch: true,
+                ask: true,
                 model: String::new(),
                 // FAST exists to be immediate; thinking is what makes it
                 // not immediate.
@@ -191,6 +210,10 @@ impl Default for EngineConfig {
                 reasoning_tokens: 0,
             },
             slow: TierConfig {
+                // Off by default on the heckle: an unprompted tip that
+                // rewrites itself seconds later is noise, not help.
+                watch: false,
+                ask: true,
                 model: String::new(),
                 thinking: "auto".into(),
                 response_tokens: 512,

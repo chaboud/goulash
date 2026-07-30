@@ -111,6 +111,34 @@ pub enum Plan {
     SlowViaFast,
     /// Proactive commentary and internal asks: one cheap pass.
     FastOnly,
+    /// FAST is disabled: the considered answer stands unmediated.
+    SlowOnly,
+}
+
+impl Plan {
+    /// Narrow a plan to the tiers that volunteer for this kind of turn.
+    ///
+    /// `SlowViaFast` is never narrowed: it is what `#?` produces, and an
+    /// explicit request outranks a default about when to volunteer.
+    pub fn resolve(self, proactive: bool, cfg: &crate::config::EngineConfig) -> Option<Plan> {
+        // Explicit deep ask always reaches SLOW.
+        if self == Plan::SlowViaFast {
+            return Some(self);
+        }
+        let (fast, slow) = if proactive {
+            (cfg.fast.watch, cfg.slow.watch)
+        } else {
+            // FAST always answers a `#`; only SLOW's participation is a
+            // question.
+            (true, cfg.slow.ask)
+        };
+        match (fast, slow) {
+            (true, true) => Some(Plan::FastThenSlow),
+            (true, false) => Some(Plan::FastOnly),
+            (false, true) => Some(Plan::SlowOnly),
+            (false, false) => None,
+        }
+    }
 }
 
 /// Which tier produced an answer, for the band indicator.
@@ -129,6 +157,12 @@ pub enum Job {
         plan: Plan,
     },
     SetModel(String),
+    /// Change a tier's automatic participation (`#/fast`, `#/slow`).
+    SetTiers {
+        fast_watch: bool,
+        slow_watch: bool,
+        slow_ask: bool,
+    },
     /// Change `thinking` mid-session. The worker owns its own config
     /// clone, so a `#/thinking` that only updated the session's copy would
     /// silently do nothing — the knob has to reach the thread that builds
@@ -198,6 +232,14 @@ impl Engine {
 
     pub fn set_thinking(&self, mode: String) {
         let _ = self.job_tx.send(Job::SetThinking(mode));
+    }
+
+    pub fn set_tiers(&self, fast_watch: bool, slow_watch: bool, slow_ask: bool) {
+        let _ = self.job_tx.send(Job::SetTiers {
+            fast_watch,
+            slow_watch,
+            slow_ask,
+        });
     }
 
     pub fn rebind(&self) {
@@ -281,7 +323,31 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                     None => unreachable_engine(&ev, &wr, &cfg),
                 },
                 Job::SetThinking(mode) => {
+                    // The TIERS own the setting the request is built from,
+                    // so touching only the top-level field would leave
+                    // #/thinking silently doing nothing.
+                    //
+                    // It steers SLOW, because FAST is *defined* as the
+                    // tier that does not think — making `#/thinking auto`
+                    // apply to both would erase the distinction the two
+                    // tiers exist for. `forced` is the debug escape and
+                    // does reach FAST.
+                    cfg.slow.thinking = mode.clone();
+                    if mode == "forced" {
+                        cfg.fast.thinking = mode.clone();
+                    } else {
+                        cfg.fast.thinking = "off".into();
+                    }
                     cfg.thinking = mode;
+                }
+                Job::SetTiers {
+                    fast_watch,
+                    slow_watch,
+                    slow_ask,
+                } => {
+                    cfg.fast.watch = fast_watch;
+                    cfg.slow.watch = slow_watch;
+                    cfg.slow.ask = slow_ask;
                 }
                 Job::Rebind => {
                     cfg.model = None;
@@ -323,6 +389,17 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
         {
             let Some(b) = &state else {
                 unreachable_engine(&ev, &wr, &cfg);
+                continue;
+            };
+            // No tier volunteers for this turn. Silent for commentary —
+            // that is exactly what turning watching off asked for.
+            let Some(plan) = plan.resolve(proactive, &cfg) else {
+                if !proactive {
+                    let _ = ev.send(Event::Error(
+                        "no tier is set to answer \u{2014} try #/slow on".into(),
+                    ));
+                    notify(&wr);
+                }
                 continue;
             };
             let _ = ev.send(Event::Busy {
@@ -752,6 +829,13 @@ fn run_plan(
                 emit(&slow, Tier::Slow);
             }
         }
+        Plan::SlowOnly => {
+            let raw = one_tier(
+                Tier::Slow, agent, cfg, b, preamble, question, context, memories, ev, wr,
+                proactive, false,
+            )?;
+            emit(&raw, Tier::Slow);
+        }
         Plan::SlowViaFast => {
             // Not streamed: a reasoning model's first content token comes
             // after the whole think, so partials would show nothing for
@@ -779,4 +863,70 @@ fn run_plan(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::Plan;
+
+    use crate::config::EngineConfig;
+
+    fn cfg(fast_watch: bool, slow_watch: bool, slow_ask: bool) -> EngineConfig {
+        let mut c = EngineConfig::default();
+        c.fast.watch = fast_watch;
+        c.slow.watch = slow_watch;
+        c.slow.ask = slow_ask;
+        c
+    }
+
+    /// `#?` is an explicit request. No participation default may veto it —
+    /// otherwise a user who quieted the heckle would silently lose the
+    /// one command that exists to summon the considered answer.
+    #[test]
+    fn deep_ask_is_never_narrowed() {
+        for (fw, sw, sa) in [(true, true, true), (false, false, false)] {
+            assert_eq!(
+                Plan::SlowViaFast.resolve(false, &cfg(fw, sw, sa)),
+                Some(Plan::SlowViaFast)
+            );
+        }
+    }
+
+    /// A plain `#` always gets FAST; slow.ask decides whether a considered
+    /// pass follows it.
+    #[test]
+    fn ask_turns_follow_slow_ask_only() {
+        assert_eq!(
+            Plan::FastThenSlow.resolve(false, &cfg(true, false, true)),
+            Some(Plan::FastThenSlow)
+        );
+        assert_eq!(
+            Plan::FastThenSlow.resolve(false, &cfg(true, false, false)),
+            Some(Plan::FastOnly)
+        );
+        // fast.watch governs the heckle, not the ask path.
+        assert_eq!(
+            Plan::FastThenSlow.resolve(false, &cfg(false, false, false)),
+            Some(Plan::FastOnly)
+        );
+    }
+
+    /// Commentary is governed by the watch flags, so quieting both makes
+    /// unprompted turns produce nothing at all.
+    #[test]
+    fn watch_flags_govern_commentary() {
+        assert_eq!(
+            Plan::FastThenSlow.resolve(true, &cfg(true, true, true)),
+            Some(Plan::FastThenSlow)
+        );
+        assert_eq!(
+            Plan::FastThenSlow.resolve(true, &cfg(true, false, true)),
+            Some(Plan::FastOnly)
+        );
+        assert_eq!(
+            Plan::FastThenSlow.resolve(true, &cfg(false, true, true)),
+            Some(Plan::SlowOnly)
+        );
+        assert_eq!(Plan::FastThenSlow.resolve(true, &cfg(false, false, true)), None);
+    }
 }

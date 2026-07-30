@@ -792,6 +792,63 @@ fn slash_command(
                 )),
             }
         }
+        // `#/fast [on|off]`  — whether FAST volunteers on command turns
+        // `#/slow [on|off]`  — whether SLOW joins a plain `#`
+        //
+        // Neither gates `#?`, which always reaches SLOW: asking for the
+        // considered answer outranks a default about when to volunteer.
+        ("fast", arg) | ("slow", arg) => {
+            let is_fast = cmd == "fast";
+            let mut t = arg.unwrap_or("").split_whitespace();
+            let word = t.next().unwrap_or("");
+            let save = t.next() == Some("save");
+            let cur = if is_fast { live.fast_watch } else { live.slow_ask };
+            let on = match word {
+                "on" | "true" => Some(true),
+                "off" | "false" => Some(false),
+                "" => Some(!cur),
+                _ => None,
+            };
+            let Some(on) = on else {
+                return Some(format!(
+                    "fast watches: {} \u{b7} slow joins asks: {} \u{b7} slow amends \
+                     heckles: {} \u{2014} usage: #/{cmd} [on|off] [save]",
+                    live.fast_watch, live.slow_ask, live.slow_watch
+                ));
+            };
+            let (key, what) = if is_fast {
+                live.fast_watch = on;
+                (
+                    "engine.fast.watch",
+                    if on {
+                        "fast volunteers tips on command turns"
+                    } else {
+                        "fast answers only when you ask with #"
+                    },
+                )
+            } else {
+                live.slow_ask = on;
+                (
+                    "engine.slow.ask",
+                    if on {
+                        "slow amends a # answer underneath the immediate one"
+                    } else {
+                        "slow only runs when you ask with #?"
+                    },
+                )
+            };
+            if let Some(eng) = engine {
+                eng.set_tiers(live.fast_watch, live.slow_watch, live.slow_ask);
+            }
+            let mut msg = format!("{cmd} {} \u{2014} {what}", if on { "on" } else { "off" });
+            if save {
+                msg = match Config::persist(key, &on.to_string()) {
+                    Ok(()) => format!("{cmd} {} \u{2192} default", if on { "on" } else { "off" }),
+                    Err(e) => format!("config write failed: {e}"),
+                };
+            }
+            Some(msg)
+        }
         ("divulge", arg) => {
             let mut t = arg.unwrap_or("").split_whitespace();
             let what = t.next().unwrap_or("");
@@ -827,7 +884,8 @@ fn slash_command(
             blocks,
         )),
         ("help", _) => Some(
-            "#/model [name [save]] \u{b7} #/thinking off|auto|forced \u{b7} \
+            "#? deep ask \u{b7} #/model [name [save]] \u{b7} #/fast [on|off] \u{b7} \
+             #/slow [on|off] \u{b7} #/thinking off|auto|forced \u{b7} \
              #/commentary [on|off] \u{b7} #/divulge \u{2026} \u{b7} #/memory \u{2026} \u{b7} #/status"
                 .to_string(),
         ),
@@ -844,6 +902,9 @@ fn slash_command(
 /// bind so it never sits on the ask path.
 pub struct LiveSettings {
     pub thinking: String,
+    pub fast_watch: bool,
+    pub slow_watch: bool,
+    pub slow_ask: bool,
     pub response_tokens: usize,
     pub reasoning_tokens: usize,
     pub divulge: crate::config::DivulgeConfig,
@@ -857,6 +918,9 @@ impl LiveSettings {
     pub fn from(cfg: &Config) -> Self {
         Self {
             thinking: cfg.engine.thinking.clone(),
+            fast_watch: cfg.engine.fast.watch,
+            slow_watch: cfg.engine.slow.watch,
+            slow_ask: cfg.engine.slow.ask,
             response_tokens: cfg.engine.response_tokens,
             reasoning_tokens: cfg.engine.reasoning_tokens,
             divulge: cfg.engine.divulge.clone(),
