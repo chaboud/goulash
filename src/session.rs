@@ -1961,11 +1961,12 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 }
                 dirty = false;
                 idle_ticks = 0;
-            } else if active_tier == Some(engine::Tier::Slow) {
-                // A SLOW turn can run for tens of seconds. Advance the
-                // dots ~every 500ms so it reads as progress, not a hang.
-                // This is the one case where an idle repaint earns its
-                // bytes — and it stops the moment Idle arrives.
+            } else if active_tier.is_some() {
+                // A tier is working, so this is not an idle tick — the
+                // 0 B/s idle behaviour is unaffected. Advance the dots
+                // ~every 500ms so both a 3s FAST turn and a 30s SLOW one
+                // read as progress rather than a hang. Stops the moment
+                // Idle arrives.
                 idle_ticks += 1;
                 if idle_ticks >= 2 {
                     idle_ticks = 0;

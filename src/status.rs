@@ -45,16 +45,26 @@ pub fn rule_row(text: Option<&str>, orange: bool, tip: Option<&str>, cols: usize
 /// in its own grey chip.
 /// Two cells of activity, right after the name.
 ///
-/// FAST is a brief pulse; SLOW can run for tens of seconds while the
-/// model reasons, so its dots CYCLE — a static mark would read as a hang
-/// exactly when the user most needs to know something is happening.
-/// Filled/hollow rather than colour so it survives a mono terminal.
+/// Both tiers animate. An earlier version held FAST static on the theory
+/// that it was over too fast to see — wrong twice over: FAST commonly
+/// runs 3-10s (TTFT alone measured 500-2300ms), which is well past the
+/// point a user wants feedback, and while EITHER tier is working the
+/// session is not idle, so the byte cost that motivated gating the idle
+/// repaint does not apply here at all.
+///
+/// The two are told apart by their pattern rather than by speed, so a
+/// glance distinguishes them without timing anything:
+///   FAST  a single dot bouncing   (2 frames)
+///   SLOW  the pair filling        (4 frames)
+///
+/// Filled/hollow rather than colour, so it survives a mono terminal.
 pub fn tier_dots(slow: Option<bool>, phase: u8) -> &'static str {
     match slow {
         None => "\u{b7}\u{b7}",
-        // FAST: one filled dot, no animation — it is over too fast to see.
-        Some(false) => "\u{2022}\u{b7}",
-        // SLOW: rotate so the pair visibly moves.
+        Some(false) => match phase % 2 {
+            0 => "\u{2022}\u{b7}",
+            _ => "\u{b7}\u{2022}",
+        },
         Some(true) => match phase % 4 {
             0 => "\u{b7}\u{b7}",
             1 => "\u{2022}\u{b7}",
@@ -143,10 +153,23 @@ mod tier_tests {
     use super::tier_dots;
 
     #[test]
-    fn idle_is_hollow_and_fast_is_static() {
+    fn idle_is_hollow_and_both_tiers_move() {
         assert_eq!(tier_dots(None, 0), "\u{b7}\u{b7}");
-        // FAST never animates: at ~1s it would flash once and confuse.
-        assert_eq!(tier_dots(Some(false), 0), tier_dots(Some(false), 7));
+        // FAST animates too: it commonly runs several seconds, and while
+        // it works the session is not idle, so movement costs nothing.
+        assert_ne!(tier_dots(Some(false), 0), tier_dots(Some(false), 1));
+    }
+
+    /// The tiers must be distinguishable at a glance, without timing the
+    /// animation: FAST bounces one dot, SLOW fills the pair.
+    #[test]
+    fn fast_and_slow_use_different_patterns() {
+        let fast: Vec<&str> = (0..4).map(|p| tier_dots(Some(false), p)).collect();
+        let slow: Vec<&str> = (0..4).map(|p| tier_dots(Some(true), p)).collect();
+        assert_ne!(fast, slow);
+        // FAST never shows both filled or both hollow; SLOW does both.
+        assert!(!fast.contains(&"\u{2022}\u{2022}"));
+        assert!(slow.contains(&"\u{2022}\u{2022}"));
     }
 
     /// SLOW must visibly move — a static mark during a 30s think reads as
