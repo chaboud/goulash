@@ -4,7 +4,7 @@
 cd /Volumes/case/git/goulash || exit 1
 D=bench/results/2026-07-28
 export GOULASH_BENCH_MAX_GB=12
-SUB="gemma4:e2b,gemma4:e4b,gemma4:12b,qwen3.5:2b,qwen3.5:4b,qwen3.5:9b,gemma3:12b,llama3.2:3b,qwen/qwen3-4b,qwen/qwen3-8b,google/gemma-4-12b-qat"
+SUB="qwen3.5:4b,gemma4:e4b,gemma4:12b"
 child=""
 
 unload() {
@@ -16,12 +16,26 @@ except Exception: pass' 2>/dev/null); do
   done
   "$HOME/.lmstudio/bin/lms" unload --all >/dev/null 2>&1
 }
+# Bounce the SERVERS, never the GUIs.
+#
+# `open -a Ollama` launches Ollama.app/Contents/MacOS/Ollama — the Electron
+# wrapper, which is what pops the startup wizard. The server is just
+# `ollama serve` (and /usr/local/bin/ollama is a symlink to the same binary
+# inside the bundle), so starting it directly gives a headless server with
+# no window, no menu-bar item and no wizard.
 restart_engines() {
   unload
   "$HOME/.lmstudio/bin/lms" server stop >/dev/null 2>&1
-  pkill -f "ollama serve|Ollama.app.*ollama" 2>/dev/null
-  sleep 5
-  open -a Ollama 2>/dev/null || (ollama serve >/dev/null 2>&1 &)
+  # The Electron app OWNS its server (the serve process is its child) and
+  # holds :11434, so starting a headless server while the app is alive
+  # silently loses the bind. The app has to go first. Headless always.
+  osascript -e 'tell application "Ollama" to quit' 2>/dev/null \
+    || pkill -f "Ollama.app/Contents/MacOS/Ollama" 2>/dev/null
+  sleep 3
+  pkill -f "ollama serve" 2>/dev/null
+  sleep 3
+  nohup /usr/local/bin/ollama serve >/dev/null 2>&1 &
+  sleep 2
   "$HOME/.lmstudio/bin/lms" server start >/dev/null 2>&1
   for _ in $(seq 30); do curl -s -m 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break; sleep 2; done
   for _ in $(seq 30); do curl -s -m 2 http://127.0.0.1:1234/v1/models  >/dev/null 2>&1 && break; sleep 2; done

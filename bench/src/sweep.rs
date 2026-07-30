@@ -91,6 +91,17 @@ const CURATED: &[&str] = &[
     "gdate","gstat","gfind","gtar","python3","node","cargo","go","make","cmake","tar","unzip",
 ];
 
+/// Everything on PATH, not a curated slice. ~1700 names, ~3900 tokens —
+/// which would be absurd in a volatile prompt but sits in the CACHED
+/// prefix, so it costs one fill and is then free for the session. The
+/// question this arm asks: when size is nearly free, does completeness
+/// beat curation, or does the noise drown the signal?
+fn full_path_line() -> String {
+    let mut have: Vec<String> = goulash::vendor::path_executable_set().into_iter().collect();
+    have.sort();
+    format!("Every executable on PATH ({} total): {}.\n\n", have.len(), have.join(" "))
+}
+
 fn tools_line() -> String {
     let have = goulash::vendor::path_executable_set();
     let present: Vec<&str> = CURATED.iter().copied().filter(|t| have.contains(*t)).collect();
@@ -149,6 +160,30 @@ fn all_shapes() -> Vec<(&'static str, PromptShape)> {
                 memories: MemPos::BeforeLog,
                 command_first: true,
                 preamble: Some(leak(format!("{}{}{base}", platform_line(), tools_line()))),
+                directive: None,
+            },
+        ),
+        // S7: the SAME facts as S5, but delivered as machine-derived
+        // memory slots rather than preamble text. Same bytes of content,
+        // different framing — memory wraps them in "yours to manage,
+        // REMEMBER/FORGET", which may read as more authoritative or may
+        // invite the hijacking Pass P found. The shipped preamble is
+        // unchanged here; see seed_memory_for().
+        (
+            "S7",
+            PromptShape {
+                memories: MemPos::BeforeLog,
+                command_first: true,
+                ..PromptShape::default()
+            },
+        ),
+        // S6: platform + the ENTIRE PATH set, not a curated subset.
+        (
+            "S6",
+            PromptShape {
+                memories: MemPos::BeforeLog,
+                command_first: true,
+                preamble: Some(leak(format!("{}{}{base}", platform_line(), full_path_line()))),
                 directive: None,
             },
         ),
@@ -249,6 +284,24 @@ fn hash(s: &str) -> u64 {
 /// and it cannot be measured against a constant.
 ///
 /// `load(None)` leaves `path` unset, so nothing touches disk.
+/// Memory as it stands for a given shape. S7 additionally seeds
+/// machine-derived slots, so the situated facts arrive through the store
+/// that already exists for durable facts rather than a bespoke preamble.
+///
+/// Note the deliberate contradiction this creates: slot 1 asserts a
+/// preference for `fd`, and the machine slot reports `fd` absent. Whether
+/// a model notices is exactly the question.
+pub fn seed_memory_for(shape: &str) -> MemoryStore {
+    let mut m = seed_memory();
+    if shape == "S7" {
+        let p = platform_line();
+        let t = tools_line();
+        let _ = m.add(p.trim(), "machine");
+        let _ = m.add(t.trim(), "machine");
+    }
+    m
+}
+
 pub fn seed_memory() -> MemoryStore {
     let mut m = MemoryStore::load(None);
     m.enabled = true;
@@ -539,7 +592,7 @@ fn run_session(
     let provider = provider_for(cell);
     let stop: Vec<String> = vec!["\n\n".to_string()];
     let mut log = SessionLog::new();
-    let mut memory = seed_memory();
+    let mut memory = seed_memory_for(shape_name);
 
     for (i, step) in steps.iter().enumerate() {
         match step.kind.as_str() {
