@@ -12,6 +12,44 @@ pub struct Config {
     pub engine: EngineConfig,
 }
 
+/// Facts about this machine, told to the model so it stops guessing.
+///
+/// Measured honestly: none of these produced a *statistically*
+/// detectable improvement — 4/109 platform errors at baseline against
+/// 3/131, 3/131 and 1/127, every confidence interval overlapping, and
+/// ~1235 commands per arm needed to resolve a halving where ~120 were
+/// available. `platform` is on anyway because "prove it helps" is the
+/// wrong bar for a statement that is free and certainly true; the right
+/// bar is "prove it hurts", and nothing suggests it does.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DivulgeConfig {
+    /// OS, userland flavour and shell, plus the BSD/GNU differences that
+    /// account for 78% of observed platform errors (`du --max-depth` is
+    /// 62 of 78 on its own). ~50 tokens, and verified free: per-token
+    /// prompt-eval is identical with and without it once cached
+    /// (750 vs 760us by turn 10).
+    pub platform: bool,
+    /// Which of a curated tool set is installed. Debug: targets
+    /// absent-tool references, which fire 25 times in 4002 commands, and
+    /// carries a curation problem (which tools, maintained by whom).
+    pub tools: bool,
+    /// Every executable on PATH — ~3900 tokens. Debug only: showed no
+    /// benefit at 7x the context, and nearly doubled prompt-eval.
+    /// Replaces `tools` rather than adding to it.
+    pub full_path: bool,
+}
+
+impl Default for DivulgeConfig {
+    fn default() -> Self {
+        Self {
+            platform: true,
+            tools: false,
+            full_path: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct EngineConfig {
@@ -34,12 +72,52 @@ pub struct EngineConfig {
     pub context_max_chars: usize,
     /// Per-block output-tail chars kept in the session log.
     pub tail_chars: usize,
-    /// Hard cap on generated tokens per answer (the one-line contract is
-    /// otherwise unenforced and small models will ramble on your GPU).
-    pub max_tokens: usize,
-    /// Context window requested from the provider; bounds KV memory
-    /// (ollama may otherwise load models at huge default contexts).
-    pub num_ctx: usize,
+    /// Cap on the tokens that become the *visible* answer.
+    ///
+    /// Deliberately generous: measured across ~4000 generations, answers
+    /// that arrive use a median of 32 tokens (p90 77) and visible prose
+    /// runs ~61 chars, so this ceiling never binds. Brevity comes from
+    /// the directive and from the band clamping at draw time, not from
+    /// starving the budget. (bench/THINKING.md)
+    pub response_tokens: usize,
+    /// Allowance for reasoning, spent *on top of* `response_tokens` and
+    /// only when thinking is enabled.
+    ///
+    /// Providers meter reasoning and output on one counter, so a shared
+    /// cap means a reasoning model spends the display budget thinking and
+    /// returns nothing. 4096 is a floor, not a luxury: with a 1024
+    /// allowance 19 of 32 cells still ran out mid-thought.
+    pub reasoning_tokens: usize,
+    /// `off` (suppress) | `auto` (only where it is known to help, and
+    /// never where the model cannot do it) | `forced` (debug).
+    ///
+    /// `auto` MUST consult capability first — ollama returns HTTP 400
+    /// `"<model>" does not support thinking` rather than degrading, and 8
+    /// of 24 measured cells fail that way.
+    pub thinking: String,
+    /// Floor for the context window: adopt whatever a resident model is
+    /// already loaded with, and only intervene below this.
+    ///
+    /// `num_ctx` is part of a model's load identity — asking for a
+    /// different one evicts and reloads (206ms reuse vs 1847ms reload),
+    /// so insisting on an exact value thrashes whatever the user has
+    /// loaded. (bench/RESIDENCY.md)
+    pub num_ctx_min: usize,
+    /// Pin the context window exactly. `None` uses `num_ctx_min` as a
+    /// floor instead. For reproducibility and for bounding KV memory on a
+    /// small machine.
+    pub num_ctx: Option<usize>,
+    /// Prefer a model the engine already has loaded over the
+    /// smallest-installed default.
+    ///
+    /// Off by default: it changes *which model answers you*, which is a
+    /// bigger behavioural shift than the numbers alone justify. The
+    /// numbers do favour it — cold load is p50 4281ms / p90 7214ms
+    /// against a warm TTFT of 2314ms, so adopting a warm 12B is very
+    /// plausibly faster than cold-loading a 0.8B.
+    pub prefer_resident: bool,
+    /// Machine facts told to the model. See [`DivulgeConfig`].
+    pub divulge: DivulgeConfig,
     /// Load the model in the background at bind/switch time so the first
     /// ask doesn't pay the cold start.
     pub prewarm: bool,
@@ -63,8 +141,13 @@ impl Default for EngineConfig {
             stream: true,
             context_max_chars: 12_000,
             tail_chars: 800,
-            max_tokens: 256,
-            num_ctx: 8192,
+            response_tokens: 512,
+            reasoning_tokens: 4096,
+            thinking: "off".to_string(),
+            num_ctx_min: 8192,
+            num_ctx: None,
+            prefer_resident: false,
+            divulge: DivulgeConfig::default(),
             prewarm: true,
             debug: false,
             commentary: true,

@@ -7,7 +7,9 @@
 //! of it that would drift.
 
 pub mod config;
+pub mod configcli;
 pub mod engine;
+pub mod facts;
 pub mod integrate;
 pub mod memory;
 pub mod osc;

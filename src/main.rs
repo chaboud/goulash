@@ -1,4 +1,4 @@
-use goulash::{config, session};
+use goulash::{config, configcli, session};
 
 use std::os::fd::AsRawFd;
 use std::process::ExitCode;
@@ -6,10 +6,19 @@ use std::process::ExitCode;
 const USAGE: &str = "usage: goulash [shell [args...]]
 
 Wraps an interactive shell in the goulash overlay. With no arguments,
-runs $SHELL (falling back to /bin/sh). Config: ~/.goulash/config.toml";
+runs $SHELL (falling back to /bin/sh).
+
+  --config [print|path|set K V|reset [K]]   read or edit settings
+  --version, --help
+
+Config lives at ~/.goulash/config.toml and is optional; every setting
+has a working default.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(i) = args.iter().position(|a| a == "--config") {
+        return ExitCode::from(configcli::run(&args[i + 1..]) as u8);
+    }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;

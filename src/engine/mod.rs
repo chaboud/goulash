@@ -19,11 +19,40 @@ pub use provider::{
 /// [`GenRequest`] directly, and which of them earns a user-facing setting
 /// is a question the measurement answers.
 pub const DEFAULT_TEMPERATURE: f32 = 0.2;
-pub const DEFAULT_STOP: &[&str] = &["\n\n"];
+
+/// No stop sequence.
+///
+/// goulash used to send `["\n\n"]` to enforce the one-line contract. It
+/// does not enforce it — the directive and the band's render-time clamp
+/// already do — and it destroys valid answers: a model that emits a blank
+/// line before its reply, or between the prose and the `CMD:` line, gets
+/// guillotined. Measured: 37 tokens generated and an EMPTY answer shown.
+/// Removing it lifted the answer rate 81% -> 94%, and with reasoning
+/// enabled it is categorically fatal (median 39 tokens generated vs 1279
+/// without). Kept as a `GenRequest` field so the bench can still sweep it.
+/// (bench/THINKING.md)
+pub const DEFAULT_STOP: &[&str] = &[];
 pub const DEFAULT_THINK: Think = Think::Off;
-/// Allowance for reasoning, on top of the display budget, whenever
-/// reasoning is enabled. Unused while DEFAULT_THINK is Off.
-pub const DEFAULT_REASONING_TOKENS: usize = 1024;
+/// Resolve `[engine] thinking` against what the model can actually do.
+///
+/// `auto` must never send the field to a model that cannot reason:
+/// ollama answers HTTP 400 `"<model>" does not support thinking` rather
+/// than ignoring it, and 8 of 24 measured cells fail that way. A user who
+/// writes `forced` gets it anyway and owns the error — discovery protects
+/// the default path, it does not overrule an instruction.
+pub fn resolve_think(setting: &str, model_can_think: Option<bool>) -> Think {
+    match setting {
+        "forced" => Think::On,
+        "auto" => match model_can_think {
+            Some(true) => Think::On,
+            // Unknown is treated as cannot: suppressing costs a little
+            // quality on a model that could have reasoned, while guessing
+            // wrong costs a hard 400 and no answer at all.
+            _ => Think::Off,
+        },
+        _ => Think::Off,
+    }
+}
 
 /// The LLM engine: a worker thread so inference latency never touches the
 /// PTY loop. Events come back over an mpsc channel; a self-pipe byte wakes
@@ -144,10 +173,20 @@ struct Bound {
     host: String,
     model: String,
     installed: Vec<String>,
+    /// Learned once at bind, via a read-only capability query — never by
+    /// asking the model to think and seeing if it 400s.
+    can_think: Option<bool>,
 }
 
 fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>, wr: OwnedFd) {
     let path_set = crate::vendor::path_executable_set();
+    // Machine facts, derived ONCE in this worker thread and reused for the
+    // session. Deriving costs ~4ms — fine here, indefensible on the ask
+    // path — and leaking a single &'static str is bounded, unlike doing it
+    // per generation.
+    let preamble: &'static str = Box::leak(
+        format!("{}{}", crate::facts::block(&cfg.divulge), PREAMBLE).into_boxed_str(),
+    );
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(2))
         .timeout(Duration::from_secs(120))
@@ -188,6 +227,7 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                 Job::SetModel(m) => match state.as_mut() {
                     Some(b) => {
                         b.model = m.clone();
+                        b.can_think = b.provider.can_think(&agent, &b.host, &b.model);
                         cfg.model = Some(m);
                         announce(&ev, &wr, b);
                         pending_warm = true;
@@ -241,7 +281,8 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
             });
             notify(&wr);
             let result = generate(
-                &agent, &cfg, b, &question, &context, &memories, &ev, &wr, proactive,
+                &agent, &cfg, b, preamble, &question, &context, &memories, &ev, &wr,
+                proactive,
             );
             let _ = ev.send(Event::Idle);
             let _ = match result {
@@ -350,15 +391,23 @@ fn probe(agent: &ureq::Agent, cfg: &EngineConfig) -> Option<Bound> {
         let Some(models) = provider.probe(agent, &host) else {
             continue;
         };
-        let Some(model) = pick_model(&models, cfg.model.as_deref(), &cfg.favorites) else {
+        let resident = if cfg.prefer_resident {
+            provider.resident(agent, &host)
+        } else {
+            Vec::new()
+        };
+        let Some(model) = pick_model(&models, cfg.model.as_deref(), &cfg.favorites, &resident)
+        else {
             continue;
         };
         let installed = models.into_iter().map(|m| m.name).collect();
+        let can_think = provider.can_think(agent, &host, &model);
         return Some(Bound {
             provider,
             host,
             model,
             installed,
+            can_think,
         });
     }
     None
@@ -372,9 +421,20 @@ fn pick_model(
     models: &[ModelInfo],
     configured: Option<&str>,
     favorites: &[String],
+    resident: &[String],
 ) -> Option<String> {
     if let Some(m) = configured {
         return Some(m.to_string());
+    }
+    // A model the engine already holds costs no load at all, and taking it
+    // avoids evicting whatever the user is working with. Ranked above
+    // favourites because a warm larger model very plausibly beats a cold
+    // smaller one end to end. (bench/RESIDENCY.md)
+    if let Some(hit) = resident
+        .iter()
+        .find(|r| models.iter().any(|m| &&m.name == r))
+    {
+        return Some(hit.clone());
     }
     for fav in favorites {
         if let Some(hit) = models
@@ -395,6 +455,7 @@ fn generate(
     agent: &ureq::Agent,
     cfg: &EngineConfig,
     b: &Bound,
+    preamble: &'static str,
     question: &str,
     context: &str,
     memories: &str,
@@ -402,10 +463,14 @@ fn generate(
     wr: &OwnedFd,
     proactive: bool,
 ) -> Result<String, String> {
+    let think = resolve_think(&cfg.thinking, b.can_think);
     let req = GenRequest {
         model: b.model.clone(),
         prompt: build_prompt(
-            &PromptShape::default(),
+            &PromptShape {
+                preamble: Some(preamble),
+                ..PromptShape::default()
+            },
             memories,
             context,
             question,
@@ -414,11 +479,11 @@ fn generate(
         ),
         stream: cfg.stream,
         temperature: DEFAULT_TEMPERATURE,
-        max_tokens: cfg.max_tokens,
-        num_ctx: cfg.num_ctx,
+        max_tokens: cfg.response_tokens,
+        num_ctx: cfg.num_ctx.unwrap_or(cfg.num_ctx_min),
         stop: DEFAULT_STOP.iter().map(|s| s.to_string()).collect(),
-        think: DEFAULT_THINK,
-        reasoning_tokens: DEFAULT_REASONING_TOKENS,
+        think,
+        reasoning_tokens: cfg.reasoning_tokens,
         keep_alive: cfg.keep_alive.clone(),
     };
     // Throttle partials so the bar fills in without repainting per token.
@@ -461,7 +526,7 @@ mod pick_tests {
             ("qwen2.5:7b", 4_700_000_000),
         ]);
         assert_eq!(
-            pick_model(&m, None, &no_favs()).as_deref(),
+            pick_model(&m, None, &no_favs(), &[]).as_deref(),
             Some("llama3.2:1b")
         );
     }
@@ -470,7 +535,7 @@ mod pick_tests {
     fn configured_model_wins() {
         let m = models(&[("llama3.2:1b", 1)]);
         assert_eq!(
-            pick_model(&m, Some("gemma3:12b"), &["llama3.2:1b".to_string()]).as_deref(),
+            pick_model(&m, Some("gemma3:12b"), &["llama3.2:1b".to_string()], &[]).as_deref(),
             Some("gemma3:12b")
         );
     }
@@ -480,7 +545,7 @@ mod pick_tests {
         let m = models(&[("gemma3:12b", 8_100_000_000), ("qwen2.5:7b", 4_700_000_000)]);
         let favs = vec!["notinstalled:1b".to_string(), "qwen2.5".to_string()];
         assert_eq!(
-            pick_model(&m, None, &favs).as_deref(),
+            pick_model(&m, None, &favs, &[]).as_deref(),
             Some("qwen2.5:7b"),
             "favorite matches through the :tag"
         );
@@ -489,7 +554,32 @@ mod pick_tests {
     #[test]
     fn missing_sizes_still_pick_something() {
         let m = models(&[("mystery", u64::MAX)]);
-        assert_eq!(pick_model(&m, None, &no_favs()).as_deref(), Some("mystery"));
+        assert_eq!(pick_model(&m, None, &no_favs(), &[]).as_deref(), Some("mystery"));
+    }
+
+    /// A resident model outranks the smallest-installed default: taking
+    /// it costs no load (p50 4281ms saved) and does not evict whatever the
+    /// user is working with.
+    #[test]
+    fn resident_model_outranks_smallest() {
+        let m = models(&[
+            ("gemma4:12b", 7_600_000_000),
+            ("qwen3.5:0.8b", 1_000_000_000),
+        ]);
+        assert_eq!(
+            pick_model(&m, None, &no_favs(), &["gemma4:12b".into()]).as_deref(),
+            Some("gemma4:12b")
+        );
+        // ...but an explicit pin still wins, and a resident model that is
+        // not installed here is ignored.
+        assert_eq!(
+            pick_model(&m, Some("qwen3.5:0.8b"), &no_favs(), &["gemma4:12b".into()]).as_deref(),
+            Some("qwen3.5:0.8b")
+        );
+        assert_eq!(
+            pick_model(&m, None, &no_favs(), &["not-installed".into()]).as_deref(),
+            Some("qwen3.5:0.8b")
+        );
     }
 
     /// OpenAI-compatible servers report no size, so every entry ties at 0
@@ -498,8 +588,37 @@ mod pick_tests {
     fn zero_sizes_degrade_to_first_listed() {
         let m = models(&[("qwen/qwen3-8b", 0), ("qwen/qwen3-1.7b", 0)]);
         assert_eq!(
-            pick_model(&m, None, &no_favs()).as_deref(),
+            pick_model(&m, None, &no_favs(), &[]).as_deref(),
             Some("qwen/qwen3-8b")
         );
+    }
+}
+
+#[cfg(test)]
+mod think_tests {
+    use super::{Think, resolve_think};
+
+    /// `auto` must never send `think` to a model that cannot reason:
+    /// ollama answers HTTP 400 rather than ignoring it, so a wrong guess
+    /// costs the whole answer.
+    #[test]
+    fn auto_respects_capability_and_unknown_means_no() {
+        assert_eq!(resolve_think("auto", Some(true)), Think::On);
+        assert_eq!(resolve_think("auto", Some(false)), Think::Off);
+        assert_eq!(resolve_think("auto", None), Think::Off);
+    }
+
+    /// A user who writes `forced` gets it and owns the error — discovery
+    /// protects the default path, it does not overrule an instruction.
+    #[test]
+    fn forced_overrides_capability() {
+        assert_eq!(resolve_think("forced", Some(false)), Think::On);
+        assert_eq!(resolve_think("forced", None), Think::On);
+    }
+
+    #[test]
+    fn off_and_garbage_both_suppress() {
+        assert_eq!(resolve_think("off", Some(true)), Think::Off);
+        assert_eq!(resolve_think("nonsense", Some(true)), Think::Off);
     }
 }
