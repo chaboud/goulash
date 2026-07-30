@@ -975,6 +975,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut stdin_open = true;
     let mut dirty = false;
     let mut idle_ticks: u8 = 0;
+    // Has the inner world written anything since the last defensive
+    // repaint? Only then can our rows have been clobbered by a sequence
+    // the trigger scanner missed, so only then is the idle repaint worth
+    // its ~1 KB on the wire.
+    let mut output_since_repaint = false;
 
     'session: loop {
         let stdin_fd = unsafe { BorrowedFd::borrow_raw(STDIN) };
@@ -1037,6 +1042,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
             match read_some(master, &mut buf) {
                 Ok(0) => break 'session,
                 Ok(len) => {
+                    output_since_repaint = true;
                     // Cleaned stream and marks arrive as ordered segments,
                     // so output is attributed to the correct command block
                     // even when B/output/D land in a single read.
@@ -1745,8 +1751,16 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         // are handled as same-batch triggers above), so skipping no-op
         // redraws avoids needless writes. As insurance against trigger
         // sequences we don't know about, an idle repaint runs about once
-        // a second — overwriting an intact bar with identical content is
-        // invisible, so this costs nothing visually.
+        // a second after output — overwriting an intact bar with
+        // identical content is invisible, so it costs nothing visually.
+        //
+        // It is NOT free on the wire, though: the repaint is ~1 KB, and
+        // running it unconditionally at 1 Hz cost 3.6 MB/hour on a
+        // terminal doing nothing at all (measured, tests/longrun.py).
+        // Over ssh that is bandwidth and on a laptop it is wakeups. The
+        // insurance is only meaningful after the inner world has written
+        // something — a bar nothing has touched cannot have been
+        // clobbered — so the repaint is gated on that instead.
         if n == 0 {
             if dirty {
                 let rows = compose_rows(
@@ -1771,10 +1785,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 }
                 dirty = false;
                 idle_ticks = 0;
-            } else {
+            } else if output_since_repaint {
                 idle_ticks += 1;
                 if idle_ticks >= 4 {
                     idle_ticks = 0;
+                    output_since_repaint = false;
                     write_all(STDOUT, &fixup_bytes(&layout, parser.screen(), &last_rows))?;
                 }
             }
