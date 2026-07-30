@@ -1,11 +1,20 @@
-# Naming: Current State
+# Naming: Decided — goulash
 
-**Status: shortlist, not final.** The active candidates are **goulash**,
-**flsh**, and **lavash**. Goulash is the working name (it's the repo name),
-but the real priority has shifted from naming to building — see
-[../product/build-plan.md](../product/build-plan.md).
+**Status: settled.** The name is **goulash**, and it is now load-bearing
+in places that are expensive to change: the crate name and
+`version = "0.4.0"` in `Cargo.toml`, the `goulash.dev` homepage, the
+Homebrew formula, `~/.goulash/`, the `#/` command prefix, and the
+binary every test invokes.
 
-## The shortlist
+Reopening it would be a rename across all of those plus any installed
+config. The bar for that is a real problem with the name — a trademark
+conflict, or a collision that actually confuses users — not a preference.
+
+The shortlist below is kept as the reasoning behind the choice, per
+[wiki-conventions](../meta/wiki-conventions.md) rule 5. It is history,
+not an open question.
+
+## The shortlist it came from
 
 | Name | Expansion | Why it survives |
 |---|---|---|

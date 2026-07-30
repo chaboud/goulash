@@ -710,7 +710,7 @@ already carries. The order things go, worst-value first:
 
 ## The crash fuse learns about lanes
 
-[`state.rs`](../src/state.rs) marks the dangerous window around a model
+[`state.rs`](../../src/state.rs) marks the dangerous window around a model
 load so an unclean death can distrust the model that caused it. With two
 lanes there are two loads, and an unlaned mark cannot tell which one to
 blame — the likely failure is a big slow model taking the machine down

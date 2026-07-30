@@ -17,7 +17,7 @@ But large language models (LLMs) are pretty good at *esoteric syntax*, even *sma
 Goulash is an LLM-aware overlay for the shell you already use. It watches the session and offers advice and executable suggestions *in your terminal*, but every keystroke and every command is still yours.  Goulash doesn't run commands, pop up choices, or take over how you work.  It's your terminal... with a navigator.
 
 <p align="center">
-  <img src="docs/GoulashHashes.gif" alt="goulash demo: asking a question at the prompt, then pulling the suggested command down onto the shell line" width="760">
+  <img src="https://raw.githubusercontent.com/chaboud/goulash/main/docs/GoulashHashes.gif" alt="goulash demo: asking a question at the prompt, then pulling the suggested command down onto the shell line" width="760">
 </p>
 
 ## Install
@@ -127,14 +127,39 @@ enabled = true
 rows = 1
 
 [engine]
-thinking = "off"       # off | low | medium | high
-max_tokens = 512       # the response budget, separate from reasoning
+thinking   = "off"     # off | low | medium | high
+max_tokens = 8192      # ONE cap over reasoning and answer together
+num_ctx_min = 8192     # smallest window goulash can work in
+# num_ctx  = 32768     # set to pin a window exactly (forces a reload)
+
+[engine.divulge]
+platform = true        # tell the model your OS, shell and userland
 
 # Escape hatch for a model newer than goulash's capability table.
 [models."some-new-reasoner:8b"]
 thinking = "levels"    # none | bool | levels
 reasoning_tokens = 2048
 ```
+
+Or from the command line, which works over ssh and in scripts:
+
+```
+goulash --config print              # every key, and whether it is yours
+goulash --config set engine.thinking high
+goulash --config reset engine.thinking
+```
+
+**There is no separate thinking budget.** Providers meter reasoning and
+output on one counter, and reasoning is not ours to ration — a chat
+template reasons whatever we send, and some models reason through
+`think:false`. So `max_tokens` is one generous ceiling and whatever the
+engine does inside it is the engine's business. Answers stay short
+because the prompt asks for one line, not because the budget starves
+them: measured, answers that arrive use a median of 32 tokens.
+
+**Goulash tries not to disturb your engine.** It sends no context size
+unless what is loaded is too small to work in — both ollama and LM Studio
+let you set that yourself, and changing it forces a multi-second reload.
 
 Tests (drives the binary under a real PTY):
 

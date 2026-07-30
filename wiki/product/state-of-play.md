@@ -77,7 +77,7 @@ owner can do.
    pattern — generalize it so a setting can declare *entry* over
    *cycle*.
 2. **Two-lane engagement** — designed, not built:
-   [two-lane-engagement](two-lane-engagement.md). Fast stays the sole
+   [two-lane-engagement](../architecture/two-lane-engagement.md). Fast stays the sole
    voice; slow researches with tools and contributes suggestions fast
    relays. Start with **the card** (a few lines emitted near the
    question, testing the SWA thesis) — if that does not beat a
