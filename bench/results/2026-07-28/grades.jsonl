@@ -1,0 +1,68 @@
+{"id":"05aed6","correct":3,"idiom":2,"fit":2,"why":"correct path; no -r so output stays JSON-quoted; prose is first-person filler"}
+{"id":"07d0e4","correct":2,"idiom":1,"fit":1,"why":"command is right but embedded in the prose line, so nothing vends; user gets no pullable command"}
+{"id":"19eb70","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"21480b","correct":3,"idiom":3,"fit":2,"why":"exactly right including -r; no prose at all, so the band shows only the chip"}
+{"id":"246cc0","correct":3,"idiom":2,"fit":2,"why":"correct; prose claims names are 'listed below' when nothing is"}
+{"id":"247fa5","correct":0,"idiom":0,"fit":1,"why":"suggests writing Rust with serde_json for a one-line jq job; no command"}
+{"id":"30477b","correct":1,"idiom":1,"fit":2,"why":"backticks inside the CMD: line, so the vended text would fail if run"}
+{"id":"371fd2","correct":1,"idiom":1,"fit":2,"why":"'.[].items[].name' is the wrong path for {items:[...]}"}
+{"id":"3cac19","correct":3,"idiom":2,"fit":3,"why":"equivalent pipe form, correct; no -r"}
+{"id":"3e67bf","correct":2,"idiom":1,"fit":1,"why":"correct command but only inline in prose; nothing vends"}
+{"id":"490217","correct":0,"idiom":0,"fit":0,"why":"wrong path AND the explanation is concatenated into the command; would run garbage"}
+{"id":"4ba4a7","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"52c807","correct":1,"idiom":1,"fit":1,"why":"wrong path plus an absolute sandbox path leaked into the command"}
+{"id":"5311f5","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"553bc4","correct":3,"idiom":3,"fit":3,"why":"exactly right with -r, one clean prose line; model answer for this question"}
+{"id":"555fcb","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"56059c","correct":3,"idiom":2,"fit":3,"why":"correct, missing -r, good prose"}
+{"id":"602d8e","correct":3,"idiom":3,"fit":2,"why":"correct; prose carries a 'goulash:' prefix copied from the transcript format"}
+{"id":"65b2d8","correct":2,"idiom":1,"fit":2,"why":"correct command with a nonsense 'cat notes.txt | grep items' appended"}
+{"id":"67bffa","correct":3,"idiom":1,"fit":2,"why":"works but useless cat; prose just echoes the command"}
+{"id":"71b3d5","correct":2,"idiom":1,"fit":2,"why":"works but writes a temp file and cats it for no reason"}
+{"id":"7a3b6e","correct":3,"idiom":2,"fit":1,"why":"correct command, but prose says it needs to see the file first — contradicts itself"}
+{"id":"7aff7a","correct":3,"idiom":3,"fit":0,"why":"correct command buried under a six-line essay; unusable in a status bar"}
+{"id":"7d14e9","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag to the band"}
+{"id":"84d2aa","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"86bc65","correct":0,"idiom":0,"fit":1,"why":"select(.items[].name != null) // [] is not valid for this shape and echoes Done"}
+{"id":"d6d6f5","correct":3,"idiom":3,"fit":3,"why":"exactly right; prose is the command itself, which reads fine here"}
+{"id":"da37d7","correct":0,"idiom":0,"fit":0,"why":"find+grep+sed against a JSON file, writes /tmp, and trails a REMEMBER: fragment"}
+{"id":"e35898","correct":3,"idiom":2,"fit":3,"why":"correct, no -r; prose says 'names array' which is slightly off"}
+{"id":"e45d29","correct":1,"idiom":1,"fit":2,"why":"'.[] | .name' misses the items level, and backticks are inside the command"}
+{"id":"e7be0c","correct":3,"idiom":2,"fit":3,"why":"correct, no -r, clean prose"}
+{"id":"eca939","correct":0,"idiom":0,"fit":0,"why":"echoed the question back verbatim"}
+{"id":"f06757","correct":3,"idiom":3,"fit":2,"why":"correct with -r; prose is vague but harmless"}
+{"id":"f2073b","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag"}
+{"id":"f7c7e6","correct":3,"idiom":2,"fit":3,"why":"correct, no -r, good prose"}
+{"id":"f8f3ae","correct":0,"idiom":0,"fit":0,"why":"regex-scrapes quoted strings out of JSON; doubled 'goulash:' prefix"}
+{"id":"07f07a","correct":1,"idiom":2,"fit":3,"why":"mixed reset UNSTAGES the changes — the opposite of what was asked"}
+{"id":"092446","correct":3,"idiom":3,"fit":2,"why":"--soft is right; 'goulash:' prefix leaked into the prose"}
+{"id":"13d49d","correct":0,"idiom":0,"fit":0,"why":"wrong reset plus a stash of a huge leaked file list from the real repo"}
+{"id":"1ee4a5","correct":0,"idiom":0,"fit":1,"why":"'git reset --soft' with no target, then an unrelated stash"}
+{"id":"1f4922","correct":0,"idiom":0,"fit":1,"why":"--soft with a pathspec is a git error; prose contradicts itself"}
+{"id":"21ddc4","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"2264c3","correct":3,"idiom":3,"fit":2,"why":"--soft HEAD^ is correct; no prose"}
+{"id":"282062","correct":0,"idiom":0,"fit":2,"why":"--keep-index is a git stash flag, not git reset; would error"}
+{"id":"296384","correct":1,"idiom":2,"fit":3,"why":"mixed reset unstages, and the prose confidently claims it keeps them staged"}
+{"id":"2bb083","correct":1,"idiom":2,"fit":3,"why":"mixed reset; unstages"}
+{"id":"2d25a6","correct":1,"idiom":2,"fit":3,"why":"mixed reset; unstages"}
+{"id":"34898c","correct":0,"idiom":0,"fit":0,"why":"garbled doubled prefix, echoes a log line, no command"}
+{"id":"356a8d","correct":3,"idiom":3,"fit":3,"why":"--soft HEAD^ correct with clean prose"}
+{"id":"454bbd","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"4ef1c9","correct":1,"idiom":1,"fit":2,"why":"mixed reset and backticks inside the command"}
+{"id":"52e9e6","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"5516af","correct":1,"idiom":1,"fit":2,"why":"names --soft but describes it as staging then discarding; no command"}
+{"id":"578fac","correct":3,"idiom":3,"fit":3,"why":"--soft HEAD~1 with a clear one-line explanation"}
+{"id":"6a23d7","correct":0,"idiom":0,"fit":0,"why":"per-file reset plus a rambling paragraph concatenated into the command"}
+{"id":"6e7e08","correct":3,"idiom":3,"fit":2,"why":"correct; prose is a bit long-winded"}
+{"id":"70e317","correct":0,"idiom":0,"fit":3,"why":"--staged is not a git reset flag; would error"}
+{"id":"d59607","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"da2f89","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag"}
+{"id":"dc0a48","correct":1,"idiom":1,"fit":1,"why":"--mixed is explicitly the unstaging behaviour; also only inline, nothing vends"}
+{"id":"dc99de","correct":3,"idiom":3,"fit":3,"why":"--soft correct, clean prose"}
+{"id":"e44567","correct":3,"idiom":3,"fit":3,"why":"--soft correct, clean prose"}
+{"id":"e4f2f9","correct":0,"idiom":0,"fit":0,"why":"echoed the question back verbatim"}
+{"id":"eb7cb0","correct":1,"idiom":2,"fit":3,"why":"mixed reset; prose claims it keeps changes staged, which it does not"}
+{"id":"ef56c8","correct":3,"idiom":2,"fit":3,"why":"--soft correct; prose says 'unstages the last commit' which muddles it"}
+{"id":"f088bd","correct":3,"idiom":3,"fit":3,"why":"--soft HEAD^ correct"}
+{"id":"f0a38e","correct":3,"idiom":3,"fit":3,"why":"--soft correct, clean prose"}
+{"id":"f4a3fa","correct":1,"idiom":2,"fit":1,"why":"--mixed is the unstaging behaviour; prose asserts the opposite, and is long"}
