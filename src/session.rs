@@ -616,6 +616,7 @@ fn compose_rows(
     chat: &Option<Chat>,
     pin: Option<&str>,
     stats: Option<&str>,
+    dots: &str,
 ) -> Vec<String> {
     // Never write the terminal's LAST cell. A row that fills the final
     // column is flagged as continued/soft-wrapped, and a width change
@@ -704,6 +705,7 @@ fn compose_rows(
             sense::label(st, hook),
             pin,
             stats,
+            dots,
         ));
         return rows;
     }
@@ -778,6 +780,7 @@ fn compose_rows(
                 sense::label(st, hook),
                 pin,
                 stats,
+                dots,
             ));
             return rows;
         }
@@ -857,6 +860,7 @@ fn compose_rows(
             sense::label(st, hook),
             pin,
             stats,
+            dots,
         ));
         return rows;
     }
@@ -894,6 +898,7 @@ fn compose_rows(
             label,
             pin,
             stats,
+            dots,
         )];
     }
 
@@ -986,6 +991,7 @@ fn compose_rows(
         label,
         pin,
         stats,
+        dots,
     ));
     rows
 }
@@ -1882,6 +1888,16 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut held_findings: Vec<(u64, Finding)> = Vec::new();
     // The turn currently being researched, for the chrome.
     let mut researching: Option<u64> = None;
+    // The fast lane has a generation in flight. Distinct from the crash
+    // fuse's notion of busy, which counts every generation including
+    // research, digests and warms — this one is only the `#` ask, so the
+    // indicator can show the two lanes working independently.
+    let mut fast_busy = false;
+    // Start of the session, for time-derived animation. A frame counter
+    // tied to the poll loop would mean whatever the poll timeout happened
+    // to be, which is how the old insurance repaint came to fire once a
+    // second by accident.
+    let anim_start = Instant::now();
     // What the bound model can actually do (models.rs). None until the
     // engine reports; the UI hedges rather than lies in that window.
     let mut model_caps: Option<crate::models::Caps> = None;
@@ -1944,6 +1960,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         cfg.engine.num_ctx,
                     )
                     .as_deref(),
+                    // Four frames a second: fast enough to read as alive,
+                    // slow enough that the repaint is not chasing it.
+                    &status::lane_dots(
+                        fast_busy,
+                        researching.is_some(),
+                        ((anim_start.elapsed().as_millis() / 250) % 4) as u8,
+                    ),
                 );
                 let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);
                 if !pre.is_empty() {
@@ -3370,8 +3393,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         });
                     }
                     engine::Event::Debug(raw) => rec.engine_debug(&raw),
-                    engine::Event::Busy { model, warm } => {
+                    engine::Event::Busy { model, warm, kind } => {
                         fuse.busy(&model);
+                        if kind == engine::Work::Ask {
+                            fast_busy = true;
+                        }
                         if warm {
                             // A model load can take a long minute on a
                             // big model — never leave the user pinned
@@ -3380,8 +3406,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             warming = Some(model);
                         }
                     }
-                    engine::Event::Idle => {
+                    engine::Event::Idle { kind } => {
                         fuse.idle();
+                        if kind == engine::Work::Ask {
+                            fast_busy = false;
+                        }
                         if let Some(m) = warming.take() {
                             notice = Some(format!("{m} ready"));
                         }
@@ -3497,6 +3526,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         cfg.engine.num_ctx,
                     )
                     .as_deref(),
+                    &status::lane_dots(
+                        fast_busy,
+                        researching.is_some(),
+                        ((anim_start.elapsed().as_millis() / 250) % 4) as u8,
+                    ),
                 );
                 if rows != last_rows {
                     // Same paint as redraw!, which also erases wherever

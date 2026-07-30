@@ -109,6 +109,23 @@ impl Client {
     pub fn models_url(&self) -> String {
         self.be.wire.models_url(&self.be.host)
     }
+
+    /// What this server has loaded, and how big its window is. Empty on
+    /// any failure — a residency check that cannot answer must not be
+    /// mistaken for "nothing is loaded", so callers treat empty as
+    /// "unknown" and leave the server's own setting alone.
+    pub fn resident(&self) -> Vec<(String, usize)> {
+        let Some(url) = self.be.wire.ps_url(&self.be.host) else {
+            return Vec::new();
+        };
+        self.get(&url)
+            .call()
+            .ok()
+            .and_then(|r| r.into_string().ok())
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .map(|v| self.be.wire.resident(&v))
+            .unwrap_or_default()
+    }
 }
 
 /// One generation request, in the terms the engine cares about.
@@ -164,6 +181,41 @@ impl Wire {
             Wire::Ollama => format!("{host}/api/tags"),
             Wire::OpenAi => format!("{host}/v1/models"),
         }
+    }
+
+    /// Where to ask what is *loaded right now*, and at what context.
+    ///
+    /// Ollama only. An OpenAI-compatible server exposes an inventory but
+    /// not a residency view, so there is nothing to negotiate against
+    /// there and context handling degrades to "send what we were told".
+    pub fn ps_url(&self, host: &str) -> Option<String> {
+        match self {
+            Wire::Ollama => Some(format!("{host}/api/ps")),
+            Wire::OpenAi => None,
+        }
+    }
+
+    /// `(model, context_length)` for each loaded model.
+    pub fn resident(&self, v: &Value) -> Vec<(String, usize)> {
+        let mut out = Vec::new();
+        if *self != Wire::Ollama {
+            return out;
+        }
+        for m in v["models"].as_array().into_iter().flatten() {
+            let name = m["model"]
+                .as_str()
+                .or_else(|| m["name"].as_str())
+                .unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
+            // ollama reports the loaded window under context_length; an
+            // older build omits it, and a missing number must not read
+            // as "zero context" or every ask would force a reload.
+            let ctx = m["context_length"].as_u64().unwrap_or(0) as usize;
+            out.push((name.to_string(), ctx));
+        }
+        out
     }
 
     pub fn body(&self, g: &Gen) -> Value {

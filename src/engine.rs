@@ -866,7 +866,7 @@ fn research_once(
         stream: false,
         temperature: 0.3,
         max_tokens: budget + caps.allowance(&cfg.thinking, cfg.thinking_tokens),
-        num_ctx: cfg.num_ctx,
+        num_ctx: ctx_for(cl, cfg, model),
         stop: &[],
         think: caps.think_field(&cfg.thinking),
         effort: caps.effort_field(&cfg.thinking),
@@ -1020,7 +1020,7 @@ fn digest_once(
         stream: false,
         temperature: 0.1,
         max_tokens: budget,
-        num_ctx: cfg.num_ctx,
+        num_ctx: ctx_for(cl, cfg, model),
         stop: &[],
         // Reasoning here would spend the budget arguing with itself
         // about a document it is only meant to shorten.
@@ -1154,7 +1154,7 @@ fn warm_marked(
             stream: false,
             temperature: 0.0,
             max_tokens: 1,
-            num_ctx: cfg.num_ctx,
+            num_ctx: ctx_for(cl, cfg, model),
             stop: &[],
             think: None,
             effort: None,
@@ -1359,6 +1359,63 @@ path in the parentheses, never the label, and never guess where goulash \
 keeps its own files.\n\n";
 
 #[allow(clippy::too_many_arguments)]
+/// What context to ask the provider for — usually nothing.
+///
+/// `num_ctx` is part of a model's load identity, so naming one evicts
+/// and reloads anything loaded at a different size (measured: 206ms to
+/// reuse a warm model, 1847ms to reload it). Both engines already let
+/// the user set a default, so the polite behaviour is to take it.
+///
+/// Two exceptions:
+///   * `num_ctx` set explicitly: the user wants exactly this, pinned.
+///   * the resident window is below `num_ctx_min`: too small to hold a
+///     session log, so nudge the host and eat the reload.
+///
+/// Returns 0 when nothing should be sent; the wire layer omits the
+/// option entirely at zero, leaving the server's own setting alone.
+///
+/// `resident` is None when we could not ask (an OpenAI-compatible
+/// server has no residency view) — which is *not* the same as "nothing
+/// is loaded", so it falls through to asking for the floor only when we
+/// genuinely know the model is cold.
+/// The window to send, resolved against what the server actually has
+/// loaded right now.
+///
+/// Queried per generation rather than cached. A cache is exactly wrong
+/// here: if the user loads a different model behind our back, a stale
+/// value makes us send a `num_ctx` that forces the reload this function
+/// exists to avoid. One localhost round-trip is ~1ms against a
+/// generation measured in hundreds, so correctness is nearly free.
+fn ctx_for(cl: &Client, cfg: &EngineConfig, model: &str) -> usize {
+    if cfg.num_ctx > 0 {
+        return cfg.num_ctx;
+    }
+    let loaded = cl.resident();
+    // An empty list means "could not tell" as often as "nothing loaded"
+    // — an OpenAI-compatible server has no residency view at all — so it
+    // is only read as cold when the server answered and said so.
+    let found = loaded
+        .iter()
+        .find(|(n, _)| n == model || n.split(':').next() == model.split(':').next())
+        .map(|(_, c)| *c);
+    negotiate_ctx(cfg, found.filter(|c| *c > 0))
+}
+
+fn negotiate_ctx(cfg: &EngineConfig, resident: Option<usize>) -> usize {
+    if cfg.num_ctx > 0 {
+        return cfg.num_ctx;
+    }
+    match resident {
+        // Loaded and roomy enough: say nothing, keep the load.
+        Some(c) if c >= cfg.num_ctx_min => 0,
+        // Loaded but too small: the expensive case, on purpose.
+        Some(_) if cfg.nudge_small_context => cfg.num_ctx_min,
+        Some(_) => 0,
+        // Nothing to preserve — ask for the floor.
+        None => cfg.num_ctx_min,
+    }
+}
+
 fn generate(
     cl: &Client,
     cfg: &EngineConfig,
@@ -1461,7 +1518,7 @@ fn generate(
         stream: cfg.stream,
         temperature: 0.2,
         max_tokens: cfg.max_tokens + caps.allowance(&cfg.thinking, cfg.thinking_tokens),
-        num_ctx: cfg.num_ctx,
+        num_ctx: ctx_for(cl, cfg, model),
         // No stop sequence. It was `["\n\n"]` here — the last path still
         // carrying it, after research/digest/warm had already dropped it.
         //
@@ -1902,6 +1959,55 @@ mod pick_tests {
             pick_model(Wire::Ollama, &tags, &names(&tags), None, &no_favs()).as_deref(),
             Some("mystery")
         );
+    }
+}
+
+
+#[cfg(test)]
+mod ctx_tests {
+    use super::negotiate_ctx;
+    use crate::config::EngineConfig;
+
+    fn cfg(pin: usize, floor: usize, nudge: bool) -> EngineConfig {
+        let mut c = EngineConfig::default();
+        c.num_ctx = pin;
+        c.num_ctx_min = floor;
+        c.nudge_small_context = nudge;
+        c
+    }
+
+    /// An explicit window is a pin: the user accepts the reload.
+    #[test]
+    fn a_pinned_window_always_wins() {
+        assert_eq!(negotiate_ctx(&cfg(4096, 8192, true), Some(32768)), 4096);
+        assert_eq!(negotiate_ctx(&cfg(4096, 8192, true), None), 4096);
+    }
+
+    /// The default case, and the whole point: a model is loaded with
+    /// room to spare, so send NOTHING and keep it loaded. Sending 8192
+    /// at a model loaded with 32768 evicts it — 206ms became 1847ms.
+    #[test]
+    fn a_roomy_resident_model_is_left_alone() {
+        assert_eq!(negotiate_ctx(&cfg(0, 8192, true), Some(32768)), 0);
+        assert_eq!(negotiate_ctx(&cfg(0, 8192, true), Some(8192)), 0);
+    }
+
+    /// Too small to hold a session log: pay the reload, once.
+    #[test]
+    fn a_cramped_resident_model_is_nudged() {
+        assert_eq!(negotiate_ctx(&cfg(0, 8192, true), Some(2048)), 8192);
+    }
+
+    /// ...unless the user said never provoke a reload.
+    #[test]
+    fn nudging_can_be_refused() {
+        assert_eq!(negotiate_ctx(&cfg(0, 8192, false), Some(2048)), 0);
+    }
+
+    /// Nothing loaded, so nothing to protect — ask for the floor.
+    #[test]
+    fn a_cold_model_gets_the_floor() {
+        assert_eq!(negotiate_ctx(&cfg(0, 8192, true), None), 8192);
     }
 }
 

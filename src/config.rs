@@ -152,7 +152,32 @@ pub struct EngineConfig {
     pub context_tree_max_depth: usize,
     /// Context window requested from the provider; bounds KV memory
     /// (ollama may otherwise load models at huge default contexts).
+    /// Context window to demand, **exactly**, on every request.
+    ///
+    /// Zero means "negotiate" — see `num_ctx_min`. A non-zero value is a
+    /// pin: the user wants this window and accepts the reload it costs.
     pub num_ctx: usize,
+    /// The smallest window goulash can work in.
+    ///
+    /// `num_ctx` is part of a model's *load identity*, so naming one
+    /// evicts and reloads anything already loaded at a different size —
+    /// measured 206ms to reuse a warm model against 1847ms to reload it.
+    /// Both engines already let the user choose a default (ollama has a
+    /// context slider, LM Studio stores one per model), so the polite
+    /// behaviour is to take whatever they picked and say nothing.
+    ///
+    /// The exception is a window too small to hold a session log. Then
+    /// goulash asks for this floor and eats the reload, once.
+    pub num_ctx_min: usize,
+    /// Whether to nudge a host whose loaded window is below the floor.
+    ///
+    /// Off means "never provoke a reload": goulash works in whatever is
+    /// loaded, however small, and the user owns the consequence.
+    pub nudge_small_context: bool,
+    /// Prefer a model that is already loaded over the smallest installed
+    /// one when auto-picking. A warm 12B answers sooner than a cold 4B —
+    /// the load is the dominant cost, not the size.
+    pub prefer_resident: bool,
     /// Leading prompt tokens the server must keep when the context
     /// overflows. It truncates from the LEFT, and the left is where the
     /// grammar and the pinned memories live — so the default is sized
@@ -281,7 +306,13 @@ impl Default for EngineConfig {
             context_files_max_chars: 6000,
             context_tree_max_files: 256,
             context_tree_max_depth: 4,
-            num_ctx: 8192,
+            // Zero: negotiate rather than demand. This used to be a
+            // flat 8192 sent on every request, which silently reloaded
+            // any model the user had loaded at a different size.
+            num_ctx: 0,
+            num_ctx_min: 8192,
+            nudge_small_context: true,
+            prefer_resident: false,
             num_keep: 512,
             seed: -1,
             prewarm: true,
