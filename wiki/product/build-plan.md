@@ -364,3 +364,43 @@ retrofitted.
    context negotiation has nothing to negotiate against.
 
    Deferred from 0.4.0, which just defaults to ollama first.
+
+10. **Blocking writes to the outer terminal — logged, not fixed.**
+    `write_all` loops over `libc::write` with no `O_NONBLOCK` anywhere.
+    If the reader stalls (a frozen ssh link, a detached multiplexer),
+    goulash blocks in that write, and because it is single-threaded at
+    that point it also stops reading input and stops draining the inner
+    shell.
+
+    Measured, and the news is good enough that no fix is warranted:
+
+    - **Stalled reader** — goulash blocks (`Ss`), and on resume flushes
+      everything and is immediately responsive. This is *the same end
+      state as no goulash*: a shell writing to a stalled terminal blocks
+      too. An extra hop, not a new failure mode.
+    - **Ctrl-Z** never touches goulash. `cfmakeraw` clears `ISIG` on the
+      outer terminal, so it is not a signal there — it is byte `0x1a`
+      forwarded inward, where the inner tty runs ordinary job control.
+      Verified end to end: suspend, `jobs`, `kill %1`, shell healthy.
+    - **SIGHUP (ssh disconnect)** — goulash dies, the master closes, the
+      slave gets HUP, and the inner shell and its children go with it.
+      **Zero orphans**, including a backgrounded `sleep`.
+    - **SIGSTOP/SIGCONT** — nothing emitted while stopped; on CONT the
+      queued input runs and the bar repaints off the normal tick. No
+      handler needed.
+    - **`nohup`** is moot: `main.rs` requires a tty and exits 2 without
+      one.
+
+    The one real gap is latent: during a long stall, `#` asks are not
+    processed and there is no way to say so. Making status writes
+    non-blocking would fix it, at the cost of partial-paint handling for
+    a case that self-heals. **Not worth it** — revisit only if a real
+    remote session shows it mattering.
+
+    A **harness** bug fell out of the same investigation and *was*
+    fixed: `tests/e2e.py` paused between keystrokes with `time.sleep`,
+    which does not drain the pty master, so the buffer filled, goulash
+    blocked, and the next key was never read. Two tests failed for that
+    reason and neither indicated a product defect. All 34 pauses now use
+    a draining `settle()`, and the reopen points synchronise on the
+    observable area-expand sequence instead of a guessed delay.

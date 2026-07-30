@@ -62,6 +62,37 @@ def read_until(mfd, pattern, timeout=8.0, acc=b""):
     return acc
 
 
+def settle(mfd, seconds):
+    """Wait, but keep draining — a real terminal never stops reading.
+
+    `time.sleep` on a pty master does not consume output, so the pipe
+    fills and goulash blocks in its (blocking) write, which means it
+    also stops reading input. A key sent during such a sleep is simply
+    never seen. That is a property of the harness, not of goulash, so
+    every pause between writes drains.
+    """
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        r, _, _ = select.select([mfd], [], [], deadline - time.time())
+        if mfd in r:
+            try:
+                if not os.read(mfd, 65536):
+                    return
+            except OSError:
+                return
+
+
+def closed_port():
+    """A port nothing is listening on — bind it, learn it, release it."""
+    import socket
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
 def check(name, cond, detail=""):
     tag = "PASS" if cond else "FAIL"
     print(f"  [{tag}] {name}" + ("" if cond else f"  -- {detail}"))
@@ -108,7 +139,7 @@ def test_basic():
     # Resize the outer terminal and confirm propagation.
     set_winsize(mfd, 30, 100)
     os.killpg(os.getpgid(proc.pid), signal.SIGWINCH)
-    time.sleep(0.3)
+    settle(mfd, 0.3)
     os.write(mfd, b"echo RESIZED=$(tput lines)x$(tput cols)\r")
     out = read_until(mfd, rb"RESIZED=\d+x\d+")
     m = re.search(rb"RESIZED=(\d+)x(\d+)", out)
@@ -162,12 +193,12 @@ def test_state_log():
     proc, mfd = spawn(["bash", "--norc"], home=home)
     read_until(mfd, rb"\$")
     os.write(mfd, b"sleep 0.6\r")
-    time.sleep(1.0)
+    settle(mfd, 1.0)
     read_until(mfd, rb"\$")
     os.write(mfd, b"read -s x\r")
-    time.sleep(0.6)
+    settle(mfd, 0.6)
     os.write(mfd, b"topsecret\r")
-    time.sleep(0.4)
+    settle(mfd, 0.4)
     os.write(mfd, b"exit\r")
     code = drain_exit(proc, mfd)
 
@@ -201,7 +232,7 @@ def test_shell_hooks():
     os.write(mfd, b"echo hook-$((6*7))\r")
     read_until(mfd, rb"hook-42")
     os.write(mfd, b"false\r")
-    time.sleep(0.6)
+    settle(mfd, 0.6)
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
 
@@ -237,7 +268,7 @@ def test_suggestions():
 
     if sys.platform.startswith("linux"):  # bracketed paste needs readline >= 8.1
         os.write(mfd, b"\x1b[1;3B")  # Alt-Down: pull suggestion into the line
-        time.sleep(0.5)
+        settle(mfd, 0.5)
         os.write(mfd, b"\r")
         out = read_until(mfd, rb"Cargo\.toml")
         check("accepted suggestion executed", b"Cargo.toml" in out, out[-200:])
@@ -260,13 +291,20 @@ def test_zsh_auto_integration():
         print("  [SKIP] zsh not installed")
         return
     home = tempfile.mkdtemp(prefix="goulash-test-")
+    # Point at a port nothing is listening on. Without this the test
+    # inherits the default probe chain and quietly asserts "this machine
+    # has no LLM engine installed" — true on CI, false on any dev box
+    # running ollama, and not what the test is about either way.
+    with open(os.path.join(home, "config.toml"), "w") as f:
+        f.write(f'[engine]\nprovider = "ollama"\n'
+                f'host = "http://127.0.0.1:{closed_port()}"\n')
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.5)
+    settle(mfd, 1.5)
     os.write(mfd, b"lls\r")
     out = read_until(mfd, "suggestion: ls".encode())
     check("suggestion vended under zsh", "suggestion: ls".encode() in out, out[-300:])
     os.write(mfd, b"\x1b[B")  # plain Down, past end of history
-    time.sleep(0.6)
+    settle(mfd, 0.6)
     os.write(mfd, b"\r")
     out = read_until(mfd, rb"Cargo\.toml")
     check("Down pull executed", b"Cargo.toml" in out, out[-300:])
@@ -278,19 +316,27 @@ def test_zsh_auto_integration():
     # Up slides back to the neutral empty line (one continuous axis):
     # if any slot text lingered, the marker command would garble.
     os.write(mfd, b"\x1b[A")
-    time.sleep(0.6)
+    settle(mfd, 0.6)
     os.write(mfd, b"echo neut-$((3*3))\r")
     out = read_until(mfd, rb"neut-9", 5.0)
     check("Up returns to the neutral empty line", b"neut-9" in out, out[-300:])
     os.write(mfd, b"# hello goulash\r")
-    out = read_until(mfd, rb"no engine", 5.0)
-    check("aside acknowledged (no engine reachable)", b"no engine" in out, out[-300:])
-    time.sleep(0.5)
+    # Specifically "reachable" — "no engine configured yet" is a
+    # different path and would otherwise satisfy a looser match.
+    out = read_until(mfd, rb"no engine reachable", 5.0)
+    check("aside reports the unreachable engine, session survives",
+          b"no engine reachable" in out, out[-300:])
+    settle(mfd, 0.5)
     os.write(mfd, b"\x1b[A")  # Up: native history recall of the aside
     out = read_until(mfd, rb"# hello goulash", 4.0)
     check("aside recallable from history", b"# hello goulash" in out, out[-200:])
     os.write(mfd, b"\x03")  # abort the recalled line
-    time.sleep(0.3)
+    settle(mfd, 0.3)
+    # A dead engine must not take the shell with it. Runs last so it
+    # does not displace the aside at the head of history above.
+    os.write(mfd, b"echo after-$((4*4))\r")
+    out = read_until(mfd, rb"after-16", 5.0)
+    check("shell still usable with no engine", b"after-16" in out, out[-300:])
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
     logs = glob.glob(os.path.join(home, "history", "session-*.jsonl"))
@@ -365,7 +411,7 @@ def test_engine_ollama():
     with open(os.path.join(home, "config.toml"), "w") as f:
         f.write(f'[engine]\nprovider = "ollama"\nhost = "http://127.0.0.1:{port}"\n')
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.5)
+    settle(mfd, 1.5)
     os.write(mfd, b"# what is the answer\r")
     out = read_until(mfd, rb"ANS-fakemodel", 8.0)
     check("smallest model auto-picked, answer shown", b"ANS-fakemodel" in out, out[-300:])
@@ -373,7 +419,7 @@ def test_engine_ollama():
     out += read_until(mfd, rb"\x1b\[23;1H", 3.0)
     check("heckle band opened (question row drawn)", b"\x1b[23;1H" in out)
     os.write(mfd, b"#/model bigmodel\r")
-    time.sleep(0.8)
+    settle(mfd, 0.8)
     os.write(mfd, b"# again please\r")
     out = read_until(mfd, rb"ANS-bigmodel-CTX", 8.0)
     check("#/model switch took effect", b"ANS-bigmodel" in out, out[-300:])
@@ -385,7 +431,7 @@ def test_engine_ollama():
     # unprompted engine answer (fake always replies, never PASS).
     os.write(mfd, b"echo ctest-$((3*4))\r")
     read_until(mfd, rb"ctest-12", 5.0)
-    time.sleep(1.5)
+    settle(mfd, 1.5)
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
     srv.shutdown()
@@ -455,13 +501,13 @@ def test_model_menu():
         f.write("# keep me\n[engine]\nprovider = \"ollama\"\n"
                 f"host = \"http://127.0.0.1:{port}\"\nstream = false\n")
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.5)
+    settle(mfd, 1.5)
     os.write(mfd, b"#/model\r")
     out = read_until(mfd, rb"model \xe2\x96\xb8", 6.0)  # title chip "model ▸"
     check("menu opened", "model ▸".encode() in out, out[-300:])
     out = read_until(mfd, rb"auto", 5.0)
     check("auto is a first-class entry", b"auto" in out, out[-300:])
-    time.sleep(0.4)
+    settle(mfd, 0.4)
     os.write(mfd, b"gem")  # type-to-filter
     out = read_until(mfd, rb"1/1", 5.0)
     check("filter narrows to one", b"1/1" in out, out[-300:])
@@ -469,7 +515,7 @@ def test_model_menu():
     out = read_until(mfd, rb"gemma3:4b ready", 6.0)
     check("commit rebinds and warms the engine",
           b"gemma3:4b ready" in out, out[-300:])
-    time.sleep(0.5)
+    settle(mfd, 0.5)
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
     srv.shutdown()
@@ -542,7 +588,7 @@ def test_chat_mode():
         f.write(f'[engine]\nprovider = "ollama"\nhost = "http://127.0.0.1:{port}"\n'
                 'stream = false\n')
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.5)
+    settle(mfd, 1.5)
     os.write(mfd, b"## first question\r")
     # Chat grows the area: reserved 4 -> 8 on a 24-row term, inner 16.
     out = read_until(mfd, rb"\x1b\[1;16r", 6.0)
@@ -552,42 +598,48 @@ def test_chat_mode():
     out = read_until(mfd, "↓ suggestion: echo p1-".encode(), 4.0)
     check("slot row under the chat panel shows the command",
           "↓ suggestion: echo p1-".encode() in out, out[-300:])
-    time.sleep(0.3)
+    settle(mfd, 0.3)
     os.write(mfd, b"and a follow-up\r")  # no '#' needed — chat has focus
     out = read_until(mfd, rb"ANS-CTX", 8.0)
     check("follow-up carries the running chat", b"ANS-CTX" in out, out[-300:])
-    time.sleep(0.3)
+    settle(mfd, 0.3)
     os.write(mfd, b"\x1b[B")  # Down: onto the slot row (newest selected)
     out = read_until(mfd, rb"1/2", 4.0)
     check("Down selects the newest slot", b"1/2" in out, out[-300:])
     os.write(mfd, b"\r")  # Enter: hand it up to the shell line
     out = read_until(mfd, rb"\x1b\[1;20r", 4.0)
     check("handoff returns focus (area restored)", b"\x1b[1;20r" in out, out[-300:])
-    time.sleep(0.4)
+    settle(mfd, 0.4)
     os.write(mfd, b"\r")
     out = read_until(mfd, rb"p2-48", 6.0)  # newest = second turn's command
     check("handed-off command ran in the shell", b"p2-48" in out, out[-300:])
-    time.sleep(0.5)
+    settle(mfd, 0.5)
     # Reopen and browse the slot stack IN chat: Down Down selects the
     # older turn's command; Enter hands that one off.
     os.write(mfd, b"## \r")
-    time.sleep(0.8)
+    # Wait for the area to actually expand rather than guessing at it —
+    # the reopen is what the next keys depend on.
+    out = read_until(mfd, rb"\x1b\[1;16r", 6.0)
+    check("reopen expands the area again", b"\x1b[1;16r" in out, out[-300:])
     os.write(mfd, b"\x1b[B")
-    time.sleep(0.3)
+    settle(mfd, 0.3)
     os.write(mfd, b"\x1bOB")  # SS3 form: what real zle sessions send
     out = read_until(mfd, rb"2/2", 4.0)
     check("Down browses older slots in chat (incl. SS3 arrows)",
           b"2/2" in out, out[-300:])
     os.write(mfd, b"\r")  # Enter on the selection: handoff the OLDER cmd
-    time.sleep(0.6)
+    settle(mfd, 0.6)
     os.write(mfd, b"\r")
     out = read_until(mfd, rb"p1-42", 6.0)
     check("Enter hands off the selected older command", b"p1-42" in out, out[-300:])
-    time.sleep(0.5)
+    settle(mfd, 0.5)
     os.write(mfd, b"## \r")  # reopen ...
-    time.sleep(0.8)
+    out = read_until(mfd, rb"\x1b\[1;16r", 6.0)
+    check("chat is open before Esc", b"\x1b[1;16r" in out, out[-300:])
     os.write(mfd, b"\x1b")  # ... and Esc backs out
-    time.sleep(0.4)
+    # Esc must give the rows back, not just move focus.
+    out = read_until(mfd, rb"\x1b\[1;20r", 4.0)
+    check("esc collapses the chat area", b"\x1b[1;20r" in out, out[-300:])
     os.write(mfd, b"echo bye-$((2*2))\r")
     out = read_until(mfd, rb"bye-4", 5.0)
     check("esc exits chat, shell keys flow again", b"bye-4" in out, out[-300:])
@@ -654,7 +706,7 @@ def test_slow_amend():
         f.write(f'[engine]\nprovider = "ollama"\n'
                 f'host = "http://127.0.0.1:{port}"\nmodel = "tiermodel"\n')
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.5)
+    settle(mfd, 1.5)
     os.write(mfd, b"# what now\r")
     out = read_until(mfd, rb"echo amended", 10.0)
     check("both tiers ran", FakeTiers.legs[:2] == ["fast", "slow"],
@@ -672,11 +724,11 @@ def test_slow_amend():
     # Walk back up past both slots to the neutral empty line, then clear
     # anything the browse left on the prompt before exiting.
     os.write(mfd, b"\x1b[A")
-    time.sleep(0.3)
+    settle(mfd, 0.3)
     os.write(mfd, b"\x1b[A")
-    time.sleep(0.3)
+    settle(mfd, 0.3)
     os.write(mfd, b"\x03")
-    time.sleep(0.3)
+    settle(mfd, 0.3)
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
     srv.shutdown()
@@ -742,7 +794,7 @@ def test_memory():
     with open(os.path.join(home, "config.toml"), "w") as f:
         f.write(f'[engine]\nprovider = "ollama"\nhost = "http://127.0.0.1:{port}"\n')
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.5)
+    settle(mfd, 1.5)
     os.write(mfd, b"#/memory\r")
     out = read_until(mfd, rb"memory off", 5.0)
     check("memory defaults off", b"memory off" in out, out[-300:])
@@ -755,7 +807,7 @@ def test_memory():
     os.write(mfd, b"# save a note\r")
     out = read_until(mfd, rb"MEM-SEEN", 8.0)
     check("pinned block reached the prompt", b"MEM-SEEN" in out, out[-300:])
-    time.sleep(0.5)  # let the REMEMBER op land in the store
+    settle(mfd, 0.5)  # let the REMEMBER op land in the store
     os.write(mfd, b"#/memory find saved\r")
     out = read_until(mfd, rb"model saved this note", 5.0)
     check("model REMEMBER stored", b"model saved this note" in out, out[-300:])
