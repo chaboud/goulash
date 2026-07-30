@@ -1,0 +1,236 @@
+# Model cells under characterization.
+#
+# provider: "ollama" | "openai-raw" (/v1/completions) | "openai-chat"
+#           (/v1/chat/completions — the shape hosted providers offer)
+# contends: true when the model cannot fit comfortably in 24 GB alongside
+#           anything else, so its latency partly measures memory pressure.
+#           Recorded in the report rather than silently dropped.
+#
+# Cross-runtime triads, same weights different runtime:
+#   gemma4:e4b / gemma4:e4b-mlx / google/gemma-4-e4b
+#   gemma4:12b / gemma4:12b-mlx / google/gemma-4-12b-qat
+#
+# Note: ollama's deepseek-r1:14b and deepseek-r1:14b-qwen-distill-q4_K_M
+# share blob c333b7232bdb — one entry, not two.
+
+# ---------------------------------------------------------------- ollama
+[[cell]]
+model = "qwen3.5:0.8b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "watcher"
+gb = 1.0
+
+[[cell]]
+model = "llama3.2:3b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "watcher"
+gb = 2.0
+
+[[cell]]
+model = "qwen3.5:2b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "watcher"
+gb = 2.7
+
+[[cell]]
+model = "gemma3:4b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "watcher"
+gb = 3.3
+
+[[cell]]
+model = "qwen3.5:4b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "watcher"
+gb = 3.4
+
+[[cell]]
+model = "mistral:latest"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "driver"
+gb = 4.1
+
+[[cell]]
+model = "llama3.1:8b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "driver"
+gb = 4.9
+
+[[cell]]
+model = "qwen3.5:9b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "driver"
+gb = 6.6
+
+[[cell]]
+model = "gemma4:12b-mlx"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "driver"
+gb = 6.8
+
+[[cell]]
+model = "mistral-nemo:latest"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "driver"
+gb = 7.1
+
+[[cell]]
+model = "gemma4:e2b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "driver"
+gb = 7.2
+
+[[cell]]
+model = "gemma4:12b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "driver"
+gb = 7.6
+
+[[cell]]
+model = "gemma3:12b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "driver"
+gb = 8.1
+
+# Quirk probe: reasoning model, the reason `think: false` exists.
+[[cell]]
+model = "deepseek-r1:14b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "driver"
+gb = 9.0
+
+[[cell]]
+model = "qwen3:14b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "driver"
+gb = 9.3
+
+[[cell]]
+model = "gemma4:e4b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "driver"
+gb = 9.6
+
+[[cell]]
+model = "gemma4:e4b-mlx"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "driver"
+gb = 9.6
+
+[[cell]]
+model = "gpt-oss:20b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "heavy"
+gb = 13.0
+contends = true
+
+[[cell]]
+model = "devstral:24b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "heavy"
+gb = 14.0
+contends = true
+
+[[cell]]
+model = "deepseek-coder:33b-instruct-q3_K_S"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "heavy"
+gb = 14.0
+contends = true
+
+[[cell]]
+model = "gemma3:27b"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "heavy"
+gb = 17.0
+contends = true
+
+# Quirk probe: aggressive q2_K quantization.
+[[cell]]
+model = "mixtral:8x7b-instruct-v0.1-q2_K"
+provider = "ollama"
+host = "http://127.0.0.1:11434"
+tier = "heavy"
+gb = 17.0
+contends = true
+
+# ------------------------------------------------------------- lm studio
+[[cell]]
+model = "qwen/qwen3-1.7b"
+provider = "openai-raw"
+host = "http://127.0.0.1:1234"
+tier = "watcher"
+gb = 1.84
+
+[[cell]]
+model = "qwen/qwen3-4b"
+provider = "openai-raw"
+host = "http://127.0.0.1:1234"
+tier = "watcher"
+gb = 2.28
+
+[[cell]]
+model = "qwen/qwen3-8b"
+provider = "openai-raw"
+host = "http://127.0.0.1:1234"
+tier = "driver"
+gb = 4.62
+
+[[cell]]
+model = "google/gemma-4-e4b"
+provider = "openai-raw"
+host = "http://127.0.0.1:1234"
+tier = "driver"
+gb = 6.86
+
+[[cell]]
+model = "google/gemma-4-12b-qat"
+provider = "openai-raw"
+host = "http://127.0.0.1:1234"
+tier = "driver"
+gb = 7.15
+
+[[cell]]
+model = "qwen/qwen3.6-35b-a3b"
+provider = "openai-raw"
+host = "http://127.0.0.1:1234"
+tier = "heavy"
+gb = 22.07
+contends = true
+
+# Same two models through the chat template, to price the mapping that
+# hosted providers force on us.
+[[cell]]
+model = "google/gemma-4-e4b"
+provider = "openai-chat"
+host = "http://127.0.0.1:1234"
+tier = "driver"
+gb = 6.86
+
+[[cell]]
+model = "qwen/qwen3-8b"
+provider = "openai-chat"
+host = "http://127.0.0.1:1234"
+tier = "driver"
+gb = 4.62

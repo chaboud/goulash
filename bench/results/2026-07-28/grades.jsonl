@@ -1,0 +1,313 @@
+{"id":"05aed6","correct":3,"idiom":2,"fit":2,"why":"correct path; no -r so output stays JSON-quoted; prose is first-person filler"}
+{"id":"07d0e4","correct":2,"idiom":1,"fit":1,"why":"command is right but embedded in the prose line, so nothing vends; user gets no pullable command"}
+{"id":"19eb70","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"21480b","correct":3,"idiom":3,"fit":2,"why":"exactly right including -r; no prose at all, so the band shows only the chip"}
+{"id":"246cc0","correct":3,"idiom":2,"fit":2,"why":"correct; prose claims names are 'listed below' when nothing is"}
+{"id":"247fa5","correct":0,"idiom":0,"fit":1,"why":"suggests writing Rust with serde_json for a one-line jq job; no command"}
+{"id":"30477b","correct":1,"idiom":1,"fit":2,"why":"backticks inside the CMD: line, so the vended text would fail if run"}
+{"id":"371fd2","correct":1,"idiom":1,"fit":2,"why":"'.[].items[].name' is the wrong path for {items:[...]}"}
+{"id":"3cac19","correct":3,"idiom":2,"fit":3,"why":"equivalent pipe form, correct; no -r"}
+{"id":"3e67bf","correct":2,"idiom":1,"fit":1,"why":"correct command but only inline in prose; nothing vends"}
+{"id":"490217","correct":0,"idiom":0,"fit":0,"why":"wrong path AND the explanation is concatenated into the command; would run garbage"}
+{"id":"4ba4a7","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"52c807","correct":1,"idiom":1,"fit":1,"why":"wrong path plus an absolute sandbox path leaked into the command"}
+{"id":"5311f5","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"553bc4","correct":3,"idiom":3,"fit":3,"why":"exactly right with -r, one clean prose line; model answer for this question"}
+{"id":"555fcb","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"56059c","correct":3,"idiom":2,"fit":3,"why":"correct, missing -r, good prose"}
+{"id":"602d8e","correct":3,"idiom":3,"fit":2,"why":"correct; prose carries a 'goulash:' prefix copied from the transcript format"}
+{"id":"65b2d8","correct":2,"idiom":1,"fit":2,"why":"correct command with a nonsense 'cat notes.txt | grep items' appended"}
+{"id":"67bffa","correct":3,"idiom":1,"fit":2,"why":"works but useless cat; prose just echoes the command"}
+{"id":"71b3d5","correct":2,"idiom":1,"fit":2,"why":"works but writes a temp file and cats it for no reason"}
+{"id":"7a3b6e","correct":3,"idiom":2,"fit":1,"why":"correct command, but prose says it needs to see the file first — contradicts itself"}
+{"id":"7aff7a","correct":3,"idiom":3,"fit":0,"why":"correct command buried under a six-line essay; unusable in a status bar"}
+{"id":"7d14e9","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag to the band"}
+{"id":"84d2aa","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"86bc65","correct":0,"idiom":0,"fit":1,"why":"select(.items[].name != null) // [] is not valid for this shape and echoes Done"}
+{"id":"d6d6f5","correct":3,"idiom":3,"fit":3,"why":"exactly right; prose is the command itself, which reads fine here"}
+{"id":"da37d7","correct":0,"idiom":0,"fit":0,"why":"find+grep+sed against a JSON file, writes /tmp, and trails a REMEMBER: fragment"}
+{"id":"e35898","correct":3,"idiom":2,"fit":3,"why":"correct, no -r; prose says 'names array' which is slightly off"}
+{"id":"e45d29","correct":1,"idiom":1,"fit":2,"why":"'.[] | .name' misses the items level, and backticks are inside the command"}
+{"id":"e7be0c","correct":3,"idiom":2,"fit":3,"why":"correct, no -r, clean prose"}
+{"id":"eca939","correct":0,"idiom":0,"fit":0,"why":"echoed the question back verbatim"}
+{"id":"f06757","correct":3,"idiom":3,"fit":2,"why":"correct with -r; prose is vague but harmless"}
+{"id":"f2073b","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag"}
+{"id":"f7c7e6","correct":3,"idiom":2,"fit":3,"why":"correct, no -r, good prose"}
+{"id":"f8f3ae","correct":0,"idiom":0,"fit":0,"why":"regex-scrapes quoted strings out of JSON; doubled 'goulash:' prefix"}
+{"id":"07f07a","correct":1,"idiom":2,"fit":3,"why":"mixed reset UNSTAGES the changes — the opposite of what was asked"}
+{"id":"092446","correct":3,"idiom":3,"fit":2,"why":"--soft is right; 'goulash:' prefix leaked into the prose"}
+{"id":"13d49d","correct":0,"idiom":0,"fit":0,"why":"wrong reset plus a stash of a huge leaked file list from the real repo"}
+{"id":"1ee4a5","correct":0,"idiom":0,"fit":1,"why":"'git reset --soft' with no target, then an unrelated stash"}
+{"id":"1f4922","correct":0,"idiom":0,"fit":1,"why":"--soft with a pathspec is a git error; prose contradicts itself"}
+{"id":"21ddc4","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"2264c3","correct":3,"idiom":3,"fit":2,"why":"--soft HEAD^ is correct; no prose"}
+{"id":"282062","correct":0,"idiom":0,"fit":2,"why":"--keep-index is a git stash flag, not git reset; would error"}
+{"id":"296384","correct":1,"idiom":2,"fit":3,"why":"mixed reset unstages, and the prose confidently claims it keeps them staged"}
+{"id":"2bb083","correct":1,"idiom":2,"fit":3,"why":"mixed reset; unstages"}
+{"id":"2d25a6","correct":1,"idiom":2,"fit":3,"why":"mixed reset; unstages"}
+{"id":"34898c","correct":0,"idiom":0,"fit":0,"why":"garbled doubled prefix, echoes a log line, no command"}
+{"id":"356a8d","correct":3,"idiom":3,"fit":3,"why":"--soft HEAD^ correct with clean prose"}
+{"id":"454bbd","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"4ef1c9","correct":1,"idiom":1,"fit":2,"why":"mixed reset and backticks inside the command"}
+{"id":"52e9e6","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"5516af","correct":1,"idiom":1,"fit":2,"why":"names --soft but describes it as staging then discarding; no command"}
+{"id":"578fac","correct":3,"idiom":3,"fit":3,"why":"--soft HEAD~1 with a clear one-line explanation"}
+{"id":"6a23d7","correct":0,"idiom":0,"fit":0,"why":"per-file reset plus a rambling paragraph concatenated into the command"}
+{"id":"6e7e08","correct":3,"idiom":3,"fit":2,"why":"correct; prose is a bit long-winded"}
+{"id":"70e317","correct":0,"idiom":0,"fit":3,"why":"--staged is not a git reset flag; would error"}
+{"id":"d59607","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"da2f89","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag"}
+{"id":"dc0a48","correct":1,"idiom":1,"fit":1,"why":"--mixed is explicitly the unstaging behaviour; also only inline, nothing vends"}
+{"id":"dc99de","correct":3,"idiom":3,"fit":3,"why":"--soft correct, clean prose"}
+{"id":"e44567","correct":3,"idiom":3,"fit":3,"why":"--soft correct, clean prose"}
+{"id":"e4f2f9","correct":0,"idiom":0,"fit":0,"why":"echoed the question back verbatim"}
+{"id":"eb7cb0","correct":1,"idiom":2,"fit":3,"why":"mixed reset; prose claims it keeps changes staged, which it does not"}
+{"id":"ef56c8","correct":3,"idiom":2,"fit":3,"why":"--soft correct; prose says 'unstages the last commit' which muddles it"}
+{"id":"f088bd","correct":3,"idiom":3,"fit":3,"why":"--soft HEAD^ correct"}
+{"id":"f0a38e","correct":3,"idiom":3,"fit":3,"why":"--soft correct, clean prose"}
+{"id":"f4a3fa","correct":1,"idiom":2,"fit":1,"why":"--mixed is the unstaging behaviour; prose asserts the opposite, and is long"}
+{"id":"03e143","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag"}
+{"id":"0765bf","correct":0,"idiom":1,"fit":1,"why":"--max-depth is GNU-only and fails on this BSD box; also leaked the sandbox absolute path"}
+{"id":"11f3c4","correct":2,"idiom":2,"fit":3,"why":"du -sh * works but is unsorted, so 'biggest first' is unanswered"}
+{"id":"125fe7","correct":1,"idiom":1,"fit":3,"why":"du -h . recurses and does not sort; does not answer the question"}
+{"id":"197630","correct":3,"idiom":3,"fit":3,"why":"du -sh * | sort -rh — correct on BSD, right order, clean prose"}
+{"id":"1bf136","correct":0,"idiom":0,"fit":0,"why":"ls --sort=size is GNU-only and fails here; prose is a three-line essay"}
+{"id":"207da9","correct":2,"idiom":2,"fit":2,"why":"unsorted du; no prose"}
+{"id":"29cda2","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"2ebf80","correct":3,"idiom":3,"fit":3,"why":"du -h -d 1 | sort -hr — the BSD-correct depth flag, right order"}
+{"id":"316369","correct":0,"idiom":0,"fit":0,"why":"echoed the question back"}
+{"id":"34d814","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"402a12","correct":2,"idiom":2,"fit":3,"why":"correct pipeline but head -n 1 shows only the single biggest, not a list"}
+{"id":"43e7f9","correct":1,"idiom":1,"fit":2,"why":"backticks inside the CMD line so it would not run; also only two entries"}
+{"id":"46f644","correct":3,"idiom":3,"fit":2,"why":"correct; prose begins 'Answer:' — scaffold bleed from the prompt"}
+{"id":"4b2cb9","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag"}
+{"id":"4be32d","correct":0,"idiom":1,"fit":3,"why":"--max-depth is GNU-only; fails on this machine"}
+{"id":"4e5d95","correct":1,"idiom":1,"fit":3,"why":"no command, and names a 298-byte file as the space consumer"}
+{"id":"4f9afe","correct":1,"idiom":0,"fit":1,"why":"no command; prose carries a 'goulash:' prefix and a fabricated exit stamp"}
+{"id":"579788","correct":1,"idiom":1,"fit":2,"why":"plain ls does not sort by size; prose invents a figure"}
+{"id":"5dd2da","correct":3,"idiom":3,"fit":3,"why":"du -sh * | sort -rh | head -n 5 — correct and appropriately truncated"}
+{"id":"611e1a","correct":0,"idiom":0,"fit":1,"why":"GNU --max-depth plus a second redundant awk pipeline stapled on"}
+{"id":"61a452","correct":0,"idiom":0,"fit":0,"why":"echoed the directive itself back as the answer"}
+{"id":"84a2df","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"8ecb83","correct":1,"idiom":1,"fit":2,"why":"backticks inside CMD, and sort -h is ascending — smallest first, the opposite of the ask"}
+{"id":"8f859e","correct":3,"idiom":3,"fit":3,"why":"du -sh * | sort -rh — correct"}
+{"id":"954948","correct":3,"idiom":3,"fit":2,"why":"correct; prose hedges rather than answering"}
+{"id":"9cb015","correct":3,"idiom":3,"fit":3,"why":"du -hsx * | sort -rh | head -10 — correct, and -x avoids crossing mounts"}
+{"id":"a55a49","correct":2,"idiom":2,"fit":1,"why":"du without -s recurses noisily; prose leaked the sandbox absolute path"}
+{"id":"b5b245","correct":3,"idiom":3,"fit":2,"why":"ls -lS sorts by size descending and works on BSD; prose invents byte counts"}
+{"id":"b61e2f","correct":3,"idiom":3,"fit":3,"why":"correct"}
+{"id":"b9d233","correct":3,"idiom":3,"fit":2,"why":"ls -lhS correct; no prose at all"}
+{"id":"bd0b45","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"c6770c","correct":3,"idiom":3,"fit":2,"why":"correct; prose claims results are 'listed above' when nothing is"}
+{"id":"d00aef","correct":0,"idiom":0,"fit":0,"why":"ascending sort AND a paragraph about fd concatenated into the command"}
+{"id":"d7caf3","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"e5526e","correct":3,"idiom":3,"fit":3,"why":"du -h -d 1 | sort -hr — BSD-correct depth flag"}
+{"id":"e69aa5","correct":0,"idiom":1,"fit":1,"why":"GNU --max-depth; prose is just the command restated"}
+{"id":"eca810","correct":0,"idiom":0,"fit":0,"why":"session-log formatting bled into the command itself; would not run"}
+{"id":"efa24c","correct":0,"idiom":2,"fit":3,"why":"GNU --max-depth; right shape, wrong platform"}
+{"id":"f173d5","correct":1,"idiom":1,"fit":2,"why":"no command; byte counts are invented"}
+{"id":"fabcf6","correct":3,"idiom":3,"fit":3,"why":"du -sh * | sort -hr — correct"}
+{"id":"0294bd","correct":3,"idiom":3,"fit":3,"why":"find -maxdepth 3 with a node_modules prune — correct and idiomatic"}
+{"id":"034fd4","correct":2,"idiom":2,"fit":3,"why":"! -name node_modules only skips the dir entry itself, not its contents; -type d also drops files"}
+{"id":"070f72","correct":0,"idiom":0,"fit":1,"why":"vends the command `bash` — nonsense"}
+{"id":"09e3cf","correct":0,"idiom":0,"fit":1,"why":"searches only src, strips the prefix with sed, ignores the depth limit"}
+{"id":"0aa8d4","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"135332","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag"}
+{"id":"279448","correct":1,"idiom":1,"fit":3,"why":"prose only, no command, and says nothing about depth"}
+{"id":"2f7bce","correct":0,"idiom":0,"fit":2,"why":"uses fd, which is NOT installed here; flags are also malformed"}
+{"id":"384961","correct":3,"idiom":3,"fit":3,"why":"correct depth limit and prune"}
+{"id":"39a2b4","correct":1,"idiom":1,"fit":2,"why":"-mindepth 3 -maxdepth 4 shows the wrong slice — asked for down to three, not exactly three-plus"}
+{"id":"3acb99","correct":1,"idiom":0,"fit":1,"why":"two commands stapled together, second uses GNU ls --exclude which fails on BSD"}
+{"id":"3e893e","correct":1,"idiom":1,"fit":2,"why":"-mindepth 3 with no maxdepth shows everything BELOW three levels, the inverse of the ask"}
+{"id":"3ee64f","correct":3,"idiom":2,"fit":0,"why":"command is right; prose is a five-line essay ending in a question — unusable in a band"}
+{"id":"4131bb","correct":0,"idiom":0,"fit":1,"why":"a log timestamp bled into the command text; would not run"}
+{"id":"46c4a8","correct":1,"idiom":1,"fit":2,"why":"ls -R has no depth limit, and grep -v filters lines not subtrees"}
+{"id":"496e22","correct":0,"idiom":0,"fit":2,"why":"tree -C node_modules shows node_modules in colour — the opposite of skipping it"}
+{"id":"4c5f42","correct":0,"idiom":0,"fit":0,"why":"echoed the question back"}
+{"id":"512b21","correct":0,"idiom":1,"fit":2,"why":"answers a disk-usage question instead; no depth limit"}
+{"id":"5e1768","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"637e0f","correct":2,"idiom":1,"fit":0,"why":"command is workable but prose degenerates into 'and the and the' repetition"}
+{"id":"64aca3","correct":0,"idiom":0,"fit":2,"why":"du --max-depth and --exclude are both GNU-only; fails on BSD, and answers about size not layout"}
+{"id":"6ae4ed","correct":1,"idiom":0,"fit":1,"why":"no command; prose is a fabricated log line with an exit stamp"}
+{"id":"6c3c47","correct":2,"idiom":2,"fit":3,"why":"-mindepth 3 -maxdepth 3 shows only the third level, not the layout down to it"}
+{"id":"6e9a18","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag"}
+{"id":"727144","correct":1,"idiom":0,"fit":0,"why":"tree -L3 ignores node_modules entirely, and a paragraph about fd is concatenated into the command"}
+{"id":"75da15","correct":1,"idiom":1,"fit":1,"why":"command only inline in prose so nothing vends; searches src only"}
+{"id":"7d0004","correct":0,"idiom":0,"fit":1,"why":"lists src with head -10; ignores depth and the prune, trails a REMEMBER fragment"}
+{"id":"81e1f5","correct":1,"idiom":1,"fit":2,"why":"sed strips every path prefix, destroying the layout the question asked for"}
+{"id":"8597cb","correct":3,"idiom":3,"fit":3,"why":"correct prune and depth, tidied with sed and sort"}
+{"id":"862da1","correct":2,"idiom":1,"fit":1,"why":"correct command but only inline in prose; nothing vends"}
+{"id":"89c736","correct":0,"idiom":0,"fit":1,"why":"tree -d 3 is not the depth flag (-L is), and a bracketed placeholder is inside the command"}
+{"id":"8aefdb","correct":3,"idiom":2,"fit":3,"why":"correct; -ls makes it verbose for a status bar but works"}
+{"id":"913758","correct":1,"idiom":1,"fit":2,"why":"backticks inside CMD; ls -R has no depth limit"}
+{"id":"91858e","correct":0,"idiom":0,"fit":0,"why":"emitted an opening code fence and nothing else"}
+{"id":"95bc51","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"987459","correct":2,"idiom":2,"fit":2,"why":"-mindepth 3 -maxdepth 3 shows only that one level"}
+{"id":"bd8d87","correct":3,"idiom":3,"fit":3,"why":"mindepth 1 maxdepth 3 with a proper prune — the most complete form here"}
+{"id":"c00e0d","correct":3,"idiom":3,"fit":3,"why":"correct"}
+{"id":"c30d0c","correct":1,"idiom":1,"fit":2,"why":"promises a layout and provides no command"}
+{"id":"c49182","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"cadf5e","correct":2,"idiom":2,"fit":3,"why":"works, but grep -v filters output lines rather than pruning the walk, and -type d drops files"}
+{"id":"cb5284","correct":0,"idiom":0,"fit":2,"why":"uses fd, which is not installed here"}
+{"id":"d2385e","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"e1294e","correct":0,"idiom":0,"fit":1,"why":"no command; calls src a 4K file and invents sizes"}
+{"id":"e86135","correct":1,"idiom":1,"fit":0,"why":"prose is 'To be continued...'; command searches src only and mis-prunes"}
+{"id":"f7cc63","correct":2,"idiom":2,"fit":1,"why":"command is reasonable but prose claims it cannot answer, contradicting it"}
+{"id":"f94303","correct":1,"idiom":0,"fit":0,"why":"two unrelated pipelines joined; answers size as well as layout; 'goulash:' prefix bleed"}
+{"id":"fccb3f","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"016b89","correct":1,"idiom":2,"fit":3,"why":"says -P enables EXTENDED regex; that is -E. Wrong flag semantics"}
+{"id":"062e70","correct":3,"idiom":1,"fit":3,"why":"explanation right; attaches a pointless grep --help command to a pure-explanation question"}
+{"id":"0a77f3","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"0ec687","correct":3,"idiom":3,"fit":3,"why":"correct and terse, no spurious command — model answer for a control"}
+{"id":"12bf4e","correct":0,"idiom":0,"fit":2,"why":"'Perl-style prefix matching' is invented; bare 'grep -P' would hang waiting on stdin"}
+{"id":"15bef9","correct":3,"idiom":1,"fit":2,"why":"right; command is backticked prose with a parenthetical, would not run"}
+{"id":"1e2358","correct":3,"idiom":1,"fit":1,"why":"right, but the CMD: is inline in the prose so nothing vends"}
+{"id":"2111ce","correct":3,"idiom":1,"fit":1,"why":"right and truncated mid-sentence; vends a command for an explain-only ask"}
+{"id":"22a454","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"2a9f95","correct":0,"idiom":0,"fit":1,"why":"no explanation at all; pipes man to head and trails a REMEMBER fragment"}
+{"id":"3118a3","correct":3,"idiom":3,"fit":1,"why":"correct, no command — but truncated mid-word, too long for a band"}
+{"id":"34e2e3","correct":1,"idiom":1,"fit":3,"why":"conflates -P with -o; -P has nothing to do with first-vs-all matches"}
+{"id":"3a52fe","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"3b2155","correct":2,"idiom":0,"fit":0,"why":"explanation is concatenated INTO the command after a semicolon; would run garbage"}
+{"id":"45efe5","correct":3,"idiom":1,"fit":3,"why":"right; spurious --help command on an explain-only ask"}
+{"id":"4ac3b6","correct":3,"idiom":1,"fit":3,"why":"right; spurious example command"}
+{"id":"564d69","correct":3,"idiom":3,"fit":3,"why":"correct, no command"}
+{"id":"56e864","correct":3,"idiom":1,"fit":3,"why":"right; bare 'grep -P' would hang on stdin"}
+{"id":"5b58d3","correct":3,"idiom":1,"fit":3,"why":"right; 'man grep | less' is a pager pipe that fights the terminal"}
+{"id":"5ba3c5","correct":3,"idiom":1,"fit":2,"why":"right; spurious example command"}
+{"id":"5cada7","correct":3,"idiom":0,"fit":3,"why":"right; 'man grep | grep -P' with no pattern would error"}
+{"id":"5dfef3","correct":3,"idiom":1,"fit":2,"why":"right; invents a phone-number regex against data.json"}
+{"id":"653ae4","correct":3,"idiom":1,"fit":1,"why":"right, but CMD: is inline in prose so nothing vends"}
+{"id":"6da86a","correct":3,"idiom":3,"fit":3,"why":"correct and terse, no command"}
+{"id":"83e7ed","correct":3,"idiom":3,"fit":3,"why":"correct, no command"}
+{"id":"9c4215","correct":3,"idiom":1,"fit":3,"why":"right; spurious example command"}
+{"id":"9c7020","correct":0,"idiom":0,"fit":1,"why":"claims -P sets a max line count — invented; plus 'goulash:' prefix and a fake exit stamp"}
+{"id":"9dedac","correct":2,"idiom":0,"fit":1,"why":"no prose; the explanation is wrapped in an echo, so the 'command' just prints text"}
+{"id":"9eceec","correct":3,"idiom":1,"fit":3,"why":"right; spurious echo|grep demo on an explain-only ask"}
+{"id":"9f7fc0","correct":3,"idiom":1,"fit":3,"why":"right; spurious example command"}
+{"id":"a4ad82","correct":0,"idiom":0,"fit":1,"why":"placeholder text instead of an answer"}
+{"id":"a4e51a","correct":3,"idiom":1,"fit":3,"why":"right; spurious --help command"}
+{"id":"a68563","correct":3,"idiom":0,"fit":3,"why":"right; 'man grep | less +/regexp' opens a pager, which would take over the terminal"}
+{"id":"af8b24","correct":0,"idiom":0,"fit":0,"why":"degenerated into 'the use of the use of' repetition"}
+{"id":"b3c739","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag"}
+{"id":"b56376","correct":3,"idiom":1,"fit":1,"why":"right, but truncated mid-command and the CMD: is inline so nothing vends"}
+{"id":"bd8cbb","correct":0,"idiom":0,"fit":1,"why":"no explanation; greps for the literal word 'flag'"}
+{"id":"c4aa77","correct":3,"idiom":1,"fit":3,"why":"right; backticked 'man grep' would not run as vended"}
+{"id":"cd470e","correct":0,"idiom":0,"fit":0,"why":"degenerated into 'or or or' then a run of zeroes"}
+{"id":"d268ca","correct":2,"idiom":0,"fit":0,"why":"log timestamp AND the explanation bled into the command; would not run"}
+{"id":"f268e5","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"f6b449","correct":3,"idiom":1,"fit":3,"why":"right; the grep pattern '-\\P' is malformed"}
+{"id":"f8b2f8","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"f8e4e2","correct":3,"idiom":3,"fit":1,"why":"correct, no command, but truncated mid-word — too long for the band"}
+{"id":"fa64b7","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag"}
+{"id":"fc1738","correct":3,"idiom":1,"fit":3,"why":"right; spurious --help command"}
+{"id":"fd7bc2","correct":3,"idiom":1,"fit":3,"why":"right; spurious example command"}
+{"id":"01bffd","correct":3,"idiom":2,"fit":3,"why":"accurate — rightmost non-zero status wins; vends the option itself, harmless but unasked"}
+{"id":"0590d4","correct":2,"idiom":0,"fit":1,"why":"no prose; the explanation is wrapped in echo so the command just prints text"}
+{"id":"2cb312","correct":3,"idiom":1,"fit":2,"why":"accurate; spurious man|grep on an explain-only ask"}
+{"id":"2ffd89","correct":3,"idiom":0,"fit":2,"why":"prose right, but the echoed 'explanation' inside the command states the DEFAULT behaviour, contradicting it"}
+{"id":"343bc4","correct":1,"idiom":1,"fit":3,"why":"wrong — pipefail does not stop at the first failure, it changes the reported status"}
+{"id":"391082","correct":1,"idiom":1,"fit":2,"why":"garbled: $? is always available; also 'goulash:' prefix bleed"}
+{"id":"3f727e","correct":0,"idiom":0,"fit":0,"why":"greps an unrelated log file; explanation concatenated into the command"}
+{"id":"419f25","correct":0,"idiom":0,"fit":0,"why":"emitted the literal placeholder '(put your final answer here)'"}
+{"id":"5155c2","correct":0,"idiom":0,"fit":0,"why":"echoed the question back as both prose and command"}
+{"id":"5357ee","correct":1,"idiom":2,"fit":2,"why":"says FIRST failing command; pipefail reports the LAST non-zero. Demo command is nice though"}
+{"id":"53f331","correct":3,"idiom":1,"fit":1,"why":"accurate but truncated; greps a bash NEWS file that may not exist"}
+{"id":"6bcc5d","correct":1,"idiom":0,"fit":0,"why":"log stamp bled into the command; and pipefail does not cause immediate exit (that is set -e)"}
+{"id":"780d8c","correct":2,"idiom":0,"fit":0,"why":"explanation stuffed into an echo inside the command, and truncated"}
+{"id":"7c9287","correct":3,"idiom":0,"fit":0,"why":"explanation correct but inside an echo, with trailing prose concatenated after a semicolon"}
+{"id":"9ae4be","correct":2,"idiom":0,"fit":1,"why":"'exit 1' is wrong — it propagates the actual status; and it is an echo, not a command"}
+{"id":"9ede13","correct":2,"idiom":1,"fit":2,"why":"prose says 'other than the last', which is not the rule; the echoed version is more accurate than the prose"}
+{"id":"b99ffb","correct":3,"idiom":0,"fit":2,"why":"prose accurate; the command pipes set into grep, which is meaningless"}
+{"id":"c7e7f4","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"c99505","correct":1,"idiom":1,"fit":1,"why":"self-contradictory ('last command, not just the last one'); truncated; prefix bleed"}
+{"id":"cc98af","correct":1,"idiom":0,"fit":1,"why":"prose ok but the echoed detail invents a '128 + status' rule that does not exist"}
+{"id":"d25408","correct":2,"idiom":0,"fit":1,"why":"no prose; explanation concatenated into the command, and 'exit 1' is wrong"}
+{"id":"d53e52","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag"}
+{"id":"ea4a71","correct":3,"idiom":3,"fit":2,"why":"the most accurate answer here — default is last command's status, pipefail changes it; truncated slightly"}
+{"id":"ee68bf","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"0fde42","correct":0,"idiom":1,"fit":3,"why":"sorts then uniqs region names — never sums anything"}
+{"id":"10ceba","correct":3,"idiom":3,"fit":3,"why":"skips header, sums $4 by $1, prints sum-first and sorts -nr. Correct"}
+{"id":"115f98","correct":0,"idiom":0,"fit":0,"why":"awk with hardcoded r0-r3 branches and invalid /pat/={...} syntax"}
+{"id":"15f2d6","correct":2,"idiom":2,"fit":2,"why":"sums correctly but never sorts, and the prose claims it sorts by region name"}
+{"id":"32ba63","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"482ca6","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"5c1ece","correct":1,"idiom":1,"fit":1,"why":"sums by $2 (rep) not $1 (region); explanation concatenated into the command"}
+{"id":"5e0701","correct":0,"idiom":0,"fit":2,"why":"uses revenue as a scalar then iterates it as an array — broken awk"}
+{"id":"737f5c","correct":3,"idiom":2,"fit":2,"why":"correct, piping to sort from inside awk works; 'goulash:' prefix bleed and long prose"}
+{"id":"795d60","correct":0,"idiom":0,"fit":0,"why":"prose contains a second CMD:; the vended command sums all revenue with no grouping"}
+{"id":"79cedb","correct":1,"idiom":1,"fit":3,"why":"sorts rows and takes the top one — no summing, so it answers a different question"}
+{"id":"7e4e9c","correct":0,"idiom":0,"fit":0,"why":"emitted a <|channel> control token then a run of zeroes"}
+{"id":"9438d1","correct":1,"idiom":1,"fit":1,"why":"sums $3 (units) not $4 (revenue); trailing '4076, [asked]' junk"}
+{"id":"976eb8","correct":3,"idiom":3,"fit":3,"why":"correct and idiomatic"}
+{"id":"b4d433","correct":2,"idiom":1,"fit":3,"why":"sum is right, but PROCINFO sorted_in is gawk-only — macOS awk ignores it, so nothing sorts"}
+{"id":"c1ecb3","correct":0,"idiom":0,"fit":0,"why":"no command; prose mentions bytes and leaks the sandbox path"}
+{"id":"cd26f5","correct":0,"idiom":0,"fit":0,"why":"emitted a bare code fence"}
+{"id":"ce2805","correct":0,"idiom":0,"fit":0,"why":"malformed for-loop and two END blocks; will not parse"}
+{"id":"d35545","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag"}
+{"id":"d5dc57","correct":0,"idiom":0,"fit":2,"why":"prints the header alongside $3 for rows with a truthy $4 — unrelated to the ask"}
+{"id":"d82c54","correct":3,"idiom":3,"fit":3,"why":"correct"}
+{"id":"de4cb5","correct":2,"idiom":2,"fit":3,"why":"correct shape but does not skip the header, so 'region' appears as a bogus key"}
+{"id":"e15740","correct":0,"idiom":0,"fit":1,"why":"sums $5, which does not exist in a 4-column file, and excludes r0 for no stated reason"}
+{"id":"e59ac3","correct":3,"idiom":3,"fit":2,"why":"correct with an explicit -t',' -k2 -rn sort; 'goulash:' prefix bleed"}
+{"id":"fe2011","correct":0,"idiom":0,"fit":0,"why":"greps the header word, sums the wrong column, and writes to a leaked sandbox path"}
+{"id":"05cec4","correct":0,"idiom":2,"fit":3,"why":"$2 is a literal '-' in this log; counts dashes"}
+{"id":"0bc792","correct":0,"idiom":0,"fit":0,"why":"emitted a bare code fence"}
+{"id":"297905","correct":0,"idiom":2,"fit":3,"why":"$2 is '-'; wrong field"}
+{"id":"332943","correct":0,"idiom":1,"fit":3,"why":"$2 is '-'; -F' ' adds nothing"}
+{"id":"379d52","correct":0,"idiom":2,"fit":2,"why":"$1 is the client IP; counts IPs not statuses"}
+{"id":"39bbe1","correct":1,"idiom":2,"fit":1,"why":"$9 is the standard Apache position and a fair guess, but this log has no timezone field so $9 is bytes; prose is long with prefix bleed"}
+{"id":"3f57c6","correct":0,"idiom":0,"fit":0,"why":"greps for JSON keys in an access log; trailing invented '1024 requests' text"}
+{"id":"40fd65","correct":0,"idiom":0,"fit":1,"why":"wrong field, and the whole command is backticked with prose appended"}
+{"id":"455802","correct":0,"idiom":0,"fit":1,"why":"$1 is the IP; backticked command with a trailing description"}
+{"id":"467044","correct":0,"idiom":1,"fit":2,"why":"no command; invents counts and status codes not present"}
+{"id":"470760","correct":0,"idiom":0,"fit":1,"why":"hardcodes only 200/404, and the awk has a stray semicolon before else — will not parse"}
+{"id":"4d21b4","correct":0,"idiom":0,"fit":1,"why":"$1 is the IP, and a grep-per-value shell loop is a quadratic way to do uniq -c"}
+{"id":"4da806","correct":0,"idiom":0,"fit":0,"why":"greps a word absent from the log, wrong field, and writes to a leaked sandbox path"}
+{"id":"65d6ad","correct":1,"idiom":2,"fit":2,"why":"$NF is the byte count, not the status; also skips a header this log does not have"}
+{"id":"665154","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"675d1f","correct":1,"idiom":1,"fit":1,"why":"$9 guess (bytes here); explanation concatenated into the command"}
+{"id":"689e96","correct":1,"idiom":3,"fit":3,"why":"$9 is the standard Apache guess but wrong for this log; otherwise the cleanest form here"}
+{"id":"6f7342","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag"}
+{"id":"908587","correct":1,"idiom":2,"fit":3,"why":"$9 guess; counts bytes in this log"}
+{"id":"a7c1f7","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"bda321","correct":0,"idiom":0,"fit":1,"why":"answers the earlier jq question instead — carried context from the wrong turn"}
+{"id":"ca79ab","correct":0,"idiom":2,"fit":3,"why":"counts the first column, which is the client IP"}
+{"id":"e7b6cd","correct":0,"idiom":0,"fit":1,"why":"wc -l counts lines, not statuses; prose contains a second CMD:"}
+{"id":"f414ac","correct":0,"idiom":1,"fit":1,"why":"$3 is '-'; prose appended after the command with no separator"}
+{"id":"fb8159","correct":1,"idiom":3,"fit":3,"why":"$9 guess; well-formed but wrong field for this log's format"}
+{"id":"8f106d","correct":1,"idiom":1,"fit":3,"why":"selects whole objects with a non-empty name rather than extracting the names"}
+{"id":"92f704","correct":0,"idiom":0,"fit":1,"why":"awk-splits JSON on a bracket; prose is the bare word 'Answer:'"}
+{"id":"957380","correct":3,"idiom":3,"fit":3,"why":"exactly right with -r"}
+{"id":"9cebe5","correct":3,"idiom":2,"fit":3,"why":"correct; no -r so output stays quoted"}
+{"id":"a07c46","correct":1,"idiom":0,"fit":1,"why":"'.[]?.name' misses the items level, and a log timestamp bled into the command"}
+{"id":"a8b300","correct":2,"idiom":1,"fit":1,"why":"command is right but inline in the prose, so nothing vends"}
+{"id":"a97412","correct":3,"idiom":1,"fit":2,"why":"works but needless cat; prose just repeats the command"}
+{"id":"b5cf3a","correct":0,"idiom":0,"fit":0,"why":"emitted a <|channel> control token and a mangled timestamp"}
+{"id":"bccbab","correct":1,"idiom":1,"fit":3,"why":"describes the file instead of answering; no command"}
+{"id":"c32e7c","correct":0,"idiom":0,"fit":1,"why":"no command; prose is a fabricated log line and '.[]' is the wrong path anyway"}
+{"id":"cf3a79","correct":3,"idiom":3,"fit":2,"why":"exactly right; no prose"}
+{"id":"cf69a7","correct":3,"idiom":3,"fit":3,"why":"exactly right with clean prose"}
+{"id":"623b68","correct":2,"idiom":1,"fit":0,"why":"unsorted du plus a second pipeline; prose invents 60.1 GB in a sandbox of a few KB"}
+{"id":"67cbaf","correct":0,"idiom":0,"fit":1,"why":"ls -la head -10 does not sort by size; trailing REMEMBER fragment"}
+{"id":"752c92","correct":1,"idiom":1,"fit":1,"why":"command only inline in prose so nothing vends; du -a without -h either"}
+{"id":"783204","correct":3,"idiom":2,"fit":0,"why":"command is correct; prose degenerates into 'and the and the' repetition"}
+{"id":"7c4516","correct":0,"idiom":1,"fit":1,"why":"GNU --max-depth fails on BSD, inline only so nothing vends, and invents 16.5 GB"}
+{"id":"7d49df","correct":3,"idiom":3,"fit":3,"why":"ls -lS sorts by size descending and works on BSD"}
+{"id":"7ed053","correct":1,"idiom":1,"fit":3,"why":"no command; names a 298-byte file as the space consumer"}
+{"id":"7ad7e3","correct":3,"idiom":3,"fit":3,"why":"--soft HEAD~1, exactly right"}
+{"id":"80d307","correct":3,"idiom":3,"fit":3,"why":"--soft HEAD^, correct with clean prose"}
+{"id":"831b6e","correct":0,"idiom":0,"fit":0,"why":"no command; prose is a fabricated log line with an exit stamp"}
+{"id":"920a93","correct":0,"idiom":0,"fit":0,"why":"leaked a bare <think> tag"}
+{"id":"8f470d","correct":0,"idiom":0,"fit":0,"why":"answered with memory-tool chatter ('Forget 09:04:35; Remember to...') instead of a command"}
+{"id":"9d42a4","correct":3,"idiom":2,"fit":1,"why":"command correct; prose is the meaningless token 'UNDO: 1'"}
+{"id":"9d8598","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"a36c4a","correct":0,"idiom":0,"fit":0,"why":"empty"}
+{"id":"a3b839","correct":3,"idiom":3,"fit":2,"why":"--soft HEAD^ correct; no prose"}
+{"id":"b16ffc","correct":3,"idiom":3,"fit":3,"why":"correct with an accurate one-line explanation"}
+{"id":"c489d3","correct":1,"idiom":1,"fit":2,"why":"mixed reset (unstages), and the command is backticked with a parenthetical so it would not run"}
+{"id":"c490d9","correct":3,"idiom":3,"fit":3,"why":"correct"}
+{"id":"c780f0","correct":1,"idiom":1,"fit":2,"why":"mixed reset unstages; the echoed reassurance states the opposite of what happens"}
+{"id":"cabf97","correct":0,"idiom":0,"fit":0,"why":"git checkout DISCARDS working-tree changes — the opposite of keeping them; plus a REMEMBER fragment"}
+{"id":"cb1b4d","correct":0,"idiom":0,"fit":1,"why":"reset then checkout throws the changes away entirely; no command vended either"}
+{"id":"d113ba","correct":0,"idiom":0,"fit":2,"why":"'--soft --hard' is contradictory; git takes the last flag, so this would HARD reset and destroy the work"}
