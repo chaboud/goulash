@@ -686,6 +686,7 @@ fn slash_command(
     memory: &mut MemoryStore,
     fuse: &mut StateFile,
     menu: &mut Option<Menu>,
+    live: &mut LiveSettings,
 ) -> Option<String> {
     let mut it = cmdline.splitn(2, char::is_whitespace);
     let cmd = it.next().unwrap_or("");
@@ -751,18 +752,112 @@ fn slash_command(
             }
             None => Some("no engine running".to_string()),
         },
+        // Live settings. These change the running session only; `save`
+        // persists, matching #/model's shape.
+        ("thinking", arg) => {
+            let mut t = arg.unwrap_or("").split_whitespace();
+            let val = t.next().unwrap_or("");
+            let save = t.next() == Some("save");
+            match val {
+                "off" | "auto" | "forced" => {
+                    live.thinking = val.to_string();
+                    // Reach the worker thread, which owns the config the
+                    // request is actually built from.
+                    if let Some(eng) = engine {
+                        eng.set_thinking(val.to_string());
+                    }
+                    let mut msg = format!("thinking {val} (this session)");
+                    if save {
+                        msg = match Config::persist("engine.thinking", val) {
+                            Ok(()) => format!("thinking {val} \u{2192} default"),
+                            Err(e) => format!("config write failed: {e}"),
+                        };
+                    }
+                    // Say so rather than silently doing nothing: on a
+                    // provider with no capability query, auto cannot know
+                    // whether a model can reason and falls back to off.
+                    if val == "auto" && !live.can_think_known {
+                        msg.push_str(" \u{2014} note: this provider reports no                                       thinking capability, so auto behaves as off");
+                    }
+                    Some(msg)
+                }
+                _ => Some(format!(
+                    "thinking is {} \u{2014} usage: #/thinking off|auto|forced [save]",
+                    live.thinking
+                )),
+            }
+        }
+        ("divulge", arg) => {
+            let mut t = arg.unwrap_or("").split_whitespace();
+            let what = t.next().unwrap_or("");
+            match what {
+                "platform" | "tools" | "full_path" => {
+                    let on = match t.next() {
+                        Some("off") | Some("false") => false,
+                        _ => true,
+                    };
+                    match what {
+                        "platform" => live.divulge.platform = on,
+                        "tools" => live.divulge.tools = on,
+                        _ => live.divulge.full_path = on,
+                    }
+                    Some(format!(
+                        "divulge {what} {} \u{2014} takes effect next session                          (the facts block is built once, at bind)",
+                        if on { "on" } else { "off" }
+                    ))
+                }
+                _ => Some(format!(
+                    "divulge platform={} tools={} full_path={} \u{2014}                      usage: #/divulge <what> [on|off]",
+                    live.divulge.platform, live.divulge.tools, live.divulge.full_path
+                )),
+            }
+        }
         ("status", _) => Some(format!(
-            "goulash {} \u{b7} engine: {} \u{b7} {} blocks this session",
+            "goulash {} \u{b7} engine: {} \u{b7} thinking: {} \u{b7}              tokens: {}+{} \u{b7} {} blocks",
             env!("CARGO_PKG_VERSION"),
             engine_model.as_deref().unwrap_or("none"),
+            live.thinking,
+            live.response_tokens,
+            live.reasoning_tokens,
             blocks,
         )),
         ("help", _) => Some(
-            "#/model [name [save]] \u{b7} #/commentary [on|off] \u{b7} #/memory \u{2026} \u{b7} \
-             #/status"
+            "#/model [name [save]] \u{b7} #/thinking off|auto|forced \u{b7} \
+             #/commentary [on|off] \u{b7} #/divulge \u{2026} \u{b7} #/memory \u{2026} \u{b7} #/status"
                 .to_string(),
         ),
         _ => Some(format!("unknown command /{cmd} \u{2014} try #/help")),
+    }
+}
+
+/// Settings a `#/` command can change without a restart.
+///
+/// Deliberately a snapshot rather than a borrow of `Config`: the session
+/// owns these for its lifetime, and `save` writes through to disk
+/// separately. `divulge` is here for symmetry and reporting, but changing
+/// it only takes effect next session — the facts block is derived once at
+/// bind so it never sits on the ask path.
+pub struct LiveSettings {
+    pub thinking: String,
+    pub response_tokens: usize,
+    pub reasoning_tokens: usize,
+    pub divulge: crate::config::DivulgeConfig,
+    /// Whether this provider can report thinking capability at all. When
+    /// it cannot, `auto` degrades to `off`, and the user is told so
+    /// instead of silently getting nothing.
+    pub can_think_known: bool,
+}
+
+impl LiveSettings {
+    pub fn from(cfg: &Config) -> Self {
+        Self {
+            thinking: cfg.engine.thinking.clone(),
+            response_tokens: cfg.engine.response_tokens,
+            reasoning_tokens: cfg.engine.reasoning_tokens,
+            divulge: cfg.engine.divulge.clone(),
+            can_think_known: cfg.engine.provider != "openai"
+                && cfg.engine.provider != "lmstudio",
+        }
     }
 }
 
@@ -916,6 +1011,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut engine_model: Option<String> = None;
     let mut commentary = cfg.engine.commentary;
     let mut memory = MemoryStore::load(Config::dir());
+    let mut live = LiveSettings::from(cfg);
     let mut band: Option<Band> = None;
     let mut menu: Option<Menu> = None;
     let mut chat: Option<Chat> = None;
@@ -1215,6 +1311,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             &mut memory,
                                             &mut fuse,
                                             &mut menu,
+                                            &mut live,
                                         );
                                     } else if let Some(eng) = engine.as_ref() {
                                         eng.ask(
@@ -1502,6 +1599,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 &mut memory,
                                 &mut fuse,
                                 &mut menu,
+                                &mut live,
                             );
                             if let (Some(c), Some(msg)) = (chat.as_mut(), out) {
                                 c.lines.push(format!("goulash: {msg}"));

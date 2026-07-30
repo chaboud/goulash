@@ -96,6 +96,11 @@ pub enum Job {
         proactive: bool,
     },
     SetModel(String),
+    /// Change `thinking` mid-session. The worker owns its own config
+    /// clone, so a `#/thinking` that only updated the session's copy would
+    /// silently do nothing — the knob has to reach the thread that builds
+    /// the request.
+    SetThinking(String),
     /// Forget any pinned model and re-run the probe chain (auto).
     Rebind,
     ListModels,
@@ -152,6 +157,10 @@ impl Engine {
 
     pub fn set_model(&self, model: String) {
         let _ = self.job_tx.send(Job::SetModel(model));
+    }
+
+    pub fn set_thinking(&self, mode: String) {
+        let _ = self.job_tx.send(Job::SetThinking(mode));
     }
 
     pub fn rebind(&self) {
@@ -234,6 +243,9 @@ fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Eve
                     }
                     None => unreachable_engine(&ev, &wr, &cfg),
                 },
+                Job::SetThinking(mode) => {
+                    cfg.thinking = mode;
+                }
                 Job::Rebind => {
                     cfg.model = None;
                     state = probe(&agent, &cfg);

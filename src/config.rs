@@ -232,6 +232,37 @@ impl Config {
         }
     }
 
+    /// Surgically set any dotted key, preserving comments and formatting.
+    /// Same write-through `--config set` uses, so `#/thinking auto save`
+    /// and the CLI cannot drift.
+    pub fn persist(key: &str, value: &str) -> Result<(), String> {
+        let path = Self::dir().ok_or("no home dir")?.join("config.toml");
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut doc: toml_edit::DocumentMut =
+            text.parse().map_err(|e| format!("config parse: {e}"))?;
+        let parts: Vec<&str> = key.split('.').collect();
+        if parts.len() < 2 {
+            return Err("key must be dotted".into());
+        }
+        let parsed: toml_edit::Value = value
+            .parse()
+            .unwrap_or_else(|_| toml_edit::Value::from(value));
+        let mut node = doc.as_table_mut();
+        for seg in &parts[..parts.len() - 1] {
+            if node.get(seg).is_none() {
+                node[seg] = toml_edit::table();
+            }
+            node = node[seg]
+                .as_table_mut()
+                .ok_or_else(|| format!("{seg} is not a table"))?;
+        }
+        node[parts[parts.len() - 1]] = toml_edit::value(parsed);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())
+    }
+
     /// Surgically set (or clear, for auto) `[engine] model` in
     /// config.toml, preserving the user's comments and formatting —
     /// never a full re-serialize.
