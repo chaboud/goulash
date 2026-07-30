@@ -116,34 +116,59 @@ answer to a disk-usage refinement; `git reset --hard` when asked to
 *keep* changes) were all watcher-tier models. At low bias, skew toward
 silence where confidence is lowest.
 
-### A7. Situated context — **PENDING**
+### A7. Divulging machine facts — **SETTLED: platform on, rest debug**
+
+Telling the model facts about the machine it is running on. Three
+independent toggles — not a ladder; `full_path` *replaces* `tools`
+rather than adding to it.
 
 ```toml
-[engine]
-situated = "platform"   # off | platform | platform+tools
+[engine.divulge]
+platform  = true    # "macOS, BSD userland, zsh. du -d not --max-depth, no grep -P"  (~50 tok)
+tools     = false   # "installed: jq tree gh git... not installed: rg fd wget"       (~55 tok)
+full_path = false   # all 1739 executables                                        (~3900 tok)
 ```
 
-Real platform-error rate is **2.0%** (78 of 3961 commands), of which
-**`du --max-depth` is 62** — one flag on one command. An earlier 6.9%
-figure was a measurement artifact: 68% of its hits came from questions
-whose *subject* was the flag ("what does `-P` do in grep"), which
-`bench/gnucheck.py` now excludes.
+**None of the three showed a measurable effect.** Against the models that
+actually make platform errors (`qwen3.5:4b`, `llama3.2:3b`, ~5% base
+rate):
 
-- **platform line** (~50 tok) names `du -d` explicitly, so it targets 78%
-  of the real errors.
-- **tools line** (~55 tok) targets absent-tool references, which fire
-  **25 times in 4002 commands (0.6%)** — 23 of them `rg`.
-- **full PATH** (~3900 tok) showed **zero** benefit on gemma4 at 7× the
-  context. Completeness does not beat curation even when caching makes
-  size cheap.
+| toggle | errors | rate | 95% CI | p |
+|---|---|---|---|---|
+| none | 4/109 | 3.7% | [1.4, 9.1] | — |
+| platform | 3/131 | 2.3% | [0.8, 6.5] | 0.70 |
+| + tools | 3/131 | 2.3% | [0.8, 6.5] | 0.70 |
+| full_path | 1/127 | 0.8% | [0.1, 4.3] | 0.18 |
+| via memory store | 5/129 | 3.9% | [1.7, 8.8] | 1.00 |
 
-Verdict pending the offender run (qwen3.5:4b / llama3.2:3b / qwen3.5:9b,
-~5% base rate each — gemma4 was 0-1% and could only produce noise).
+Every interval overlaps. Detecting a halving of a 3.7% rate at 80% power
+needs **~1235 commands per arm**; we have ~120, which is 10x short.
 
-**Derive, never store.** A stored fact cannot notice it has gone stale;
-`brew install fd` and a pinned slot lies with authority. Derivation is
-deterministic (byte-identical across runs, so the cache is unaffected)
-and costs ~4 ms — in the worker at startup, never on the ask path.
+**`platform` still defaults ON**, because "prove it helps" is the wrong
+test for a statement that is *free* and *certainly true*. The right test
+is "prove it hurts", and nothing suggests it does:
+
+- **Free, verified.** Per-token prompt-eval is identical with and without
+  it — 3411 vs 3400 us on turns 1-3, 1561 vs 1587 mid-session, **750 vs
+  760 on turn 10+**. It lives in the cached prefix, so it costs ~180
+  tokens once and nothing thereafter.
+- **True by construction.** `uname` and `$SHELL` are facts, not guesses.
+  A wrong platform line is impossible in a way a wrong tools list is not.
+- **Direction is right**, even if the effect cannot be resolved.
+
+`tools` and `full_path` stay **off, as debug options**. `tools` targets
+absent-tool references, which fire 25 times in 4002 commands (0.6%) and
+carry a curation problem — which 36 tools, maintained by whom.
+`full_path` costs 5766 prompt tokens against 862 and nearly doubled
+prompt-eval on `qwen3.5:4b` (3700 -> 7290 ms); even if its 1-error result
+were real it is a bad trade.
+
+**Never via the memory store.** It was the only arm to go backwards, and
+it agrees with the staleness argument: a stored fact cannot notice it has
+gone out of date, and wrapping machine facts in "pinned memories — yours
+to manage, REMEMBER/FORGET" invites the model to treat ground truth as an
+editable opinion. Derive it every run; the derivation is deterministic,
+so the cache is unaffected, and it costs ~4 ms in the worker.
 
 ---
 
