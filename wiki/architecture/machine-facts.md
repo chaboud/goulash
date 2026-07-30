@@ -1,20 +1,24 @@
-# Situated Context: what goulash knows that a chatbot doesn't
+# Machine facts: what goulash knows that a chatbot doesn't
 
-*Speculative. Written after the [characterization sweep](../../bench/) as
-a design theory, not a plan. Numbers are measured; the conclusions drawn
-from them are argument.*
+*Design theory written after the [characterization sweep](../../bench/).
+Tier 1 shipped in 0.4.0 as `engine.divulge`; the later tiers are still
+argument. Numbers are measured; conclusions drawn from them are not.*
+
+**Naming.** This page used to be called "situated context" and the
+setting `situated`. Both were jargon — the word does no work a reader
+can use. The shipped setting is `engine.divulge`, the code that derives
+these lines is `src/facts.rs`, and this page is named after them.
 
 ## The thesis
 
 goulash's advantage over pasting a question into a browser is not a
 better model. It will usually be a *worse* model — a 4B running locally
 against a frontier model in a tab. The advantage is that goulash is
-**situated**: it is inside the machine the answer is about.
+**inside the machine the answer is about**.
 
-Almost none of that situation currently reaches the prompt. The session
-log carries commands and output; everything else the model must guess.
-And the sweep shows it guesses badly in exactly the ways being situated
-would fix.
+Almost none of that reaches the prompt. The session log carries commands
+and output; everything else the model must guess. And the sweep shows it
+guesses badly in exactly the ways local knowledge would fix.
 
 ## Tier 1 — facts goulash already has, and does not send
 
@@ -22,28 +26,44 @@ The cheapest possible wins. All static or near-static, all one line.
 
 ### Platform and userland
 
-**6.9% of 2395 vended commands used GNU-only syntax on a Darwin box.**
+**2.1% of 4355 vended commands used GNU-only syntax on a Darwin box** —
+91 commands, counted by `bench/gnucheck.py`.
 
 | form | count | on BSD |
 |---|---|---|
-| `grep -P` | **114** | no `-P` at all — fails |
-| `du --max-depth` | 40 | wants `-d` |
-| `ls --time-style` | 5 | not a flag |
+| `du --max-depth` | **70** | wants `-d` |
+| `grep -P` | 11 | no `-P` at all — fails |
+| `ls --time-style` | 3 | not a flag |
 | `xargs -r` | 3 | not a flag |
 | `stat -c` | 2 | wants `-f` |
 | `find -printf` | 2 | not supported |
-| `date -d` | 1 | wants `-v` |
+
+> **Correction.** This table first read **6.9%** with `grep -P` at 114,
+> and that number was wrong — 68% of its hits came from questions whose
+> *subject* was the flag. Asked "what does `-P` do in grep", a model
+> replying `grep -P "<regex>" file` is answering, not erring. Excluding
+> explain-type questions, and hits where the flag appears in the question
+> text, the rate is 2.1%. The shape changes with it: this is
+> overwhelmingly **one flag**, not a broad Linux-assumption problem.
 
 These are not subtle reasoning failures. They are a model assuming Linux
 because most shell text on the internet is Linux. `uname -s` plus a
 sentence — *"BSD userland: `sed -i ''`, `du -d`, no `grep -P`"* — is a
-handful of tokens against a 6.9% failure rate.
+handful of tokens, and it targets a narrow, concentrated error.
+
+The narrowness cuts both ways, and it is the honest read: a 2.1% rate
+dominated by a single flag is a much weaker argument for a general
+context-divulging feature than 6.9% spread across seven forms would have
+been. Tier 1 still earns its ~50 tokens (measured free once cached), but
+it is a small fix to a small problem, not the headline it looked like.
 
 Worth noting the sweep *also* asked "what does the `-P` flag do in grep"
 as an explain-only control, and models answered confidently about
 Perl-compatible regex. On this machine `-P` does not exist. Every one of
-those answers was wrong in situ and right in the abstract, which is
-precisely the failure mode a situated assistant should not have.
+those answers was wrong here and right in the abstract — the failure
+mode an assistant running *on your box* should not have. (Those rows are
+excluded from the 2.1% above; being right in the abstract is what was
+asked for.)
 
 ### Installed executables
 
@@ -163,35 +183,53 @@ Softer, but cheap:
   is a confidence signal. Costs a second inference, only worth it where
   the bias dial says confidence matters.
 
-## What I would test first
+## What to test, and what got settled
 
 Ordered by measured-failure-fixed per token spent:
 
-1. **Platform line** (~15 tokens) — 6.9% of commands are wrong for the
-   local userland. Almost certainly the best ratio in the whole system.
-2. **Relevant-tools line** (~30 tokens) — kills the `fd` class, and
-   grounds memory in what exists.
-3. **Verify-before-vend** (no tokens, pure local check) — catches the
-   same 6.9% from the other direction; the two together would say
-   whether informing or checking is the better mechanism.
+1. **Platform line** (~50 tokens) — **SHIPPED** as
+   `engine.divulge.platform = true`. Verified free once cached:
+   per-token prompt-eval is identical with and without it (750 vs 760 µs
+   by turn 10).
+2. **Relevant-tools line** (~30 tokens) — **SHIPPED but default off**
+   (`engine.divulge.tools`). It targets absent-tool references, which
+   fire 25 times in 4002 commands, and it carries an unsolved curation
+   problem: which tools, maintained by whom. The full-PATH variant
+   (`divulge.full_path`, ~3900 tokens) showed **no benefit at 7× the
+   context** and nearly doubled prompt-eval — debug only.
+3. ~~**Verify-before-vend**~~ — **REJECTED, and it should never have
+   been proposed.** The idea was to run the tool (`--help`, `command
+   -v`) before suggesting it. goulash does not run things. Suggesting a
+   command the user chooses to execute is the entire safety model; going
+   and executing something to check it inverts that. It is also unsafe
+   on its own terms — if an executable has been replaced, invoking it
+   with `--help` may install, update, or modify the system, and goulash
+   would have done that unprompted. See
+   [positioning](../product/positioning.md).
 4. **Structured summaries over raw tails** — the `jq-extract` evidence
    says shape beats volume, and it is testable with the harness as-is.
+   **OPEN.**
 5. **Two-pass retrieval** — the only thing that plausibly touches
-   `git reset --soft`. Most expensive, most interesting.
+   `git reset --soft`. Most expensive, most interesting. **OPEN.**
 
-The first three are measurable with a Pass-P-style wording experiment in
-an afternoon. The last two are architecture.
+Items 4 and 5 are architecture, not a wording experiment.
 
 ## The uncomfortable part
 
 A frontier model in a browser tab would get `--soft` right without any of
-this. Situated context is not a way to make a 4B into a frontier model;
-it is a way to make it right about *this machine*, which the frontier
+this. Machine facts are not a way to make a 4B into a frontier model;
+they are a way to make it right about *this machine*, which the frontier
 model cannot be. The two failure modes are different, and only one of
 them is goulash's to fix.
 
-Which suggests the honest framing: **situated context closes the gap on
-environment errors, and does nothing for knowledge errors.** 6.9% is the
-first kind. `git reset --soft` is the second. Knowing which is which
+Which suggests the honest framing: **machine facts close the gap on
+environment errors, and do nothing for knowledge errors.** The 2.1% is
+the first kind. `git reset --soft` is the second. Knowing which is which
 should decide where the effort goes — and probably also decides which
 tier of model gets asked.
+
+And on the corrected numbers the second kind is much the larger problem.
+`git-undo` was answered correctly by 16 of 48; nine more were
+*confidently wrong* — plain `git reset` with prose asserting it keeps
+changes staged ([QUALITY](../../bench/QUALITY.md) §5). No amount of
+telling the model about this machine fixes that.

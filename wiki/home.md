@@ -1,15 +1,26 @@
 # Goulash Wiki — Map of Content
 
 **Goulash** — *Generic Overlay for Universal LLM-Augmented SHells* — is an
-LLM-aware veneer that wraps the shell you already use (bash, zsh, fish, …),
-watches the session, and offers advice and executable suggestions while
-leaving control with the user.
+LLM-aware veneer that wraps the shell you already use, watches the
+session, and offers advice and executable suggestions while leaving
+control with the user.
 
 > Your shell, with a coach.
+
+**Status: shipping, 0.4.0.** zsh and bash are supported; **fish is not
+yet** — it is an adapter in the [Later](product/build-plan.md) pile, so
+treat "universal" as the ambition in the acronym rather than a claim
+about today. The engine speaks ollama and any OpenAI-compatible server
+(LM Studio, llama.cpp).
 
 This wiki is a mind-map: many small, densely-linked pages, written to be
 useful to both humans and LLMs ingesting the repo. Start anywhere; every
 page links back out. Conventions are in [meta/wiki-conventions.md](meta/wiki-conventions.md).
+
+Pages here fall into two kinds, and it matters which you are reading:
+**design** pages reason about what to build, **measurement** pages report
+what a run actually did. Where they conflict, see
+[Where the evidence lives](#where-the-evidence-lives) below.
 
 ## Mind map
 
@@ -29,6 +40,10 @@ mindmap
       Block history
       Memory hierarchy
       LLM engine
+      Levers (measured)
+      Machine facts
+      Working context
+      Agent memory
       Status rows
       Opaque blocks
       ssh / tmux
@@ -37,11 +52,36 @@ mindmap
       "##" chat mode
       Suggestion list
       Down-arrow protocol
+      Settings and nav
+      Heckle mode
       Delegated agents
     Product
       Positioning
+      Build plan
+      Distribution
       Open questions
+    Measurement
+      Levers
+      Quality
+      Quirks
+      Residency
 ```
+
+## Where the evidence lives
+
+Design pages argue; [`bench/`](../bench/) measures. The engine's
+defaults come from ~5,500 generations across 24 model cells and two
+engines, and every settled lever links back to the run that decided it:
+
+- [`bench/QUALITY.md`](../bench/QUALITY.md) — blind-graded answer quality
+- [`bench/QUIRKS.md`](../bench/QUIRKS.md) — do models need per-model adapters
+- [`bench/RESIDENCY.md`](../bench/RESIDENCY.md) — load cost, memory, keep-alive
+- [`bench/THINKING.md`](../bench/THINKING.md) — what reasoning costs and buys
+- [`bench/HEADROOM.md`](../bench/HEADROOM.md) — context growth and cache behaviour
+
+When a page here and a page there disagree, **the bench wins** — and the
+design page should be corrected with a dated note rather than silently
+edited.
 
 ## Clusters
 
@@ -61,6 +101,8 @@ mindmap
 - [architecture/block-history.md](architecture/block-history.md) — the block-oriented transcript model
 - [architecture/memory-hierarchy.md](architecture/memory-hierarchy.md) — raw leaves, LLM-set region markers, logarithmic ramp-off retrieval
 - [architecture/llm-engine.md](architecture/llm-engine.md) — provider probe chain, local-first caching, watcher/thinker tiers
+- [architecture/levers.md](architecture/levers.md) — **every engine setting, with the measurement that chose its default**
+- [architecture/machine-facts.md](architecture/machine-facts.md) — what goulash tells the model about the box it runs on (`engine.divulge`)
 - [architecture/suggestion-vendors.md](architecture/suggestion-vendors.md) — rules (thefuck-style), history/n-gram, LLM vendors behind one interface
 - [architecture/agent-memory.md](architecture/agent-memory.md) — remember-as-a-tool: prime store + searchable bank (backlog)
 - [architecture/working-context.md](architecture/working-context.md) — `#@` pinned files as near-tool-use: async ingest, LLM compression (design)
@@ -80,7 +122,8 @@ mindmap
 
 ### Product
 - [product/positioning.md](product/positioning.md) — coach, not agent overlord
-- [product/build-plan.md](product/build-plan.md) — from wiki to working binary: MVP milestones
+- [product/build-plan.md](product/build-plan.md) — from wiki to working binary: milestones and the live backlog
+- [product/distribution.md](product/distribution.md) — license, crates.io, tap, notarization: the road to `brew install goulash`
 - [product/open-questions.md](product/open-questions.md) — unresolved design questions
 
 ### Meta

@@ -51,7 +51,7 @@ field position. Most guessed `$9`, the correct answer for standard Apache
 combined format. This log's timestamp carries no timezone, so it is one
 field shorter and the status sits at `$8`. `$9` is the byte count.
 
-That is the [evidence-beats-knowledge](../wiki/architecture/situated-context.md)
+That is the [evidence-beats-knowledge](../wiki/architecture/machine-facts.md)
 finding in its starkest form. On `why-failed`, where the actual error text
 *was* in the log, **89% of models that answered named the cause correctly
 — including the 1 GB one**. Here, with the evidence absent, a 14B model

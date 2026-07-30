@@ -17,7 +17,7 @@ But large language models (LLMs) are pretty good at *esoteric syntax*, even *sma
 Goulash is an LLM-aware overlay for the shell you already use. It watches the session and offers advice and executable suggestions *in your terminal*, but every keystroke and every command is still yours.  Goulash doesn't run commands, pop up choices, or take over how you work.  It's your terminal... with a navigator.
 
 <p align="center">
-  <img src="docs/GoulashHashes.gif" alt="goulash demo: asking a question at the prompt, then pulling the suggested command down onto the shell line" width="760">
+  <img src="https://raw.githubusercontent.com/chaboud/goulash/main/docs/GoulashHashes.gif" alt="goulash demo: asking a question at the prompt, then pulling the suggested command down onto the shell line" width="760">
 </p>
 
 ## Install
@@ -173,6 +173,8 @@ let you set that yourself, and changing it forces a multi-second reload.
 - Tells the model your OS and shell, so it stops suggesting Linux-only flags on a Mac
 
 **0.3.0** — model picker, agent memory, `##` chat, crash fuse, slot history
+
+Full history, with the reasoning: [CHANGELOG.md](CHANGELOG.md).
 
 ## Nerd Stuff: Build & modify
 ```

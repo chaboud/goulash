@@ -72,7 +72,7 @@ eviction, cross-machine sync, and whether memories are per-project
 
 ## Machine-derived facts: derive them, do not store them
 
-Falls out of the [situated-context](situated-context.md) work: the
+Falls out of the [machine-facts](machine-facts.md) work: the
 experiment there prepends environment facts to the stable prefix so the
 model stops guessing about the machine. This store does something that
 *looks* identical — durable facts, pinned into the cached prefix — so the

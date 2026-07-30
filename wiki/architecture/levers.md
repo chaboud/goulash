@@ -20,9 +20,15 @@ Ask for `CMD:` before the prose line.
 | prose first (S1) | 52% | 44% | 6% |
 | **command first (S3)** | **77%** | 43% | 21% |
 
-Blind-graded quality: S1 correct 1.42 vs S3 **1.41**; paired on the same
-model+question, S3−S1 = **+0.14** (5 better, 4 worse, 13 same). The vend
-gain is free.
+Blind-graded quality, paired on the same model+question: **n=112,
+S3−S1 = −0.05** (19 better, 24 worse, 69 unchanged). Noise around zero —
+**no detectable quality difference in either direction**, which is the
+result that matters, because it makes the vend gain free.
+
+*(An earlier partial pass — 2 questions, n=22 — read **+0.14** and this
+page described S3 as marginally ahead. At 5× the pairs it is −0.05. Both
+are noise; the small one was overread. See
+[QUALITY](../../bench/QUALITY.md) §1.)*
 
 It also fails in the right direction: if a budget ever binds, prose is
 lost rather than the command — and prose is display-bound anyway.
@@ -74,28 +80,48 @@ Provider-specific: on OpenAI-compat, `chat_template_kwargs:
 {enable_thinking: false}` makes things **worse** — it empties `content`
 and routes everything to `reasoning_content`. Do not send it.
 
-### A4. `reasoning_tokens` — **SETTLED: ≥4096, separate from display**
+### A4. `reasoning_tokens` — **SETTLED: ≥4096, separate from display, applied unconditionally**
 
 ```toml
 [engine]
-response_tokens  = 256     # what lands in the band
-reasoning_tokens = 4096    # allowance on top, only when thinking is on
+response_tokens  = 1024    # what lands in the band
+reasoning_tokens = 4096    # allowance on top, always
 ```
 
 The cap must not be one meter. Measured with `stop` removed so the budget
 was actually reachable: at +1024, **19 of 32 still truncated**; at +4096,
 15 of 32. So 4096 is the floor for a usable allowance, not a generous one.
 
+**The allowance is not conditional on asking for thinking** (corrected
+2026-07-30). It used to be added only when `thinking != off`, which asks
+whether *we* requested reasoning rather than whether reasoning can
+happen — and nothing lets us answer the second question with a no:
+
+- OpenAI-compatible **chat** applies the model's template, which reasons
+  regardless of what we send; the one kwarg that disables it empties
+  `content` instead (§A3).
+- Even ollama, which honours `think:false` for most models, does not for
+  all — `deepseek-r1:14b` accepts it and reasons anyway.
+
+Budgeting on our own intent produced exactly the failure the split was
+meant to prevent: **158 of 180 chat rows empty (87%)**, every one
+`finish=length` with the display budget spent on reasoning. Re-measured
+at the shipped budget, the same weights through the same endpoint answer
+normally, using 659–896 reasoning tokens — never going to fit in 256.
+
+FAST carries 2048 even though it asks for no thinking, so a model that
+thinks anyway returns a *slow* answer rather than *no* answer.
+
 ### A5. `response_tokens` — **SETTLED: can be raised freely**
 
-The current 256 does **no display work**. Answers that arrive use a
-median of **32** tokens (p90 77); visible prose is p50 **61 chars**;
-median prose stayed **40–77 chars in every Pass T arm**, including ones
-with 4096 tokens available. Only 12 of 634 answered rows ever reached
-256.
+The old 256 did **no display work**. Answers that arrive use a median of
+**32** tokens (p90 77); visible prose is p50 **61 chars**; median prose
+stayed **40–77 chars in every Pass T arm**, including ones with 4096
+tokens available. Only 12 of 634 answered rows ever reached 256.
 
-The prompt keeps answers short, not the ceiling. Raise it for `##` chat;
-it will not make the band sprawl.
+The prompt keeps answers short, not the ceiling — so the ceiling is now
+1024. A ceiling caps, it does not reserve; unused headroom is free, and
+the cost of setting it too low is an empty answer, which A4 measured.
 
 ### A6. `vend_bias` — **OPEN: needs the scale designed**
 
@@ -272,14 +298,14 @@ cached:
 | honours `stop` | provider `Caps` | whether to send it at all |
 | reports prompt-eval time | ollama yes, OpenAI no | which cache metric to trust |
 | context is load-time | LM Studio yes | `num_ctx` vs `num_ctx_min` |
-| platform-error rate | measured | whether `situated` earns its tokens |
+| platform-error rate | measured | whether `divulge.platform` earns its tokens |
 
 Observed family patterns worth defaulting on:
 
 - **qwen3.5 / qwen3** — reasoning models; `think:false` load-bearing;
-  ~5% platform errors; the highest situated-context payoff.
+  ~5% platform errors; the highest machine-facts payoff.
 - **gemma4** — reasoning models; `think:false` load-bearing; **0–1%**
-  platform errors; top of the graded correctness ranking; situated
+  platform errors; top of the graded correctness ranking; machine-facts
   context earns little.
 - **llama3.2 / mistral / gemma3** — no reasoning; `think` inert; ~5%
   platform errors on llama3.2.
@@ -290,32 +316,55 @@ Observed family patterns worth defaulting on:
 
 ---
 
-## D. What I would actually put in `config.toml`
+## D. What actually shipped in `config.toml`
 
+**This section was a proposal; as of 0.4.0 it is the shipped surface.**
 Keeping the zero-setup promise: everything below has a working default
 and nobody must ever open the file.
 
 ```toml
 [engine]
 thinking         = "off"       # off | auto | forced
-response_tokens  = 512         # raised: 256 was never the binding limit
-reasoning_tokens = 4096        # only spent when thinking is on
+response_tokens  = 1024        # raised: 256 was never the binding limit
+reasoning_tokens = 4096        # allowance on top, always (see A4)
 num_ctx_min      = 8192        # auto-adopt a resident model's context
-prefer_resident  = true
-situated         = "platform"  # off | platform | platform+tools  (PENDING)
+prefer_resident  = false
 keep_alive       = "30m"
 
-[engine.vend_bias]             # OPEN
-ask       = 0.9
-proactive = 0.3
+[engine.divulge]
+platform  = true               # OS, shell, terminal — ~50 tokens, free
+tools     = false              # debug: curated tool inventory
+full_path = false              # debug: every executable on PATH
+
+[engine.fast]                  # volunteers on ordinary commands
+watch = true
+ask   = true
+thinking = "off"
+
+[engine.slow]                  # amends a # answer underneath FAST
+watch = false                  # unprompted self-rewrites are noise
+ask   = true
+thinking = "auto"
 ```
+
+**Where the shipped surface differs from this proposal, and why:**
+
+| proposed | shipped | reason |
+|---|---|---|
+| `situated = "platform"` | `[engine.divulge]` booleans | "situated" is jargon that says nothing to a reader; the flags are independent, so they are flags |
+| `prefer_resident = true` | `false` | the simpler shape is to ask for a context size and only nudge the host when what is resident is smaller |
+| `response_tokens = 512` | `1024` | see A5 |
+| `reasoning_tokens` only when thinking on | always | see A4 — that condition was the bug |
+| `[engine.vend_bias]` | not shipped | still **OPEN**; backlogged rather than guessed at |
 
 Internal, not exposed: `command_first` (always on), `stop` (removed),
 prompt shape, endpoint choice (a capability), `tail_chars`,
 `context_max_chars`.
 
-Live-adjustable via `#/`: `thinking`, `situated`, `vend_bias`, `model` —
-the ones a user might plausibly want to change mid-session.
+Live-adjustable via `#/`, as shipped: `#/thinking`, `#/divulge`,
+`#/fast`, `#/slow`, `#/model`, `#/memory`, `#/commentary`, `#/status`,
+`#/help` — the ones a user might plausibly want to change mid-session.
+`vend_bias` is not among them because it does not exist yet.
 
 ---
 
