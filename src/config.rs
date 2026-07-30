@@ -23,6 +23,42 @@ pub struct Config {
     pub models: crate::models::Overrides,
 }
 
+/// What goulash tells the model about the machine it is running on.
+///
+/// Three independent switches, not a ladder — `full_path` *replaces*
+/// `tools` rather than adding to it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DivulgeConfig {
+    /// OS, userland and shell. **On by default.**
+    ///
+    /// Not because it measurably helps — at n≈120 per arm nothing here
+    /// reaches significance — but because "prove it helps" is the wrong
+    /// test for a statement that is free and certainly true. Verified
+    /// free: per-token prompt-eval is identical with and without it
+    /// (750 vs 760 us by turn 10), because it lives in the cached prefix.
+    /// The right test is "prove it hurts", and nothing suggests it does.
+    pub platform: bool,
+    /// Which of a curated tool set is installed. Debug: targets
+    /// absent-tool references, which fire 25 times in 4002 commands, and
+    /// carries an unsolved curation problem (which tools, maintained by
+    /// whom).
+    pub tools: bool,
+    /// Every executable on PATH — ~3900 tokens. Debug only: no benefit
+    /// at 7x the context, and it nearly doubled prompt-eval.
+    pub full_path: bool,
+}
+
+impl Default for DivulgeConfig {
+    fn default() -> Self {
+        Self {
+            platform: true,
+            tools: false,
+            full_path: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct EngineConfig {
@@ -135,6 +171,8 @@ pub struct EngineConfig {
     /// volunteer one short tip (or stay silent). Toggle live with
     /// #/commentary.
     pub commentary: bool,
+    /// Machine facts prepended to the cached prefix (facts.rs).
+    pub divulge: DivulgeConfig,
 }
 
 /// Everything that decides WHERE a lane talks and WHAT it binds. The
@@ -249,6 +287,7 @@ impl Default for EngineConfig {
             prewarm: true,
             debug: false,
             commentary: true,
+            divulge: DivulgeConfig::default(),
         }
     }
 }

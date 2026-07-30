@@ -9,6 +9,25 @@ use std::time::{Duration, Instant};
 /// The LLM engine: a worker thread so inference latency never touches the
 /// PTY loop. Events come back over an mpsc channel; a self-pipe byte wakes
 /// the session's poll(). (wiki: architecture/llm-engine.md)
+/// Which piece of work a `Busy`/`Idle` pair brackets.
+///
+/// The crash fuse wants every generation and does not care which; the
+/// lane indicator cares a great deal, because fast and slow run at the
+/// same time. A single "something is generating" flag would light the
+/// fast lane while the slow one researched, which is precisely the
+/// moment the indicator exists to distinguish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Work {
+    /// A `#` ask on the fast lane.
+    Ask,
+    /// The slow lane researching a turn.
+    Research,
+    /// Compressing or carding a `#@` pin.
+    Digest,
+    /// Loading a model so the first ask does not pay for it.
+    Warm,
+}
+
 pub enum Event {
     Ready {
         provider: String,
@@ -93,9 +112,13 @@ pub enum Event {
     Busy {
         model: String,
         warm: bool,
+        kind: Work,
     },
-    /// The in-flight work returned (however it went).
-    Idle,
+    /// The in-flight work returned (however it went). Carries its kind
+    /// so a listener clears the same lane it set.
+    Idle {
+        kind: Work,
+    },
 }
 
 pub enum Job {
@@ -637,13 +660,14 @@ fn worker(
             let _ = ev.send(Event::Busy {
                 model: model.clone(),
                 warm: false,
+                kind: Work::Ask,
             });
             notify(&wr);
             let result = generate(
                 &cl, &cfg, &caps, model, &question, &context, &memories, &pinned, &cards, &ev, &wr,
                 proactive, pin_ask,
             );
-            let _ = ev.send(Event::Idle);
+            let _ = ev.send(Event::Idle { kind: Work::Ask });
             let _ = match result {
                 Ok((ans, early)) => {
                     if cfg.debug {
@@ -784,12 +808,13 @@ fn run_research(
     let _ = ev.send(Event::Busy {
         model: model.clone(),
         warm: false,
+        kind: Work::Research,
     });
     notify(wr);
     let out = research_once(
         cl, cfg, caps, model, &question, &context, &memories, &pinned,
     );
-    let _ = ev.send(Event::Idle);
+    let _ = ev.send(Event::Idle { kind: Work::Research });
     let _ = ev.send(Event::Researching(None));
     if let Ok((text, command, reasoning)) = out
         && !(text.is_empty() && command.is_none())
@@ -932,10 +957,11 @@ fn run_one_digest(
     let _ = ev.send(Event::Busy {
         model: model.clone(),
         warm: false,
+        kind: Work::Digest,
     });
     notify(wr);
     let text = digest_once(cl, cfg, caps, model, &label, &source, target, card).ok();
-    let _ = ev.send(Event::Idle);
+    let _ = ev.send(Event::Idle { kind: Work::Digest });
     let _ = ev.send(Event::Digest { id, text, card });
     if queue.is_empty() {
         *total = 0;
@@ -1108,6 +1134,7 @@ fn warm_marked(
     let _ = ev.send(Event::Busy {
         model: model.to_string(),
         warm: true,
+        kind: Work::Warm,
     });
     notify(wr);
     // ollama loads a model on an empty generate; an OpenAI-compatible
@@ -1139,7 +1166,7 @@ fn warm_marked(
         }),
     };
     let _ = cl.post(&cl.gen_url()).send_string(&body.to_string());
-    let _ = ev.send(Event::Idle);
+    let _ = ev.send(Event::Idle { kind: Work::Warm });
     notify(wr);
 }
 
@@ -1401,15 +1428,21 @@ fn generate(
              command exists; otherwise send the SAY line alone."
         }
     };
-    // Stable-prefix order, most stable first: preamble, memories,
-    // working context, session log. A pin changes far less often than
-    // the log, so it belongs above it in the prefix.
+    // Stable-prefix order, most stable first: preamble, machine facts,
+    // memories, working context, session log. A pin changes far less
+    // often than the log, so it belongs above it in the prefix.
     // ...and the cards ride at the very end, with the question. That
     // position is re-prefilled on every ask, which is exactly why they
     // are kept to a few hundred characters — and it is the only place a
     // pin lands inside a sliding-window model's attention.
+    //
+    // The facts sit directly after the preamble because they are the
+    // most stable thing in the prompt — they change when the machine
+    // changes, which is approximately never — so they cost one cache
+    // miss ever, and every later turn reads them for free.
+    let facts = crate::facts::block(&cfg.divulge);
     let prompt = format!(
-        "{PREAMBLE}{memories}{pinned}Session log (oldest first):\n{context}\n\
+        "{PREAMBLE}{facts}{memories}{pinned}Session log (oldest first):\n{context}\n\
          Current local time: {}\n{cards}Question: {question}\n{directive}\nAnswer:",
         local_now()
     );
