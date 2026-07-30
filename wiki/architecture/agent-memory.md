@@ -70,16 +70,54 @@ eviction, cross-machine sync, and whether memories are per-project
 
 ---
 
-## Machine-derived memories (proposed)
+## Machine-derived facts: derive them, do not store them
 
 Falls out of the [situated-context](situated-context.md) work: the
 experiment there prepends environment facts to the stable prefix so the
-model stops guessing about the machine. That is *exactly* what this
-store already does — durable facts, pinned into the cached prefix,
-inspectable and editable. Building a second mechanism for it was a
-mistake; the facts belong here.
+model stops guessing about the machine. This store does something that
+*looks* identical — durable facts, pinned into the cached prefix — so the
+first instinct was to put them here as `Slot.by = "machine"`.
 
-`Slot.by` already distinguishes `"user"` from `"llm"`. Add `"machine"`.
+**That instinct is wrong, and the reason is staleness.**
+
+A derived fact can be recomputed every run. A stored one cannot: `brew
+install fd` and a slot that says `fd` is absent keeps saying it, with the
+full authority of a pinned memory, until somebody notices. The store has
+no way to know it has gone out of date, and the user has no reason to
+suspect it.
+
+The cache objection that argued for storing it does not survive contact:
+
+- The derivation is **deterministic**. Sorted `read_dir` of PATH plus
+  `uname` produces a byte-identical string run after run (verified: five
+  regenerations, one hash). Identical bytes mean an unchanged prefix,
+  so **regenerating costs nothing** while the machine is unchanged.
+- When the machine *does* change, the prefix changes and one cache miss
+  is paid — **exactly when it should be**. A stored slot avoids that miss
+  by being wrong instead.
+
+So the split is not "which mechanism", it is **which kind of fact**:
+
+| kind | example | home | why |
+|---|---|---|---|
+| **derived** | platform, userland, installed tools, cwd, git state | recomputed each run | cheap, self-healing, cannot go stale |
+| **asserted** | "prefers ripgrep", "deploy needs `make release`" | this store | cannot be derived; only the user knows |
+
+And derived beats asserted on questions of *fact*; asserted beats derived
+on questions of *preference*. The `fd` case is the clean illustration: a
+stored preference for `fd` is legitimate, and a derived observation that
+`fd` is absent should override it — not by deleting the preference, but
+by refusing to act on it.
+
+### Wait-free, obviously
+
+Derivation must never sit on the ask path. Measured: PATH `read_dir` over
+1739 entries across 12 directories is **0.8-1.2 ms**, `uname` is 2.7 ms
+(a fork+exec) — about **4 ms** total. Trivial in the engine worker at
+startup, and indefensible in front of a user watching an empty band when
+TTFT is already 500-2300 ms. Derive once in the background, hand the
+string to the prompt builder, refresh on a slow timer or when PATH
+changes.
 
 ### What would be seeded
 
