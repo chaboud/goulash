@@ -1,124 +1,170 @@
 # Quality — blind-graded
 
-68 answers graded blind (model, provider and shape hidden), then joined
-back. Two questions, chosen because they have checkable answers:
-
-- **`jq-extract`** — "pull every `.items[].name` out of data.json". One
-  right answer, several near-misses that look right.
-- **`git-undo`** — "undo my last commit but **keep the changes staged**".
-  A correctness trap: `--soft` keeps them staged, plain `git reset`
-  (mixed) *unstages* them.
+**313 of 313 sampled answers graded**, blind (model, provider and shape
+hidden), then joined back to provenance. Eight questions across 24 model
+cells and both engines.
 
 Scale: `correct` 0=wrong/harmful … 3=fully does the ask; `idiom` 0=bizarre
 … 3=how a practitioner would write it; `fit` 0=unusable in a status bar
 … 3=crisp one-liner.
 
-## 1. Command-first costs nothing in quality
+---
 
-The open question from the shape sweep, now answered:
+## 1. Command-first costs nothing — and my earlier number was overread
 
 | shape | n | correct | idiom | fit |
 |---|---|---|---|---|
-| S1 (prose first) | 36 | 1.42 | 1.25 | 1.61 |
-| S3 (`CMD:` first) | 32 | **1.41** | 1.31 | 1.44 |
+| S1 (prose first) | 121 | 1.40 | 1.16 | 1.59 |
+| S3 (`CMD:` first) | 192 | 1.23 | 0.99 | 1.44 |
 
-Paired on the same (model, question) under both shapes: mean S3−S1 =
-**+0.14**, with 5 better, 4 worse, 13 unchanged.
+**Use the paired figure, not those means** — the sample holds more S3 rows
+than S1, so the unpaired columns compare different mixes of model and
+question. Paired on the same (model, question) under both shapes:
 
-**No quality cost.** So the 56% → 81% vend-rate gain from command-first
-is free, and the earlier concern that it might trade accuracy for
-compliance does not hold.
+**n=112, mean S3−S1 = −0.05** — 19 better, 24 worse, **69 unchanged**.
 
-## 2. The `git-undo` trap: most models get it wrong, and 9 lie about it
+An earlier partial pass (2 questions, n=22 pairs) reported **+0.14** and I
+described S3 as marginally ahead. At 5× the pairs it is −0.05. Both are
+noise around zero; the honest statement is **no detectable quality
+difference in either direction**, which is what matters — the 52% → 77%
+vend-rate gain is free either way.
 
-Of 32 graded answers to "keep the changes staged":
+## 2. The `data-log-status` collapse is the sharpest result here
 
-| outcome | n |
-|---|---|
-| correct — `git reset --soft HEAD~1` (or `HEAD^`) | **10** |
-| **confidently wrong** — plain `git reset HEAD~1`, with prose asserting it keeps changes staged | **9** |
-| broken, empty, or invalid flags | 13 |
+| question | n | correct | perfect | zero |
+|---|---|---|---|---|
+| `no-command-needed` (explain) | 47 | 1.96 | 28 | 14 |
+| `jq-extract` | 48 | 1.60 | 20 | 16 |
+| `text-explain-pipefail` (explain) | 24 | 1.54 | 7 | 6 |
+| `disk-size` | 48 | 1.33 | 15 | 19 |
+| `git-undo` | 48 | 1.23 | 16 | 21 |
+| `tree-view` | 48 | 1.00 | 7 | 21 |
+| `data-csv-group` | 25 | 0.96 | 5 | 14 |
+| **`data-log-status`** | **25** | **0.24** | **0** | **19** |
 
-The middle row is the dangerous one. These answers *look* right:
+**Zero of 25 answers were correct.** Not one.
 
-> `git reset HEAD~1` — "The previous commit is undone while keeping
-> changes staged."
+The cause is instructive: the question is "count how many requests
+returned each status code", and the fixture had only run `wc -l
+access.log` — so the model **never saw a log line**. It had to guess the
+field position. Most guessed `$9`, the correct answer for standard Apache
+combined format. This log's timestamp carries no timezone, so it is one
+field shorter and the status sits at `$8`. `$9` is the byte count.
 
-That is a mixed reset. It unstages everything. The prose states the
-opposite of what the command does, and the command lands on the user's
-prompt line ready to run.
+That is the [evidence-beats-knowledge](../wiki/architecture/situated-context.md)
+finding in its starkest form. On `why-failed`, where the actual error text
+*was* in the log, **89% of models that answered named the cause correctly
+— including the 1 GB one**. Here, with the evidence absent, a 14B model
+guesses wrong. The difference is not model capability; it is whether the
+answer was in front of it.
 
-Also seen: `--keep-index` (a `git stash` flag, not `git reset`),
-`--staged` (not a flag at all), and `git reset HEAD~ --soft .` (`--soft`
-with a pathspec is a hard git error). Those at least fail loudly.
-
-This is a worse failure mode than the destructive commands catalogued in
-[the vend-bias backlog entry](../wiki/product/build-plan.md): `rm -rf`
-looks dangerous, so a user hesitates. `git reset HEAD~1` with a
-reassuring sentence does not.
+By contrast, `data-csv-group` (0.96) had the header *visible* via `head -5
+sales.csv`, and models still frequently summed the wrong column — so
+visible-but-unread is a separate failure from never-shown.
 
 ## 3. Model ranking
 
-Small n — treat as indicative, not settled.
+n=13 each, so this is now reasonably solid rather than indicative.
 
-| model | n | correct | idiom | fit |
-|---|---|---|---|---|
-| `gemma4:12b` | 3 | **3.00** | 2.33 | 2.67 |
-| `gemma4:12b-mlx` | 4 | **3.00** | 2.50 | 3.00 |
-| `qwen/qwen3-4b` (raw) | 3 | 2.67 | 2.33 | 1.67 |
-| `gemma4:e2b` | 3 | 2.33 | 1.67 | 2.67 |
-| `gemma4:e4b-mlx` | 4 | 2.00 | 2.25 | 2.50 |
-| `gemma3:12b` | 3 | 2.00 | 2.00 | 2.67 |
-| `qwen3.5:4b` | 4 | 1.50 | 1.25 | 1.50 |
-| `gemma4:e4b` | 4 | 1.25 | 1.25 | 2.25 |
-| `qwen/qwen3-8b` (raw) | 5 | 1.00 | 1.20 | 0.40 |
-| `mistral:latest` | 3 | 1.00 | 1.00 | 2.00 |
-| `llama3.2:3b` | 3 | 1.00 | 0.67 | 1.33 |
-| `google/gemma-4-e4b` (raw) | 8 | 0.12 | 0.25 | 0.38 |
-| `qwen3.5:2b` | 3 | 0.00 | 0.00 | 0.33 |
-| `deepseek-r1:14b` | 3 | 0.00 | 0.00 | 0.00 |
-| `qwen/qwen3-1.7b` (raw) | 3 | 0.00 | 0.00 | 0.00 |
+| model | correct | idiom | fit |
+|---|---|---|---|
+| `gemma4:12b-mlx` | **2.77** | 2.46 | 3.00 |
+| `gemma4:12b` | 2.54 | 2.08 | 2.85 |
+| `qwen3:14b` | 2.31 | 2.23 | 2.69 |
+| `qwen/qwen3-8b` (lms-raw) | 2.23 | 1.62 | 1.00 |
+| `gemma4:e4b` | 2.15 | 1.77 | 2.54 |
+| `gemma4:e4b-mlx` | 2.15 | 1.92 | 2.46 |
+| `mistral-nemo` | 2.08 | 2.08 | 2.08 |
+| `gemma3:12b` | 1.85 | 1.46 | 2.77 |
+| `qwen/qwen3-4b` (lms-raw) | 1.77 | 1.46 | 1.08 |
+| `llama3.1:8b` | 1.69 | 1.23 | 2.38 |
+| `gemma4:e2b` | 1.62 | 1.38 | 2.38 |
+| `qwen3.5:9b` | 1.54 | 0.85 | 1.54 |
+| `qwen3.5:4b` | 1.46 | 1.08 | 1.62 |
+| `google/gemma-4-12b-qat` (lms-raw) | 1.31 | 1.08 | 0.92 |
+| `mistral` | 1.23 | 0.77 | 1.77 |
+| `llama3.2:3b` | 0.92 | 0.85 | 1.85 |
+| `qwen3.5:2b` | 0.62 | 0.38 | 0.46 |
+| `gemma3:4b` | 0.46 | **0.00** | 0.54 |
+| `qwen3.5:0.8b` | 0.27 | 0.20 | 0.93 |
+| `google/gemma-4-e4b` (lms-raw) | 0.17 | 0.33 | 0.50 |
+| `qwen/qwen3-1.7b` (lms-raw) | 0.15 | 0.15 | 0.54 |
+| `qwen/qwen3-8b` (**lms-chat**) | **0.00** | 0.00 | 0.00 |
+| `google/gemma-4-e4b` (**lms-chat**) | **0.00** | 0.00 | 0.00 |
+| `deepseek-r1:14b` | **0.00** | 0.00 | 0.00 |
 
-The zeroes are mechanical failures already documented elsewhere, not bad
-reasoning: `deepseek-r1:14b` leaks a bare `<think>` tag to the band
-([QUIRKS](QUIRKS.md) §2), and `google/gemma-4-e4b` echoes the prompt back
-on raw completions ([QUIRKS](QUIRKS.md) §1). Fix those and their scores
-would change.
+Every zero is a **mechanical** failure already documented, not bad
+reasoning:
 
-The gemma4 12B pair topping the table is notable given the residency
-argument: a warm 12B is both the most accurate here *and*, per
-[RESIDENCY](RESIDENCY.md), plausibly faster end-to-end than cold-loading a
-small model.
+- **`deepseek-r1:14b`** leaks a bare `<think>` tag into the band on every
+  answer ([QUIRKS](QUIRKS.md) §2). It accepts `think: false` and reasons
+  anyway.
+- **Both `lms-chat` cells** return empty `content` with everything in
+  `reasoning_content` — the chat template enables reasoning
+  ([QUIRKS](QUIRKS.md) §1). The same weights via `/v1/completions` score
+  2.23 and 0.17.
+- **`google/gemma-4-e4b` raw** echoes the prompt back instead of answering.
 
-## 4. Failure modes worth naming
+Fix those three and the table changes shape. The `gemma4` 12B pair topping
+it also supports the [residency](RESIDENCY.md) argument: a warm 12B is
+both the most accurate *and* plausibly faster end-to-end than cold-loading
+something small.
 
-Recurring across both questions, independent of correctness:
+`fit` is worth reading separately — `gemma3:12b` is mid-table on
+correctness (1.85) but near the top on fit (2.77), while every LM Studio
+raw cell scores ≤1.08 because those models ramble to the 256-token cap.
 
-- **Command inside the prose, nothing vended** — the answer is right but
-  arrives as `` `jq -r …` `` in a sentence. 4 of 68.
-- **Backticks inside the `CMD:` line** — the vended text includes the
-  backticks and would fail if run. 3 of 68.
-- **Prose/command contradiction** — "I need to see the file first"
-  attached to a working command; "unstages the last commit" attached to
-  `--soft`.
-- **Transcript-format bleed** — `goulash:` prefixes copied out of the
-  session log into the answer, sometimes doubled.
-- **Sandbox path leakage** — one answer embedded the bench's own
-  `/var/folders/…` temp path; another stashed a list of real repo files.
-- **Essays** — correct commands buried under six lines of explanation
-  (`fit` 0). Rare but total: unusable in a one-line band.
+## 4. Failure modes, counted
 
-## Coverage and honesty
+Across all 313:
 
-This grades **2 of 58 questions** and 68 of 2299 answers. It was chosen
-for decision value, not coverage: the shape comparison needed paired
-answers, and `git-undo` was picked precisely because it has a subtle
-right answer.
+- **Empty / `<think>` leak** — the single largest bucket of zeros.
+- **Command inline in prose, nothing vends** — the answer is right but
+  arrives as `` `jq -r …` `` inside a sentence. ~10 cases.
+- **Explanation concatenated into the command** — a paragraph after a
+  semicolon, so the vended text would run garbage. ~12 cases.
+- **Backticks inside the `CMD:` line** — vended text includes the
+  backticks and fails. ~6 cases.
+- **Session-log format bleed** — `goulash:` prefixes, `[exit 0, 09:04:50]`
+  stamps, and `REMEMBER: 1/25` fragments appearing *inside* commands.
+- **Degeneration** — "and the and the and the", "or or or", runs of
+  zeroes. Confined to the smallest models.
+- **Invented figures** — "node_modules, which is 60.1 GB" in a sandbox of
+  a few kilobytes.
+- **Platform errors** — GNU-only `du --max-depth`, `ls --sort=size`,
+  `PROCINFO` on a BSD box.
 
-Every grade is auditable — `bench/results/2026-07-28/grades.jsonl` holds
-the score and a one-line rationale per id, `blind_sample_keys.jsonl`
-joins ids to provenance, and `goulash-bench replay DIR <id>` prints the
-exact prompt and raw response behind any of them.
+## 5. The dangerous class: confidently wrong
 
-Not yet done: the open (non-blind) second pass, the remaining 6 sampled
-questions, and any grading of the expanded-corpus sessions.
+`git-undo` asked to undo a commit **keeping changes staged**. Of 48:
+
+| outcome | n |
+|---|---|
+| correct (`--soft`) | 16 |
+| **confidently wrong** — plain `git reset`, prose asserting it keeps changes staged | 9 |
+| destructive — `git checkout --`, `reset --soft --hard` (git takes the last flag, so: hard) | 3 |
+| broken / empty / invalid flags | 20 |
+
+The middle row is the one that matters. `rm -rf` looks dangerous, so a
+user hesitates. `git reset HEAD~1` with *"undoes the last commit while
+keeping changes staged"* attached does not — and it unstages everything.
+No vend-bias dial or destructive-pattern gate catches that; only
+correctness does.
+
+## Method and audit
+
+- Blind: model, provider and shape stripped, answers grouped by question
+  and ordered by a hash of the cell key, so nothing correlated with
+  provenance was visible while scoring.
+- Every grade is one line in `results/2026-07-28/grades.jsonl` with a
+  rationale; `blind_sample_keys.jsonl` joins ids to provenance.
+- `goulash-bench replay DIR <id>` prints the exact prompt and raw
+  response behind any grade.
+
+**Coverage:** 313 of 2299 total answers — the stratified sample from
+`sample_blind.py`, chosen for decision value (paired shapes, checkable
+answers) rather than breadth. The remaining ~1990 are ungraded, and the
+five expanded-corpus sessions are not represented at all.
+
+**Not done:** the open (non-blind) second pass over the same corpus, which
+would surface per-model patterns that blind grading structurally cannot.
