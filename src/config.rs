@@ -162,6 +162,15 @@ pub struct EngineConfig {
     /// against a warm TTFT of 2314ms, so adopting a warm 12B is very
     /// plausibly faster than cold-loading a 0.8B.
     pub prefer_resident: bool,
+    /// Force a reload when the resident context is below `num_ctx_min`.
+    ///
+    /// Normally goulash sends no context at all and takes whatever the
+    /// engine is configured for — ollama has a context slider, LM Studio
+    /// stores one per model, and both are the user's call. The floor is
+    /// the one case where that is not good enough: too small a window
+    /// and the session log will not fit. Nudging the host costs a full
+    /// reload, so it is deliberately the exception.
+    pub nudge_small_context: bool,
     /// Machine facts told to the model. See [`DivulgeConfig`].
     pub divulge: DivulgeConfig,
     /// The immediate tier. `#` answers from here first, always.
@@ -198,6 +207,7 @@ impl Default for EngineConfig {
             num_ctx_min: 8192,
             num_ctx: None,
             prefer_resident: false,
+            nudge_small_context: true,
             divulge: DivulgeConfig::default(),
             fast: TierConfig {
                 watch: true,

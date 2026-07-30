@@ -33,6 +33,36 @@ pub const DEFAULT_TEMPERATURE: f32 = 0.2;
 /// (bench/THINKING.md)
 pub const DEFAULT_STOP: &[&str] = &[];
 pub const DEFAULT_THINK: Think = Think::Off;
+/// What context to ask the provider for — usually nothing.
+///
+/// `num_ctx` is part of a model's load identity, so naming one evicts and
+/// reloads anything loaded at a different size (206ms reuse vs 1847ms
+/// reload). Both engines already let the user set a default — ollama has
+/// a context slider, LM Studio stores one per model — so the polite
+/// behaviour is to take whatever they chose.
+///
+/// Two exceptions:
+///   * `num_ctx` set explicitly: the user wants exactly this, pinned.
+///   * the resident window is below `num_ctx_min`: too small to hold a
+///     session log, so nudge the host and eat the reload.
+///
+/// Returns 0 when nothing should be sent, which the providers treat as
+/// "omit the option".
+fn negotiate_ctx(cfg: &EngineConfig, resident: Option<usize>) -> usize {
+    if let Some(pinned) = cfg.num_ctx {
+        return pinned;
+    }
+    match resident {
+        // Loaded and roomy enough: say nothing, keep the load.
+        Some(c) if c >= cfg.num_ctx_min => 0,
+        // Loaded but too small: this is the expensive case, on purpose.
+        Some(_) if cfg.nudge_small_context => cfg.num_ctx_min,
+        Some(_) => 0,
+        // Not loaded, so nothing to preserve — ask for the floor.
+        None => cfg.num_ctx_min,
+    }
+}
+
 /// Resolve `[engine] thinking` against what the model can actually do.
 ///
 /// `auto` must never send the field to a model that cannot reason:
@@ -264,6 +294,9 @@ struct Bound {
     /// Learned once at bind, via a read-only capability query — never by
     /// asking the model to think and seeing if it 400s.
     can_think: Option<bool>,
+    /// The context this model is ALREADY loaded at, if it is resident.
+    /// `None` means not loaded, so there is nothing to preserve.
+    resident_ctx: Option<usize>,
 }
 
 fn worker(mut cfg: EngineConfig, jobs: mpsc::Receiver<Job>, ev: mpsc::Sender<Event>, wr: OwnedFd) {
@@ -484,23 +517,34 @@ fn probe(agent: &ureq::Agent, cfg: &EngineConfig) -> Option<Bound> {
         let Some(models) = provider.probe(agent, &host) else {
             continue;
         };
-        let resident = if cfg.prefer_resident {
-            provider.resident(agent, &host)
+        // Always ask what is loaded: prefer_resident decides whether it
+        // steers model CHOICE, but the context of an already-loaded model
+        // matters either way — it is what tells us not to force a reload.
+        let resident = provider.resident(agent, &host);
+        let resident_for_pick: Vec<(String, usize)> = if cfg.prefer_resident {
+            resident.clone()
         } else {
             Vec::new()
         };
-        let Some(model) = pick_model(&models, cfg.model.as_deref(), &cfg.favorites, &resident)
+        let Some(model) =
+            pick_model(&models, cfg.model.as_deref(), &cfg.favorites, &resident_for_pick)
         else {
             continue;
         };
         let installed = models.into_iter().map(|m| m.name).collect();
         let can_think = provider.can_think(agent, &host, &model);
+        let resident_ctx = resident
+            .iter()
+            .find(|(r, _)| r == &model)
+            .map(|(_, c)| *c)
+            .filter(|c| *c > 0);
         return Some(Bound {
             provider,
             host,
             model,
             installed,
             can_think,
+            resident_ctx,
         });
     }
     None
@@ -514,7 +558,7 @@ fn pick_model(
     models: &[ModelInfo],
     configured: Option<&str>,
     favorites: &[String],
-    resident: &[String],
+    resident: &[(String, usize)],
 ) -> Option<String> {
     if let Some(m) = configured {
         return Some(m.to_string());
@@ -523,11 +567,11 @@ fn pick_model(
     // avoids evicting whatever the user is working with. Ranked above
     // favourites because a warm larger model very plausibly beats a cold
     // smaller one end to end. (bench/RESIDENCY.md)
-    if let Some(hit) = resident
+    if let Some((name, _)) = resident
         .iter()
-        .find(|r| models.iter().any(|m| &&m.name == r))
+        .find(|(r, _)| models.iter().any(|m| &m.name == r))
     {
-        return Some(hit.clone());
+        return Some(name.clone());
     }
     for fav in favorites {
         if let Some(hit) = models
@@ -575,7 +619,7 @@ fn generate(
         stream,
         temperature: DEFAULT_TEMPERATURE,
         max_tokens: tier.response_tokens,
-        num_ctx: cfg.num_ctx.unwrap_or(cfg.num_ctx_min),
+        num_ctx: negotiate_ctx(cfg, b.resident_ctx),
         stop: DEFAULT_STOP.iter().map(|s| s.to_string()).collect(),
         think,
         reasoning_tokens: tier.reasoning_tokens,
@@ -662,17 +706,17 @@ mod pick_tests {
             ("qwen3.5:0.8b", 1_000_000_000),
         ]);
         assert_eq!(
-            pick_model(&m, None, &no_favs(), &["gemma4:12b".into()]).as_deref(),
+            pick_model(&m, None, &no_favs(), &[("gemma4:12b".into(), 8192)]).as_deref(),
             Some("gemma4:12b")
         );
         // ...but an explicit pin still wins, and a resident model that is
         // not installed here is ignored.
         assert_eq!(
-            pick_model(&m, Some("qwen3.5:0.8b"), &no_favs(), &["gemma4:12b".into()]).as_deref(),
+            pick_model(&m, Some("qwen3.5:0.8b"), &no_favs(), &[("gemma4:12b".into(), 8192)]).as_deref(),
             Some("qwen3.5:0.8b")
         );
         assert_eq!(
-            pick_model(&m, None, &no_favs(), &["not-installed".into()]).as_deref(),
+            pick_model(&m, None, &no_favs(), &[("not-installed".into(), 8192)]).as_deref(),
             Some("qwen3.5:0.8b")
         );
     }
@@ -928,5 +972,47 @@ mod plan_tests {
             Some(Plan::SlowOnly)
         );
         assert_eq!(Plan::FastThenSlow.resolve(true, &cfg(false, false, true)), None);
+    }
+}
+
+#[cfg(test)]
+mod ctx_tests {
+    use super::negotiate_ctx;
+    use crate::config::EngineConfig;
+
+    fn cfg(min: usize, pin: Option<usize>, nudge: bool) -> EngineConfig {
+        let mut c = EngineConfig::default();
+        c.num_ctx_min = min;
+        c.num_ctx = pin;
+        c.nudge_small_context = nudge;
+        c
+    }
+
+    /// The common case: something is loaded with room to spare, so send
+    /// nothing and leave the user's own setting alone.
+    #[test]
+    fn roomy_resident_context_is_left_alone() {
+        assert_eq!(negotiate_ctx(&cfg(8192, None, true), Some(32768)), 0);
+        assert_eq!(negotiate_ctx(&cfg(8192, None, true), Some(8192)), 0);
+    }
+
+    /// Too small to hold a session log: pay the reload deliberately.
+    #[test]
+    fn small_resident_context_is_nudged_up() {
+        assert_eq!(negotiate_ctx(&cfg(8192, None, true), Some(2048)), 8192);
+        // ...unless the user would rather live with it than pay.
+        assert_eq!(negotiate_ctx(&cfg(8192, None, false), Some(2048)), 0);
+    }
+
+    #[test]
+    fn nothing_loaded_means_ask_for_the_floor() {
+        assert_eq!(negotiate_ctx(&cfg(8192, None, true), None), 8192);
+    }
+
+    /// An explicit pin outranks all of it — that is what pinning is for.
+    #[test]
+    fn explicit_num_ctx_always_wins() {
+        assert_eq!(negotiate_ctx(&cfg(8192, Some(4096), true), Some(32768)), 4096);
+        assert_eq!(negotiate_ctx(&cfg(8192, Some(4096), true), None), 4096);
     }
 }

@@ -123,11 +123,14 @@ pub trait Provider: Send + Sync {
     fn can_think(&self, _agent: &ureq::Agent, _host: &str, _model: &str) -> Option<bool> {
         None
     }
-    /// Models the engine already has loaded, most-recently-used first.
+    /// Models the engine already has loaded, with the context each was
+    /// loaded at, most-recently-used first.
     ///
-    /// Adopting one skips a cold load (p50 4281ms, p90 7214ms) and avoids
-    /// evicting whatever the user is working with.
-    fn resident(&self, _agent: &ureq::Agent, _host: &str) -> Vec<String> {
+    /// The context matters as much as the name: `num_ctx` is part of a
+    /// model's load identity, so asking for a different one evicts and
+    /// reloads (206ms reuse vs 1847ms reload). Knowing what is already
+    /// there is what lets goulash leave it alone.
+    fn resident(&self, _agent: &ureq::Agent, _host: &str) -> Vec<(String, usize)> {
         Vec::new()
     }
     /// Ask the server to load the model (empty generation) so the first
@@ -189,7 +192,7 @@ impl Provider for Ollama {
         )
     }
 
-    fn resident(&self, agent: &ureq::Agent, host: &str) -> Vec<String> {
+    fn resident(&self, agent: &ureq::Agent, host: &str) -> Vec<(String, usize)> {
         let Ok(resp) = agent
             .get(&format!("{host}/api/ps"))
             .timeout(Duration::from_secs(2))
@@ -207,7 +210,12 @@ impl Provider for Ollama {
             .as_array()
             .map(|a| {
                 a.iter()
-                    .filter_map(|m| m["name"].as_str().map(String::from))
+                    .filter_map(|m| {
+                        Some((
+                            m["name"].as_str()?.to_string(),
+                            m["context_length"].as_u64().unwrap_or(0) as usize,
+                        ))
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -233,8 +241,12 @@ impl Provider for Ollama {
         let mut options = serde_json::json!({
             "temperature": req.temperature,
             "num_predict": req.wire_max_tokens() as i64,
-            "num_ctx": req.num_ctx as i64,
         });
+        // Zero means "do not send it" — let the server keep whatever the
+        // user configured, and keep whatever is already loaded.
+        if req.num_ctx > 0 {
+            options["num_ctx"] = serde_json::json!(req.num_ctx as i64);
+        }
         if !req.stop.is_empty() {
             options["stop"] = serde_json::json!(req.stop);
         }

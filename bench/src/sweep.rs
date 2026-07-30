@@ -590,7 +590,12 @@ fn run_session(
     paths: &std::collections::HashSet<String>,
 ) {
     let provider = provider_for(cell);
-    let stop: Vec<String> = vec!["\n\n".to_string()];
+    // Match the shipped 0.4.0 defaults: no stop sequence, and reasoning
+    // gets its own allowance. The original sweep ran with stop:["\n\n"]
+    // and no allowance, which starved every reasoning model — the three
+    // cells that scored 0.00 in QUALITY.md were that configuration, not
+    // their capability.
+    let stop: Vec<String> = Vec::new();
     let mut log = SessionLog::new();
     let mut memory = seed_memory_for(shape_name);
 
@@ -648,7 +653,7 @@ fn run_session(
                     paths,
                     &stop,
                     Think::Off,
-                    0,
+                    4096,
                     MAX_TOKENS,
                 );
                 if let Some((text, command, remembers, forgets)) = parsed {

@@ -347,3 +347,20 @@ cargo-dist + tap → provider adapters → notarization → goulash.dev).
 Each milestone is independently usable; trust properties
 ([positioning](positioning.md)) are built in from milestone 1, not
 retrofitted.
+
+9. **Provider auto-discovery across engines.** Today the probe chain
+   binds the first server that answers, then picks a model from whatever
+   that one has. Better: enumerate what is installed on *every* reachable
+   provider, prefer a favourite wherever it lives, and only fall back to
+   an arbitrary pick if none is present.
+
+   The tie-break, when a favourite exists on both, should be **ollama** —
+   not because it is faster (measured: generation rate is within noise,
+   ~10.4 vs 10.9 tok/s on the closest matched pair) but because it is the
+   only one that reports what goulash needs: `/api/show` for thinking
+   capability, `/api/ps` for the resident model *and its context*, and
+   `prompt_eval_duration` for cache behaviour. LM Studio exposes none of
+   those, so `thinking = auto` silently degrades to `off` there and
+   context negotiation has nothing to negotiate against.
+
+   Deferred from 0.4.0, which just defaults to ollama first.
