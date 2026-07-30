@@ -6,12 +6,13 @@
 
 use crate::journal::{Journal, cell_key};
 use crate::load_catalog;
-use crate::sweep::{NUM_CTX, agent, await_headroom, preload_lmstudio, provider_for, run_one, shapes, unload_all};
-use goulash::engine::Think;
+use crate::sweep::{NUM_CTX, agent, await_headroom, preload_lmstudio, wire_for, run_one, shapes, unload_all};
+use crate::drive::Think;
 use std::path::Path;
 use std::time::Duration;
 
 /// A single tolerance question, and the setting it varies.
+#[allow(dead_code)]
 struct Probe {
     id: &'static str,
     question: &'static str,
@@ -49,7 +50,7 @@ fn probes() -> Vec<Probe> {
             id: "no-think-field",
             question: "how do I list files by size, largest first",
             stop: nl.clone(),
-            think: Think::Default,
+            think: Think::On,
             reasoning: 0,
             max_tokens: 256,
         },
@@ -63,7 +64,7 @@ fn probes() -> Vec<Probe> {
             id: "no-think-no-stop",
             question: "how do I list files by size, largest first",
             stop: Vec::new(),
-            think: Think::Default,
+            think: Think::On,
             reasoning: 0,
             max_tokens: 256,
         },
@@ -206,11 +207,11 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
         if cell.provider.starts_with("openai") {
             preload_lmstudio(&cell.model, NUM_CTX, "3m");
         }
-        let provider = provider_for(cell);
+        let Some(wire) = wire_for(cell) else { continue };
         for p in todo {
             run_one(
                 &mut j,
-                provider.as_ref(),
+                wire,
                 &agent,
                 cell,
                 "pass-a",
@@ -225,7 +226,6 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
                 &paths,
                 &p.stop,
                 p.think,
-                p.reasoning,
                 p.max_tokens,
             );
         }

@@ -7,10 +7,9 @@
 
 use crate::journal::{Journal, Row, cell_key};
 use crate::{Cell, NOW, Step, load_catalog, load_scenarios};
-use goulash::engine::{
-    GenRequest, MemPos, Ollama, OpenAiCompat, PromptShape, Provider, Think, build_prompt,
-    extract_memory_ops, split_answer,
-};
+use crate::drive::{GenRequest, MemPos, PromptShape, Think, generate, shape_prompt};
+use goulash::wire::Wire;
+use goulash::engine::{extract_memory_ops, split_answer};
 use goulash::memory::MemoryStore;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -24,10 +23,16 @@ use std::time::{Duration, Instant};
 /// silently went stale when the product defaults moved and left the
 /// sweep measuring a configuration nobody runs. Reading `Config`
 /// directly makes that drift impossible.
-fn budgets() -> (usize, usize) {
-    let e = goulash::config::Config::default().engine;
-    (e.fast.response_tokens, e.slow.reasoning_tokens)
+/// The shipped budget, read from the shipped config rather than mirrored
+/// into a constant here.
+///
+/// It used to be a hand-copied `const MAX_TOKENS: usize = 256`, which
+/// went stale when the product default moved and left the sweep
+/// measuring a configuration nobody runs.
+pub fn budget() -> usize {
+    goulash::config::Config::default().engine.max_tokens
 }
+
 
 /// Long-context mode. The shipped budget keeps prompts under ~3k tokens —
 /// 36% of an 8192 window — so nothing in the normal corpus tests what
@@ -157,6 +162,7 @@ fn all_shapes() -> Vec<(&'static str, PromptShape)> {
         (
             "S4",
             PromptShape {
+                divulge: Default::default(),
                 memories: MemPos::BeforeLog,
                 command_first: true,
                 preamble: Some(leak(format!("{}{base}", platform_line()))),
@@ -166,6 +172,7 @@ fn all_shapes() -> Vec<(&'static str, PromptShape)> {
         (
             "S5",
             PromptShape {
+                divulge: Default::default(),
                 memories: MemPos::BeforeLog,
                 command_first: true,
                 preamble: Some(leak(format!("{}{}{base}", platform_line(), tools_line()))),
@@ -190,6 +197,7 @@ fn all_shapes() -> Vec<(&'static str, PromptShape)> {
         (
             "S6",
             PromptShape {
+                divulge: Default::default(),
                 memories: MemPos::BeforeLog,
                 command_first: true,
                 preamble: Some(leak(format!("{}{}{base}", platform_line(), full_path_line()))),
@@ -203,18 +211,22 @@ fn all_shapes() -> Vec<(&'static str, PromptShape)> {
 /// shape ollama gets — the apples-to-apples comparison. `openai-chat`
 /// wraps it in the model's chat template, which is all hosted providers
 /// offer; running both prices that mapping instead of assuming it's free.
-pub fn provider_for(c: &Cell) -> Box<dyn Provider> {
+///
+/// **`openai-chat` returns None**: this build has no chat path. wire.rs
+/// targets `/v1/completions` on purpose — the raw endpoint takes
+/// goulash's stable-prefix string verbatim, while a chat template moves
+/// the prefix boundary and can silently stop the KV cache from hitting.
+/// Mapping chat cells onto the raw wire would file the same measurement
+/// under two names, so they are skipped and reported as skipped.
+///
+/// The axis is not gone, it is deferred: hosted providers offer chat
+/// only, so a future adapter has to add the path before it can be
+/// measured. (bench/QUIRKS.md 1)
+pub fn wire_for(c: &Cell) -> Option<Wire> {
     match c.provider.as_str() {
-        "ollama" => Box::new(Ollama),
-        "openai-raw" => Box::new(OpenAiCompat {
-            chat: false,
-            suppress_reasoning: false,
-        }),
-        _ => Box::new(OpenAiCompat {
-            chat: true,
-            // Off by evidence: it empties `content` on LM Studio + qwen3.
-            suppress_reasoning: false,
-        }),
+        "ollama" => Some(Wire::Ollama),
+        "openai-raw" => Some(Wire::OpenAi),
+        _ => None,
     }
 }
 
@@ -492,7 +504,7 @@ pub fn mechanical(raw: &str, text: &str, command: &Option<String>) -> (bool, boo
 #[allow(clippy::too_many_arguments)]
 pub fn run_one(
     j: &mut Journal,
-    provider: &dyn Provider,
+    wire: Wire,
     agent: &ureq::Agent,
     cell: &Cell,
     pass: &str,
@@ -507,11 +519,10 @@ pub fn run_one(
     paths: &std::collections::HashSet<String>,
     stop: &[String],
     think: Think,
-    reasoning_tokens: usize,
     max_tokens: usize,
 ) -> Option<(String, Option<String>, Vec<String>, Vec<u64>)> {
     let key = cell_key(pass, &cell.provider, &cell.model, shape_name, step_id);
-    let prompt = build_prompt(shape, memories, log, question, NOW, proactive);
+    let prompt = shape_prompt(shape, memories, log, question, NOW, proactive);
     let req = GenRequest {
         model: cell.model.clone(),
         prompt: prompt.clone(),
@@ -521,7 +532,6 @@ pub fn run_one(
         num_ctx: num_ctx(),
         stop: stop.to_vec(),
         think,
-        reasoning_tokens,
         // Deliberately short. Residency only has to outlast one cell's
         // turns — the sweep unloads explicitly when it moves on. A long
         // keep_alive means an interrupted run strands a multi-GB model in
@@ -530,7 +540,7 @@ pub fn run_one(
         keep_alive: "3m".to_string(),
     };
 
-    let outcome = provider.generate(agent, &cell.host, &req, &mut |_| {});
+    let outcome = generate(agent, &cell.host, wire, &req, &mut |_| {});
     let mut row = Row {
         key: key.clone(),
         pass: pass.to_string(),
@@ -598,7 +608,17 @@ fn run_session(
     agent: &ureq::Agent,
     paths: &std::collections::HashSet<String>,
 ) {
-    let provider = provider_for(cell);
+    let Some(wire) = wire_for(cell) else {
+        // Reported, never silent. A cell that produced no rows because
+        // the build cannot reach it looks identical, in a summary, to a
+        // cell that produced no rows because everything failed.
+        eprintln!(
+            "    skipping {} ({}) — this build has no chat path; \
+             wire.rs targets /v1/completions",
+            cell.model, cell.provider
+        );
+        return;
+    };
     // Match the shipped 0.4.0 defaults: no stop sequence, and reasoning
     // gets its own allowance. The original sweep ran with stop:["\n\n"]
     // and no allowance, which starved every reasoning model — the three
@@ -647,7 +667,7 @@ fn run_session(
                 }
                 let parsed = run_one(
                     j,
-                    provider.as_ref(),
+                    wire,
                     agent,
                     cell,
                     "pass-b",
@@ -662,8 +682,7 @@ fn run_session(
                     paths,
                     &stop,
                     Think::Off,
-                    budgets().1,
-                    budgets().0,
+                    budget(),
                 );
                 if let Some((text, command, remembers, forgets)) = parsed {
                     apply_memory_ops(&mut memory, &remembers, &forgets);

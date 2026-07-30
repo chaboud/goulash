@@ -27,7 +27,7 @@ pub struct Config {
 ///
 /// Three independent switches, not a ladder — `full_path` *replaces*
 /// `tools` rather than adding to it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(default)]
 pub struct DivulgeConfig {
     /// OS, userland and shell. **On by default.**

@@ -17,8 +17,8 @@
 
 use crate::journal::{Journal, cell_key};
 use crate::load_catalog;
-use crate::sweep::{NUM_CTX, agent, await_headroom, preload_lmstudio, provider_for, run_one, seed_memory, unload_all};
-use goulash::engine::{MemPos, PromptShape, Think};
+use crate::sweep::{NUM_CTX, agent, await_headroom, preload_lmstudio, wire_for, run_one, seed_memory, unload_all};
+use crate::drive::{MemPos, PromptShape, Think};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
@@ -92,6 +92,7 @@ pub fn variants() -> Vec<Variant> {
             id: "V1-not-executing",
             hypothesis: "refusals come from thinking it must RUN the command",
             shape: PromptShape {
+                divulge: Default::default(),
                 preamble: Some(PRE_NOT_EXECUTING),
                 ..base
             },
@@ -100,6 +101,7 @@ pub fn variants() -> Vec<Variant> {
             id: "V2-grammar",
             hypothesis: "an explicit line-by-line grammar raises tag compliance",
             shape: PromptShape {
+                divulge: Default::default(),
                 directive: Some(DIR_GRAMMAR),
                 ..base
             },
@@ -108,6 +110,7 @@ pub fn variants() -> Vec<Variant> {
             id: "V3-example",
             hypothesis: "mimicry teaches small models better than description",
             shape: PromptShape {
+                divulge: Default::default(),
                 directive: Some(DIR_EXAMPLE),
                 ..base
             },
@@ -116,6 +119,7 @@ pub fn variants() -> Vec<Variant> {
             id: "V4-memguard",
             hypothesis: "naming REMEMBER: a tool stops it eating answers",
             shape: PromptShape {
+                divulge: Default::default(),
                 directive: Some(DIR_MEMGUARD),
                 ..base
             },
@@ -124,6 +128,7 @@ pub fn variants() -> Vec<Variant> {
             id: "V5-all",
             hypothesis: "combined; wins alone would mean independent causes",
             shape: PromptShape {
+                divulge: Default::default(),
                 preamble: Some(PRE_NOT_EXECUTING),
                 directive: Some(DIR_ALL),
                 ..base
@@ -199,11 +204,11 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
         if cell.provider.starts_with("openai") {
             preload_lmstudio(&cell.model, NUM_CTX, "3m");
         }
-        let provider = provider_for(cell);
+        let Some(wire) = wire_for(cell) else { continue };
         for (v, (qid, question)) in todo {
             run_one(
                 &mut j,
-                provider.as_ref(),
+                wire,
                 &agent,
                 cell,
                 "pass-p",
@@ -218,8 +223,7 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
                 &paths,
                 &["\n\n".to_string()],
                 Think::Off,
-                0,
-                256,
+                crate::sweep::budget(),
             );
         }
         unload_all(&agent, "http://127.0.0.1:11434");

@@ -12,6 +12,7 @@
 //!   goulash-bench blind  [DIR]      shuffled corpus for grading
 //!   goulash-bench replay [DIR] KEY  exact prompt + raw response for one cell
 
+mod drive;
 mod journal;
 mod probe;
 mod report;

@@ -32,8 +32,8 @@
 
 use crate::journal::{Journal, cell_key};
 use crate::load_catalog;
-use crate::sweep::{NUM_CTX, agent, await_headroom, preload_lmstudio, provider_for, run_one, seed_memory, unload_all};
-use goulash::engine::{MemPos, PromptShape, Think};
+use crate::sweep::{NUM_CTX, agent, await_headroom, preload_lmstudio, wire_for, run_one, seed_memory, unload_all};
+use crate::drive::{MemPos, PromptShape, Think};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
@@ -209,11 +209,11 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
         if cell.provider.starts_with("openai") {
             preload_lmstudio(&cell.model, NUM_CTX, "3m");
         }
-        let provider = provider_for(cell);
+        let Some(wire) = wire_for(cell) else { continue };
         for (p, (qid, question)) in todo {
             run_one(
                 &mut j,
-                provider.as_ref(),
+                wire,
                 &agent,
                 cell,
                 "pass-t",
@@ -228,7 +228,6 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
                 &paths,
                 &p.stop,
                 p.think,
-                p.reasoning,
                 p.max_tokens,
             );
         }
