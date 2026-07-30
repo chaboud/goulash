@@ -1,4 +1,5 @@
 mod config;
+mod configcli;
 mod facts;
 mod context;
 mod engine;
@@ -23,10 +24,22 @@ use std::process::ExitCode;
 const USAGE: &str = "usage: goulash [shell [args...]]
 
 Wraps an interactive shell in the goulash overlay. With no arguments,
-runs $SHELL (falling back to /bin/sh). Config: ~/.goulash/config.toml";
+runs $SHELL (falling back to /bin/sh).
+
+  --config [print|path|set K V|reset [K]]   read or edit settings
+  --version, --help
+
+Config lives at ~/.goulash/config.toml and is optional; every setting
+has a working default.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Before the tty check: editing settings is exactly what you want to
+    // do from a script, a Dockerfile, or a machine you have only ssh'd
+    // into to fix something.
+    if let Some(i) = args.iter().position(|a| a == "--config") {
+        return ExitCode::from(configcli::run(&args[i + 1..]) as u8);
+    }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
