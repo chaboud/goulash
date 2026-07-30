@@ -291,3 +291,106 @@ prompt shape, endpoint choice (a capability), `tail_chars`,
 
 Live-adjustable via `#/`: `thinking`, `situated`, `vend_bias`, `model` —
 the ones a user might plausibly want to change mid-session.
+
+---
+
+## E. `--config`, and what "reset" should mean
+
+Backlog item 4 in [build-plan](../product/build-plan.md), now with a
+reason to exist: the sweep produced a dozen settings and none of them are
+reachable without editing TOML by hand.
+
+```
+goulash --config                 # interactive walkthrough (offered, never required)
+goulash --config print           # effective values AND where each came from
+goulash --config path            # where the file lives
+goulash --config set k v         # surgical write (reuses toml_edit)
+goulash --config reset [k]       # back to defaults, whole file or one key
+```
+
+### Reset means *remove the key*, not *write the default value*
+
+The important detail. Every setting has a working default in code, so
+resetting should **delete the key** and let the default apply again —
+never stamp today's default into the file.
+
+Two things fall out of that:
+
+- **Defaults can improve.** A user who reset in 0.4.0 gets 0.5.0's better
+  default automatically. If reset wrote `response_tokens = 512`, they
+  would be pinned to it forever without knowing.
+- **`config.toml` stays small.** It holds only deliberate deviations, so
+  `--config print` can honestly show *default* vs *set by you* — which is
+  the whole value of the `print` subcommand.
+
+`--config reset` with no key backs the old file up (`config.toml.bak`)
+before truncating, because it is the one destructive thing in the CLI.
+
+## F. Providers: how defaults should resolve
+
+Today: one `provider` string, one `host`, a hardcoded probe chain. That
+cannot express "try ollama, then LM Studio", cannot carry per-provider
+settings, and has nowhere to put an API key.
+
+```toml
+[engine]
+service = "auto-local"        # auto-local | <a provider name> | none
+
+[[provider]]
+name = "ollama"
+kind = "ollama"               # kind implies wire protocol + capabilities
+host = "http://127.0.0.1:11434"
+
+[[provider]]
+name = "lmstudio"
+kind = "openai"
+host = "http://127.0.0.1:1234"
+endpoint = "completions"      # completions | chat
+
+[[provider]]
+name = "llamacpp"
+kind = "openai"
+host = "http://127.0.0.1:8080"
+```
+
+`auto-local` probes the list in order and binds the first that answers.
+`#/service auto-local` restores it after any explicit pin.
+
+**`kind` carries the measured defaults**, so a user adding a provider
+gets the right behaviour without knowing any of this:
+
+| kind | endpoint | reasoning control | cache metric | context |
+|---|---|---|---|---|
+| `ollama` | `/api/generate` | `think` field (works) | `prompt_eval_duration` | per request |
+| `openai` | **`/v1/completions`** | none that works | TTFT flatness | load-time |
+
+The endpoint default is the single most consequential provider setting
+measured: `qwen/qwen3-8b` answered **12/12 via `/v1/completions` with zero
+reasoning tokens**, and **1/12 via `/v1/chat/completions` with 1450** —
+same weights, same server. The chat template is what turns reasoning on.
+Cloud providers offer chat only, so a hosted `kind` inherits that problem
+and needs its own reasoning control.
+
+### Precedence — the actual answer to "how should defaults work"
+
+Lowest to highest:
+
+1. **compiled-in defaults** — everything works with no file at all
+2. **provider `kind` defaults** — measured per protocol (table above)
+3. **model capability** — discovered, not configured: does it support
+   thinking (ollama 400s if not), does suppression work, does it honour
+   `stop`. Overrides a *kind* default because it is a fact about reality.
+4. **config file** — the user's deliberate deviations
+5. **session commands** (`#/model`, `#/thinking`, …) — until exit
+
+Capability sitting *above* kind defaults but *below* the config file is
+the load-bearing choice: goulash should never send `think: true` to a
+model that hard-400s on it, but if a user explicitly sets
+`thinking = "forced"` they get it and own the error. Discovery protects
+the default path; it does not overrule an instruction.
+
+### Keys
+
+Env by default (`api_key_env = "OPENAI_API_KEY"`), file value as
+fallback, never in transcripts. Nothing in this project needed one — all
+local — but the provider table is where it goes when it does.
