@@ -106,24 +106,41 @@ impl Journal {
         OpenOptions::new().create(true).append(true).open(path)
     }
 
-    /// Refuse to start if another sweep holds this directory. A stale lock
-    /// from a killed run is reclaimed — the pid is checked, not trusted.
+    /// Refuse to start if another sweep is running **anywhere on this
+    /// machine**.
+    ///
+    /// The first version of this locked the results directory, which was
+    /// the wrong resource: two sweeps in different directories do not
+    /// corrupt each other's journals, they contend for the GPU and unload
+    /// each other's models. That is machine-wide, so the lock is too — it
+    /// lives in the temp dir, not the run. (Found the hard way, twice.)
+    ///
+    /// A stale lock from a killed run is reclaimed; the pid is checked,
+    /// never trusted.
     fn acquire_lock(dir: &Path) -> std::io::Result<()> {
-        let lock = dir.join("sweep.lock");
+        let lock = std::env::temp_dir().join("goulash-bench.lock");
         if let Ok(text) = std::fs::read_to_string(&lock)
             && let Ok(pid) = text.trim().parse::<i32>()
             && pid != std::process::id() as i32
             // SAFETY: kill(pid, 0) only tests for existence.
             && unsafe { libc::kill(pid, 0) } == 0
         {
+            let what = std::fs::read_to_string(lock.with_extension("what"))
+                .unwrap_or_else(|_| "unknown".into());
             return Err(std::io::Error::other(format!(
-                "another sweep (pid {pid}) is running in {}. \
-                 Two sweeps contend for the GPU and unload each other's \
-                 models, so both sets of timings would be worthless. \
-                 Stop it first, or use a different results directory.",
+                "another sweep is already running on this machine \
+                 (pid {pid}: {}). Two sweeps contend for the GPU and unload \
+                 each other's models, so BOTH sets of timings would be \
+                 worthless — a different results directory does not help. \
+                 Stop it first. (wanted: {})",
+                what.trim(),
                 dir.display()
             )));
         }
+        let _ = std::fs::write(
+            lock.with_extension("what"),
+            std::env::args().collect::<Vec<_>>().join(" "),
+        );
         std::fs::write(&lock, std::process::id().to_string())
     }
 

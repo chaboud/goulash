@@ -19,9 +19,26 @@ use std::time::{Duration, Instant};
 
 /// Shipped defaults, mirrored from `engine::DEFAULT_*`.
 const MAX_TOKENS: usize = 256;
+
+/// Long-context mode. The shipped budget keeps prompts under ~3k tokens —
+/// 36% of an 8192 window — so nothing in the normal corpus tests what
+/// happens when a session log actually gets big, which is the steady
+/// state of a terminal left open all day. These raise the ceiling so the
+/// bulk session can push past 20k tokens.
+fn env_usize(k: &str, default: usize) -> usize {
+    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+pub fn num_ctx() -> usize {
+    env_usize("GOULASH_BENCH_NUM_CTX", 8192)
+}
+fn tail_chars() -> usize {
+    env_usize("GOULASH_BENCH_TAIL_CHARS", 800)
+}
+fn context_max_chars() -> usize {
+    env_usize("GOULASH_BENCH_CONTEXT_MAX", 12_000)
+}
+/// Kept for call sites that want the shipped value.
 pub const NUM_CTX: usize = 8192;
-const TAIL_CHARS: usize = 800;
-const CONTEXT_MAX_CHARS: usize = 12_000;
 
 /// `GOULASH_BENCH_SHAPES=S3` (or `S1,S3`) restricts which prompt shapes
 /// run.
@@ -48,7 +65,46 @@ pub fn shapes() -> Vec<(&'static str, PromptShape)> {
     }
 }
 
+/// Static facts goulash can read without executing anything: `uname`,
+/// `$SHELL`, and a `read_dir` of PATH. They go at the FRONT of the stable
+/// prefix — static per machine, so cached once for the life of a session
+/// and unable to perturb the session-log prefix behind them.
+fn platform_line() -> String {
+    let os = std::process::Command::new("uname").arg("-s").output().ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string()).unwrap_or_else(|| "unknown".into());
+    let shell = std::env::var("SHELL").ok()
+        .and_then(|s| s.rsplit('/').next().map(String::from))
+        .unwrap_or_else(|| "sh".into());
+    if os == "Darwin" {
+        format!("Environment: macOS ({os}), BSD userland, {shell} shell. BSD differs \
+from GNU: 'du -d N' not '--max-depth', 'sed -i \"\"' not 'sed -i', 'date -v' not \
+'date -d', 'stat -f' not 'stat -c'. BSD grep has NO -P.\n\n")
+    } else {
+        format!("Environment: {os}, GNU userland, {shell} shell.\n\n")
+    }
+}
+
+const CURATED: &[&str] = &[
+    "jq","yq","rg","fd","ag","tree","bat","delta","fzf","gh","git","docker","kubectl",
+    "tmux","curl","wget","ffmpeg","zstd","pigz","pv","rsync","gsed","gawk","ggrep",
+    "gdate","gstat","gfind","gtar","python3","node","cargo","go","make","cmake","tar","unzip",
+];
+
+fn tools_line() -> String {
+    let have = goulash::vendor::path_executable_set();
+    let present: Vec<&str> = CURATED.iter().copied().filter(|t| have.contains(*t)).collect();
+    let absent: Vec<&str> = CURATED.iter().copied().filter(|t| !have.contains(*t)).collect();
+    format!("Installed: {}. NOT installed, never suggest: {}.\n\n",
+            present.join(" "), absent.join(" "))
+}
+
+fn leak(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
 fn all_shapes() -> Vec<(&'static str, PromptShape)> {
+    let base = goulash::engine::PREAMBLE;
     vec![
         // Shipped shape: memories ahead of the log.
         (
@@ -75,6 +131,25 @@ fn all_shapes() -> Vec<(&'static str, PromptShape)> {
                 memories: MemPos::BeforeLog,
                 command_first: true,
                 ..PromptShape::default()
+            },
+        ),
+        // S4/S5: situated context, prepended to the cacheable prefix.
+        (
+            "S4",
+            PromptShape {
+                memories: MemPos::BeforeLog,
+                command_first: true,
+                preamble: Some(leak(format!("{}{base}", platform_line()))),
+                directive: None,
+            },
+        ),
+        (
+            "S5",
+            PromptShape {
+                memories: MemPos::BeforeLog,
+                command_first: true,
+                preamble: Some(leak(format!("{}{}{base}", platform_line(), tools_line()))),
+                directive: None,
             },
         ),
     ]
@@ -113,7 +188,7 @@ impl SessionLog {
 
     pub fn block(&mut self, cmd: &str, exit: i32, hms: &str, tail: &str) {
         self.text.push_str(&format!("$ {cmd} [exit {exit}, {hms}]\n"));
-        let t: String = tail.chars().take(TAIL_CHARS).collect();
+        let t: String = tail.chars().take(tail_chars()).collect();
         if !t.trim().is_empty() {
             self.text.push_str(t.trim());
             self.text.push('\n');
@@ -140,10 +215,11 @@ impl SessionLog {
     /// prefix caches are positional, so this costs a full re-eval; the
     /// sweep measures how much.
     fn epoch_trim(&mut self) {
-        if self.text.len() <= CONTEXT_MAX_CHARS {
+        let cap = context_max_chars();
+        if self.text.len() <= cap {
             return;
         }
-        let keep = CONTEXT_MAX_CHARS / 2;
+        let keep = cap / 2;
         let mut start = self.text.len().saturating_sub(keep);
         while !self.text.is_char_boundary(start) {
             start += 1;
@@ -380,7 +456,7 @@ pub fn run_one(
         stream: true,
         temperature: 0.2,
         max_tokens,
-        num_ctx: NUM_CTX,
+        num_ctx: num_ctx(),
         stop: stop.to_vec(),
         think,
         reasoning_tokens,

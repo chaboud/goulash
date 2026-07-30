@@ -8,7 +8,6 @@
 //!   goulash-bench pass-b [DIR]      the sweep: shapes x scenarios x cells
 //!   goulash-bench pass-p [DIR]      prompt-wording variants on the failure cases
 //!   goulash-bench pass-t [DIR]      thinking vs display budget: what does reasoning cost?
-//!   goulash-bench pass-w [DIR]      situated context: does telling the model where it is help?
 //!   goulash-bench report [DIR]      report card from whatever has landed
 //!   goulash-bench blind  [DIR]      shuffled corpus for grading
 //!   goulash-bench replay [DIR] KEY  exact prompt + raw response for one cell
@@ -16,7 +15,6 @@
 mod journal;
 mod probe;
 mod report;
-mod situated;
 mod sweep;
 mod thinking;
 mod variants;
@@ -153,7 +151,6 @@ fn main() {
         "grade" => report::grade(&dir),
         "pass-p" => variants::run(&dir),
         "pass-t" => thinking::run(&dir),
-        "pass-w" => situated::run(&dir),
         "replay" => match args.get(2) {
             Some(key) => report::replay(&dir, key),
             None => {
@@ -163,7 +160,7 @@ fn main() {
         },
         _ => {
             println!(
-                "usage: goulash-bench <pass-a|pass-b|pass-p|pass-t|pass-w|report|blind|grade|replay> [DIR] [KEY]\n\
+                "usage: goulash-bench <pass-a|pass-b|pass-p|pass-t|report|blind|grade|replay> [DIR] [KEY]\n\
                  \n\
                  All passes are resumable: rerun the same command and only\n\
                  cells missing from journal.jsonl are executed."
