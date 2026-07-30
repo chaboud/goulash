@@ -8,6 +8,7 @@ assertion, resize propagation, and exit-code propagation.
 import fcntl
 import glob
 import shutil
+import socket
 import json
 import os
 import pty
@@ -30,10 +31,42 @@ def set_winsize(fd, rows, cols):
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
+def closed_port():
+    """A port nothing is listening on — bind it, learn it, release it."""
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def pin_engine(home):
+    """Point a test's goulash at an engine that cannot answer.
+
+    Tests must never reach a real model. Left unpinned, the probe chain
+    finds whatever ollama is listening on :11434, so the suite passes on
+    CI and behaves differently on any machine with a model installed —
+    and a test can then pass for the wrong reason. Observed: the adapter
+    tests asserting a `#` aside was intercepted were reading a genuine
+    LLM answer out of the band.
+
+    A dead port rather than `provider = "none"`, so the engine is still
+    *configured* — the normal user state — which keeps the unreachable
+    path exercised. A test wanting a fake engine writes its own
+    config.toml before calling spawn; this only fills the gap.
+    """
+    path = os.path.join(home, "config.toml")
+    if not os.path.exists(path):
+        with open(path, "w") as f:
+            f.write(f'[engine]\nprovider = "ollama"\n'
+                    f'host = "http://127.0.0.1:{closed_port()}"\n')
+    return home
+
+
 def spawn(argv, rows=ROWS, cols=COLS, home=None):
     mfd, sfd = pty.openpty()
     set_winsize(mfd, rows, cols)
-    home = home or tempfile.mkdtemp(prefix="goulash-test-")
+    home = pin_engine(home or tempfile.mkdtemp(prefix="goulash-test-"))
     env = dict(os.environ, GOULASH_HOME=home, HOME=home, TERM="xterm-256color")
     proc = subprocess.Popen(
         [BIN] + argv, stdin=sfd, stdout=sfd, stderr=sfd,

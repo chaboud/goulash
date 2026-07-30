@@ -402,7 +402,16 @@ impl WorkContext {
             if left == 0 {
                 break;
             }
-            let card = pin.card_text(left);
+            // Charge the header BEFORE sizing the card, so the emission
+            // cannot exceed what is left. Sizing the card against the
+            // full remainder and adding a header afterwards let every
+            // pin overshoot by a path's length.
+            let head = format!("@{} ({}):\n", pin.label, pin.path.display());
+            let head_len = head.chars().count();
+            if head_len >= left {
+                break; // no room for anything but the label
+            }
+            let card = pin.card_text(left - head_len);
             if card.trim().is_empty() {
                 continue;
             }
@@ -411,13 +420,9 @@ impl WorkContext {
             // bare label is an invitation to invent a plausible path for
             // it — field-observed: a pin labelled `@wiki/` came back as a
             // suggested `ls ~/.goulash/wiki/`, which has never existed.
-            body.push_str(&format!(
-                "@{} ({}):\n{}",
-                pin.label,
-                pin.path.display(),
-                card
-            ));
-            left = left.saturating_sub(card.chars().count());
+            left = left.saturating_sub(head_len + card.chars().count());
+            body.push_str(&head);
+            body.push_str(&card);
         }
         if body.trim().is_empty() {
             return String::new();

@@ -1429,7 +1429,19 @@ fn generate(
         temperature: 0.2,
         max_tokens: cfg.max_tokens + caps.allowance(&cfg.thinking, cfg.thinking_tokens),
         num_ctx: cfg.num_ctx,
-        stop: &["\n\n"],
+        // No stop sequence. It was `["\n\n"]` here — the last path still
+        // carrying it, after research/digest/warm had already dropped it.
+        //
+        // Measured over ~5,500 generations: removing it lifts the answer
+        // rate 81% -> 94%. And with reasoning on it is not a degradation
+        // but a wall — a blank line inside or before the thinking trips
+        // it, so the model emits ~4 tokens and halts no matter how large
+        // the budget. That defeats the allowance right above: paying for
+        // reasoning does not help if generation stops mid-thought.
+        //
+        // It existed to enforce the one-line contract, which `directive`
+        // and the band's wrap already enforce. (bench/QUIRKS.md §3)
+        stop: &[],
         think: caps.think_field(&cfg.thinking),
         effort: caps.effort_field(&cfg.thinking),
         keep_alive: &cfg.keep_alive,
