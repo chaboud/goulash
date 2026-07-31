@@ -549,6 +549,55 @@ impl Config {
     /// a copy of what the other lane currently says. Writing the value
     /// would freeze it: the setting would read "same as fast" while
     /// silently no longer tracking it.
+    /// Settings whose value is not one goulash knows.
+    ///
+    /// An unknown value is not a parse error — the file is still valid
+    /// TOML — and that is exactly the problem. The menu falls back to
+    /// the first option, the setting is dead, and nothing says so. A
+    /// RETIRED name is the common case: `slow = "ingest"` sat in a test
+    /// fixture through a whole release for precisely this reason.
+    ///
+    /// Reported once at startup beside the model, not enforced. The
+    /// file is the user's; goulash's job is to say it is being ignored,
+    /// not to overrule it.
+    pub fn warnings(&self) -> Vec<String> {
+        fn known(out: &mut Vec<String>, key: &str, got: &str, allowed: &[&str]) {
+            if !got.is_empty() && !allowed.contains(&got) {
+                out.push(format!("{key}={got:?} unknown, using {}", allowed[0]));
+            }
+        }
+        // `Wire::parse` is the authority on provider spellings; listing
+        // them again here would be a second copy to forget to update.
+        fn provider(out: &mut Vec<String>, key: &str, got: &str) {
+            if !got.is_empty()
+                && got != "auto"
+                && got != "none"
+                && crate::wire::Wire::parse(got).is_none()
+            {
+                out.push(format!("{key}={got:?} unknown, probing instead"));
+            }
+        }
+        const THINK: &[&str] = &["off", "low", "medium", "high"];
+        let mut w = Vec::new();
+        let e = &self.engine;
+        known(&mut w, "engine.thinking", &e.thinking, THINK);
+        known(&mut w, "engine.slow", &e.slow, &["manual", "query", "waldorf"]);
+        known(
+            &mut w,
+            "debug.cursor_save",
+            &self.debug.cursor_save,
+            &["decsc", "absolute"],
+        );
+        provider(&mut w, "engine.provider", &e.provider);
+        if let Some(t) = e.slow_lane.thinking.as_deref() {
+            known(&mut w, "engine.slow_lane.thinking", t, THINK);
+        }
+        if let Some(p) = e.slow_lane.provider.as_deref() {
+            provider(&mut w, "engine.slow_lane.provider", p);
+        }
+        w
+    }
+
     pub fn remove_key(section: &str, key: &str) -> Result<(), String> {
         let path = Self::dir().ok_or("no home dir")?.join("config.toml");
         let text = std::fs::read_to_string(&path).unwrap_or_default();
@@ -645,6 +694,40 @@ mod persist_tests {
         assert_eq!(cfg.engine.slow_lane.thinking.as_deref(), Some("medium"));
         assert!(!cfg.engine.divulge.platform);
         assert_eq!(cfg.engine.model.as_deref(), Some("m"), "siblings intact");
+    }
+
+    /// A retired value is still valid TOML, so nothing else catches it.
+    /// This is the check that would have caught `slow = "ingest"`.
+    #[test]
+    fn a_retired_or_misspelled_value_is_reported() {
+        let cfg: Config = toml::from_str(
+            "[engine]\nslow = \"ingest\"\nthinking = \"maximum\"\nprovider = \"olama\"\n",
+        )
+        .unwrap();
+        let w = cfg.warnings().join(" | ");
+        assert!(w.contains("engine.slow"), "{w}");
+        assert!(w.contains("engine.thinking"), "{w}");
+        assert!(w.contains("engine.provider"), "{w}");
+        // It says what it will do instead, or the warning is just noise.
+        assert!(w.contains("using manual") && w.contains("probing"), "{w}");
+    }
+
+    /// A false warning is worse than none: it trains you to ignore the
+    /// row. Defaults, aliases and lane overrides all have to stay quiet.
+    #[test]
+    fn everything_legitimate_stays_silent() {
+        assert!(Config::default().warnings().is_empty(), "defaults");
+        for src in [
+            "[engine]\nprovider = \"lmstudio\"\n",
+            "[engine]\nprovider = \"openai-chat\"\n",
+            "[engine]\nprovider = \"none\"\n",
+            "[engine]\nprovider = \"auto\"\n",
+            "[engine.slow_lane]\nthinking = \"high\"\nprovider = \"vllm\"\n",
+            "[debug]\ncursor_save = \"absolute\"\n",
+        ] {
+            let cfg: Config = toml::from_str(src).unwrap();
+            assert!(cfg.warnings().is_empty(), "{src} -> {:?}", cfg.warnings());
+        }
     }
 
     /// "Follow the fast lane" is the ABSENCE of a key, so removal has to

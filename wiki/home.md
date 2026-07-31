@@ -131,5 +131,6 @@ edited.
 - [product/state-of-play.md](product/state-of-play.md) — where things actually stand, written to be handed over
 
 ### Meta
+- [meta/care.md](meta/care.md) — why this program needs unusual thoroughness, and what that demands of a change
 - [meta/wiki-conventions.md](meta/wiki-conventions.md) — how this wiki is organized
 - [meta/provenance.md](meta/provenance.md) — where this thinking came from

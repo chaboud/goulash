@@ -2215,6 +2215,12 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut eng_cfg = cfg.engine.clone();
     // The shell we are about to launch, not $SHELL — see facts::shell.
     eng_cfg.shell = shell_name.clone();
+    // Taken once: shown beside the model when the engine binds, and then
+    // gone. A warning that reappears on every repaint is wallpaper.
+    let mut cfg_warnings = {
+        let w = cfg.warnings();
+        (!w.is_empty()).then(|| w.join("; "))
+    };
     let mut notice: Option<String> = None;
     if let Some(fallback) = fuse.veto(eng_cfg.model.as_deref()) {
         let bad = eng_cfg.model.take().unwrap_or_default();
@@ -2235,6 +2241,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     } else {
         None
     };
+    // No engine means no model slug to ride beside, and a warning about
+    // a dead setting must not itself go unsaid.
+    if engine.is_none()
+        && notice.is_none()
+        && let Some(w) = cfg_warnings.take()
+    {
+        notice = Some(format!("\u{26a0} {w}"));
+    }
     let mut engine_model: Option<String> = None;
     let mut commentary = cfg.engine.commentary;
     let mut memory = MemoryStore::load(Config::dir());
@@ -2544,11 +2558,21 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 Mark::CmdStart(cmd) => {
                                     hook = Some(HookPhase::Command);
                                     rec.cmd_start(&cmd);
+                                    // A bare Enter is not a command, and
+                                    // the shell fires one while it is
+                                    // still starting up — which was
+                                    // silently eating the FIRST notice
+                                    // of every session, the one naming
+                                    // the model that just bound. Running
+                                    // something clears the last outcome;
+                                    // running nothing does not.
+                                    if !cmd.trim().is_empty() {
+                                        notice = None;
+                                        band = None;
+                                        browse = None;
+                                    }
                                     cur_cmd = Some(cmd);
                                     block_tail.clear();
-                                    notice = None;
-                                    band = None;
-                                    browse = None;
                                 }
                                 Mark::CmdEnd(code) => {
                                     rec.cmd_end(code);
@@ -3883,7 +3907,17 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     engine::Event::Prompt { chars } => stats.prompt_chars = chars,
                     engine::Event::Ready { provider, model } => {
                         rec.engine_ready(&provider, &model);
-                        notice = Some(format!("engine: {provider} \u{b7} {model}"));
+                        // Settings goulash is ignoring ride alongside the
+                        // binding, which is the one notice everybody
+                        // watches for at startup. A dead setting that
+                        // announces itself nowhere is the failure this
+                        // codebase keeps making (wiki: meta/care.md);
+                        // said once, next to the model, it costs a
+                        // glance and cannot be missed.
+                        notice = Some(match cfg_warnings.take() {
+                            Some(w) => format!("engine: {provider} \u{b7} {model}  \u{26a0} {w}"),
+                            None => format!("engine: {provider} \u{b7} {model}"),
+                        });
                         engine_model = Some(model);
                     }
                     // A new model is bound: its dialect and its reasoning
