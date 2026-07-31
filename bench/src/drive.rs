@@ -167,7 +167,16 @@ pub fn generate(
             trusted: true,
         },
     };
-    let caps: Caps = caps_for(&req.model, None, &Default::default());
+    // ASK the server what this model can do, exactly as the product
+    // does (engine.rs: show_thinks). Passing None here fell back to the
+    // family table and never probed — so a model whose build disagrees
+    // with the table was measured under the wrong assumption, silently,
+    // which is the one thing a characterization harness must not do.
+    let caps: Caps = caps_for(
+        &req.model,
+        goulash::engine::show_thinks(&cl, &req.model),
+        &Default::default(),
+    );
     let level = req.think.level();
     let stop: Vec<&str> = req.stop.iter().map(String::as_str).collect();
 

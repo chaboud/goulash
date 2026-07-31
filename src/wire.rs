@@ -17,9 +17,24 @@ use serde_json::{Value, json};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Wire {
     Ollama,
-    /// OpenAI-compatible `/v1`: LM Studio, llama.cpp server, vLLM, and
-    /// the hosted API itself.
+    /// OpenAI-compatible `/v1/completions`: LM Studio, llama.cpp
+    /// server, vLLM. **Preferred for a local server** — it takes
+    /// goulash's stable-prefix string verbatim, so the KV cache keeps
+    /// hitting.
     OpenAi,
+    /// OpenAI-compatible `/v1/chat/completions`.
+    ///
+    /// The template wraps our prompt, which moves the prefix boundary
+    /// and costs cache hits — so it is not the default for a local
+    /// server. It is not optional either: **hosted providers offer
+    /// nothing else**, so an Anthropic/OpenAI adapter lands here.
+    ///
+    /// It also reasons whether or not we ask, because the template
+    /// decides. That is survivable and was measured: given a budget
+    /// that is not starving it, the same weights that returned empty
+    /// `content` at a 256-token ceiling answer normally, spending
+    /// 659-896 tokens thinking first. (bench/QUIRKS.md 1)
+    OpenAiChat,
 }
 
 /// Where the engine is talking, resolved once by the probe chain rather
@@ -43,6 +58,7 @@ impl Backend {
         match self.wire {
             Wire::Ollama => "ollama",
             Wire::OpenAi => "openai",
+            Wire::OpenAiChat => "openai-chat",
         }
     }
 }
@@ -87,7 +103,13 @@ pub struct Client {
 
 impl Client {
     pub fn post(&self, url: &str) -> ureq::Request {
+        // JSON, explicitly. `send_string` labels the body `text/plain`,
+        // which ollama tolerates and an OpenAI-compatible server does
+        // not: LM Studio answers **415 Unsupported Media Type** and the
+        // whole provider looks dead. Set in the one place every request
+        // already funnels through, so no call site can forget it.
         self.auth(self.agent.post(url))
+            .set("Content-Type", "application/json")
     }
 
     pub fn get(&self, url: &str) -> ureq::Request {
@@ -165,6 +187,7 @@ impl Wire {
         match s {
             "ollama" => Some(Wire::Ollama),
             "openai" | "lmstudio" | "llamacpp" | "vllm" => Some(Wire::OpenAi),
+            "openai-chat" | "chat" => Some(Wire::OpenAiChat),
             _ => None,
         }
     }
@@ -173,13 +196,14 @@ impl Wire {
         match self {
             Wire::Ollama => format!("{host}/api/generate"),
             Wire::OpenAi => format!("{host}/v1/completions"),
+            Wire::OpenAiChat => format!("{host}/v1/chat/completions"),
         }
     }
 
     pub fn models_url(&self, host: &str) -> String {
         match self {
             Wire::Ollama => format!("{host}/api/tags"),
-            Wire::OpenAi => format!("{host}/v1/models"),
+            Wire::OpenAi | Wire::OpenAiChat => format!("{host}/v1/models"),
         }
     }
 
@@ -191,7 +215,7 @@ impl Wire {
     pub fn ps_url(&self, host: &str) -> Option<String> {
         match self {
             Wire::Ollama => Some(format!("{host}/api/ps")),
-            Wire::OpenAi => None,
+            Wire::OpenAi | Wire::OpenAiChat => None,
         }
     }
 
@@ -271,6 +295,34 @@ impl Wire {
                 }
                 b
             }
+            Wire::OpenAiChat => {
+                // One user message carrying the whole stable-prefix
+                // string. The template will wrap it; that is the cost of
+                // the endpoint and the reason it is not the local
+                // default.
+                let mut b = json!({
+                    "model": g.model,
+                    "messages": [{"role": "user", "content": g.prompt}],
+                    "stream": g.stream,
+                    "temperature": g.temperature,
+                    "max_tokens": g.max_tokens as i64,
+                });
+                if !g.stop.is_empty() {
+                    b["stop"] = json!(g.stop);
+                }
+                if let Some(s) = g.seed {
+                    b["seed"] = json!(s);
+                }
+                if let Some(e) = g.effort {
+                    b["reasoning_effort"] = json!(e);
+                }
+                // Deliberately NOT sending chat_template_kwargs
+                // {enable_thinking: false}. Measured against LM Studio +
+                // qwen3: that kwarg EMPTIES `content` and routes the
+                // whole answer into `reasoning_content` — the exact
+                // failure it looks like it prevents.
+                b
+            }
         }
     }
 
@@ -286,6 +338,18 @@ impl Wire {
                 // bar into a working one.
                 .or_else(|| {
                     v["choices"][0]["message"]["content"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                }),
+            Wire::OpenAiChat => v["choices"][0]["message"]["content"]
+                .as_str()
+                .map(|s| s.to_string())
+                // Some servers put an empty string in `content` and the
+                // whole answer in `reasoning_content`. Reading it is the
+                // difference between a blank bar and an answer.
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    v["choices"][0]["message"]["reasoning_content"]
                         .as_str()
                         .map(|s| s.to_string())
                 }),
@@ -312,7 +376,7 @@ impl Wire {
                     done: v["done"].as_bool() == Some(true),
                 })
             }
-            Wire::OpenAi => {
+            Wire::OpenAi | Wire::OpenAiChat => {
                 let payload = line.strip_prefix("data:")?.trim();
                 if payload == "[DONE]" {
                     return Some(Chunk {
@@ -339,7 +403,7 @@ impl Wire {
     pub fn models(&self, v: &Value) -> Vec<String> {
         let (arr, key) = match self {
             Wire::Ollama => (&v["models"], "name"),
-            Wire::OpenAi => (&v["data"], "id"),
+            Wire::OpenAi | Wire::OpenAiChat => (&v["data"], "id"),
         };
         arr.as_array()
             .map(|a| {

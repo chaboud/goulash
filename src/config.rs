@@ -186,10 +186,6 @@ pub struct EngineConfig {
     /// Off means "never provoke a reload": goulash works in whatever is
     /// loaded, however small, and the user owns the consequence.
     pub nudge_small_context: bool,
-    /// Prefer a model that is already loaded over the smallest installed
-    /// one when auto-picking. A warm 12B answers sooner than a cold 4B —
-    /// the load is the dominant cost, not the size.
-    pub prefer_resident: bool,
     /// Leading prompt tokens the server must keep when the context
     /// overflows. It truncates from the LEFT, and the left is where the
     /// grammar and the pinned memories live — so the default is sized
@@ -326,7 +322,6 @@ impl Default for EngineConfig {
             num_ctx: 0,
             num_ctx_min: 8192,
             nudge_small_context: true,
-            prefer_resident: false,
             num_keep: 512,
             seed: -1,
             prewarm: true,

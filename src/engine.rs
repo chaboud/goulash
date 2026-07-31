@@ -1066,7 +1066,7 @@ fn announce(
 /// Does the provider itself say this model reasons? ollama's `/api/show`
 /// carries a `capabilities` list on recent servers. None means it
 /// wouldn't say (old server, or the call failed) — the table decides.
-fn show_thinks(cl: &Client, model: &str) -> Option<bool> {
+pub fn show_thinks(cl: &Client, model: &str) -> Option<bool> {
     // Only ollama will say. An OpenAI-compatible listing is names and
     // nothing else, so None here is the honest answer and the family
     // table in models.rs stays authoritative — which is exactly the
@@ -1148,7 +1148,7 @@ fn warm_marked(
             }
             b
         }
-        Wire::OpenAi => cl.be.wire.body(&Gen {
+        Wire::OpenAi | Wire::OpenAiChat => cl.be.wire.body(&Gen {
             model,
             prompt: "",
             stream: false,
@@ -1187,7 +1187,7 @@ fn resolve_backend(agent: ureq::Agent, lane: &LaneConfig) -> Client {
     let mk = |wire: Wire| {
         let host = match wire {
             Wire::Ollama => lane.host.clone(),
-            Wire::OpenAi => lane.openai_host.clone(),
+            Wire::OpenAi | Wire::OpenAiChat => lane.openai_host.clone(),
         };
         Backend {
             trusted: crate::wire::resolve_trust(&lane.trusted, &host),

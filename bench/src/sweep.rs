@@ -209,23 +209,13 @@ fn all_shapes() -> Vec<(&'static str, PromptShape)> {
 
 /// `openai-raw` takes goulash's stable-prefix string verbatim, the same
 /// shape ollama gets — the apples-to-apples comparison. `openai-chat`
-/// wraps it in the model's chat template, which is all hosted providers
-/// offer; running both prices that mapping instead of assuming it's free.
-///
-/// **`openai-chat` returns None**: this build has no chat path. wire.rs
-/// targets `/v1/completions` on purpose — the raw endpoint takes
-/// goulash's stable-prefix string verbatim, while a chat template moves
-/// the prefix boundary and can silently stop the KV cache from hitting.
-/// Mapping chat cells onto the raw wire would file the same measurement
-/// under two names, so they are skipped and reported as skipped.
-///
-/// The axis is not gone, it is deferred: hosted providers offer chat
-/// only, so a future adapter has to add the path before it can be
-/// measured. (bench/QUIRKS.md 1)
+/// wraps it in the model's template, which is all a hosted provider
+/// offers; running both prices that mapping instead of assuming it.
 pub fn wire_for(c: &Cell) -> Option<Wire> {
     match c.provider.as_str() {
         "ollama" => Some(Wire::Ollama),
         "openai-raw" => Some(Wire::OpenAi),
+        "openai-chat" => Some(Wire::OpenAiChat),
         _ => None,
     }
 }
