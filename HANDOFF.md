@@ -1,0 +1,175 @@
+# Overnight run — 2026-07-31
+
+`integrate-characterization` = `origin/dev` = **`69a1290`**, pushed.
+Working tree clean. 135 unit tests green, release build clean, the same
+5 clippy warnings that predate the branch.
+
+**First: I was wrong in the last note.** Its headline claim was that
+goulash was slow because `gemma4:e4b` reasons invisibly and the
+`/api/show` override was not taking effect. That is not true. I checked
+it against your live server: `show_thinks` returns `Some(true)`,
+`caps_for` promotes it to `Think::Bool` with `source: Provider`, and
+goulash sends `think: false`. The capability machinery works exactly as
+designed. Everything below replaces that theory.
+
+---
+
+## The slowness: a model reload on every single ask
+
+`negotiate_ctx` returned `0` to mean "leave the loaded model alone", and
+`wire.rs` sent that `0` as a literal `num_ctx`. Neither half was silence.
+Measured against your server, on a model already resident at 8192:
+
+| what we send | what ollama does |
+|---|---|
+| `num_ctx: 0` | clamps to 2048, **reloads** (5.3 s) |
+| key omitted | reaches for the model's default 131072, **reloads** (6.7 s) |
+| the resident value | matches the load, **no reload** |
+
+So it alternated forever: see 8192 resident → send `0` → reload to 2048;
+see 2048, below the floor → send 8192 → reload; repeat. Five to six
+seconds of model load per question, from the function written to prevent
+evictions. 0.3.0 sent a flat 8192 every time and so loaded once — that is
+the whole of "slow as fuck compared to 0.3.0".
+
+Fixed in `5bb1882`: the wire omits the key at zero, and negotiation
+echoes the resident window back. Verified end to end through the real
+binary — four consecutive asks, `/api/ps` steady, no reload.
+
+**`-np 1` is not a bug.** Ollama 0.32.5 chose one parallel slot; I
+reloaded at 8192 and it still chose one, so it is not the context size
+forcing it. `OLLAMA_NUM_PARALLEL=4` would give the two lanes independent
+KV slots at 4× the KV allocation. Your call — it is a server setting.
+
+## Three more real bugs, all silent
+
+- **Settings saved and reverted** (`69a1290`). `persist_key` wrote a
+  dotted section as one quoted key — `["engine.slow_lane"]` — which is
+  valid TOML naming a top-level table `Config` has no field for. serde
+  ignored it. The entire slow-lane override and all three machine-fact
+  switches were written to disk, read back as nothing, and reverted at
+  the next launch, while the menu went on showing the new value.
+  **Your `~/.goulash/config.toml` has two such sections.** Both happen
+  to match today's defaults, so nothing has actually misbehaved — but
+  unquote them (`["engine.divulge"]` → `[engine.divulge]`) or the values
+  stay inert. Nothing rewrote your file.
+- **The platform line named the wrong shell** (`396b323`). It read
+  `$SHELL`, the *login* shell, so `goulash bash` told the model "zsh".
+  Caught live: *"…largest first on macOS zsh"* in a bash session.
+- **The expert toggle moved out from under its own cursor** (`08e1cf9`).
+  `terminal` is a debug-gated group, so turning expert on inserted a row
+  *above* the switch — a switch you could not turn back off.
+
+## Tonight's UI work
+
+`limit` is a real field now (`limit: 25 (press enter to edit)`, empty on
+open so a digit cannot land beside the old value). The suggestion chip is
+two runs: `↓ suggestion:` stays orange as an affordance, the command is
+grey until pulled and orange once it is on your prompt line.
+
+---
+
+## Tests
+
+**24 failing before tonight → 33 at the worst → 15 now, and all 15 are
+older than this branch.** Everything my changes broke is fixed, and
+`command_first`, the working-context crash and the slow-lane block were
+fixed along the way.
+
+Most of the churn was tests describing a product that had moved: `band`
+dissolved into root rows, `command_first` became expert-gated, the ladder
+lost its `off` rung. One test's own config still said `slow = "ingest"` —
+a retired value, which the menu silently treats as index 0, so the cycle
+started in the wrong place and every later assertion slid.
+
+The rest were the harness matching **bytes** where it meant **words**.
+The chip is two styled runs now, so `suggestion: ls` no longer appears
+contiguously. `visible()` strips escapes and `saw()` matches either way;
+checks that genuinely mean colour still read the raw stream.
+
+`python3 tests/e2e.py test_slow_lane` now runs a subset.
+
+**Tab completion is fixed and now genuinely covered (`de3a6ef`).** Those
+four failures were the harness, and worse than they looked: the
+differential compared goulash against bare zsh and reported **green on
+all four**, because both buffers were empty. `tab_buffer` slept instead
+of reading, and an unread pty blocks the shell mid-write — with Tab, a
+listing of the whole home directory is exactly the output that fills
+one, so the ^X that dumps `$BUFFER` never ran. Drained, the reference
+completes every time, and goulash matches it on all four cases including
+the `#`-comment ones the original field bug was about. The check order
+is inverted too, so a differential whose control produced nothing can no
+longer pass.
+
+**11 remain:** the `#@` pin browser (3, previously masked by an
+exception that no longer throws), `#/status names both lanes`, `esc
+exits chat`, and a menu cluster (`#/debug` ×3, `#/help` ×2) that only
+fails *inside* the long test — `#/debug` renders all four rows correctly
+in isolation, verified under a PTY. That one is test sequencing, not
+product.
+
+**Caveat on anything I say about the remaining 11:** I diagnosed them
+while the grid was running at 20 generations/min, and several are
+timing-sensitive checks with 4–5 s deadlines. `test_working_context`
+failed at a *different, earlier* check in isolation than it does in the
+full suite, which is the signature of load rather than logic. Re-run
+them on a quiet machine before trusting any of it. The Tab result above
+is not affected — it went from four falsely-green checks to eight real
+passes, and the mechanism was confirmed with a standalone probe.
+
+## The grid
+
+Pass A finished at **04:20** (360 generations). Pass B started
+automatically and is running.
+
+**Pass B will not be done when you wake up.** It is 30 cells × 7 shapes
+× 68 asks = **14,280 generations**, and the measured rate is ~20/min, so
+it finishes around **16:00** — eleven hours of GPU on your laptop while
+you are trying to use it. I let it run because you asked for the grid,
+but that is your call to revisit, and it is one command either way:
+
+```sh
+pkill -f goulash-bench                                          # stop
+./target/release/goulash-bench pass-b bench/results/2026-07-31   # resume
+./target/release/goulash-bench report bench/results/2026-07-31   # read
+tail -f /tmp/passB.log
+```
+
+It is resumable at cell granularity, so stopping costs only the cell in
+flight. **A partial report already reads** — the command above works
+right now against whatever has landed.
+
+Early signal from the shapes, on the first cells only and therefore not
+yet worth acting on: S7 shows 9% empty / 72% `CMD:` against the shipped
+S1's 18% / 49%. If that holds across the grid it is the most useful
+number in the run.
+
+Six catalog cells are uninstalled (`mistral`, `mistral-nemo`,
+`gemma3:12b`, `devstral:24b`, `gemma3:27b`, `mixtral`). They fail fast —
+I confirmed ollama does not auto-pull — but the catalog should probably
+be trimmed to match the box.
+
+**QUALITY.md and QUIRKS.md still describe the pre-merge engine.** Nothing
+in them has been re-run.
+
+## Tag
+
+`v0.4.0-rc.1` exists **locally, unpushed** — annotated, with the fixes
+and the known-broken list. Deliberately not `v0.4.0`: the grid has not
+been read. `git push origin v0.4.0-rc.1` when you want it out.
+
+---
+
+## Decisions I left for you
+
+- **The edited-suggestion dead end.** `session.rs:2826` — edit a pulled
+  command and Down matches no slot, so goulash writes an empty paste and
+  the keystroke vanishes. zsh has already declined to run its own Down by
+  then. The fix I would make: when `browse` is already `Some(p)`, advance
+  from `p` regardless of whether the buffer still matches. I did not,
+  because it changes when goulash overwrites text you typed.
+- **Unknown setting values fail silently** — a stale `slow = "ingest"`
+  cycles from index 0 with no warning. That is what hid a broken test
+  config. `--config set` could validate against the row's value list.
+- **The `#@` and Tab failures** predate the branch and nobody has
+  bisected them.
