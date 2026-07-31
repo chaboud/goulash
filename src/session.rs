@@ -1585,9 +1585,9 @@ struct Live<'a> {
 /// sentence that wraps would take rows from the shell.
 fn setting_help(slow: bool, name: &str, value: &str) -> &'static str {
     // Where the values are the thing that needs explaining, explain the
-    // one you are standing on. `ingest` and `volunteer` are not English;
-    // they mean nothing until you are told, and being told after you
-    // picked wrong is not help.
+    // one you are standing on. `waldorf` is not English, and `query` and
+    // `manual` are English words doing a job you cannot guess from the
+    // outside — being told after you picked wrong is not help.
     match (name, value) {
         ("mode", "manual") => "only when you ask: #?",
         ("mode", "query") => "on # as well as #?",

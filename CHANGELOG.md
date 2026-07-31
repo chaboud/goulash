@@ -22,8 +22,19 @@ and two engines ([`bench/`](bench/)).
 ### Added
 - **Two lanes.** `#` answers fast; `#?` sends the slow lane to research
   the same turn and amend underneath it. `#?/model` binds the research
-  lane, `#?/cancel` stops it, and `engine.slow` is a ladder — `manual`,
-  `ingest`, `volunteer`, `off` — rather than a toggle.
+  lane, `#?/cancel` stops it, and `engine.slow` is a ladder — `manual`
+  (default), `query`, `waldorf` — saying when the lane speaks up
+  *unasked*. There is no `off` rung: `#?` **is** the request for this
+  lane and a pin always goes to it, so a setting able to refuse either
+  would make the key silently dead.
+- **Per-lane provider, model, thinking and token budget.**
+  `[engine.slow_lane]` overrides any of them, so research can run on a
+  bigger box or a hosted model while `#` stays local. Anything left
+  `auto` follows the fast lane by being **absent** from the file, never
+  a frozen copy of what fast happens to say today — so improving a fast
+  default improves slow with it. Slow thinking defaults to `medium`,
+  because a research pass that does not think is just a slower copy of
+  the answer you already have.
 - **`#@` working context.** Pin a file or directory into the prompt's
   stable prefix; a vendor's command reference makes the model correct
   about a CLI it has never seen. Read-only, performed by goulash, never
@@ -55,10 +66,13 @@ and two engines ([`bench/`](bench/)).
 
 ### Changed
 - **`num_ctx` is negotiated, not demanded.** It is part of a model's load
-  identity, so sending a size evicts anything loaded at a different one
-  (206 ms to reuse a warm model vs 1847 ms to reload). goulash now sends
-  nothing when the resident window is large enough, and asks for
-  `num_ctx_min` only when it is genuinely too small.
+  identity, so asking for a size evicts anything loaded at a different
+  one. goulash asks the server what is resident and requests **exactly
+  that** when it is large enough, falling back to `num_ctx_min` only
+  when the loaded window is genuinely too small to hold a session log.
+  Staying silent is not an option that means what it looks like: an
+  absent `num_ctx` is a request for the model's own default, not a
+  request to keep what is loaded.
 - **One token budget, generous** (`max_tokens`, 512 → 8192), covering
   reasoning and answer together. The separate thinking budget is gone:
   reasoning is not ours to ration — a chat template reasons whatever we
@@ -89,6 +103,27 @@ and two engines ([`bench/`](bench/)).
   pinned an engine, so it measured live model output — one test asserting
   that `#` was intercepted by goulash was reading a genuine answer about
   backslashes. Every test now points at a dead port.
+- **A model reload on every single ask.** `num_ctx` negotiation returned
+  `0` to mean "leave the loaded model alone", and the ollama request
+  body sent that `0` as a literal window. Neither half was silence:
+  ollama read it as a real request, clamped it to a couple of thousand
+  tokens and reloaded to match; the next ask then saw a window below the
+  floor and asked for 8192, reloading again. Five to six seconds of
+  model load per question, from the one function written to prevent
+  evictions. Measured on a resident model: `num_ctx: 0` → 5.3 s reload,
+  key omitted → 6.7 s reload, resident value echoed → none.
+- **The platform line named the wrong shell.** It read `$SHELL`, which
+  is the *login* shell, so `goulash bash` from a zsh login told the
+  model "zsh" — and got zsh-flavoured advice for a bash prompt. It now
+  names the shell goulash actually launched.
+- **`limit` in the memory menu did nothing.** It rendered as a row that
+  silently ignored Enter. It is a text field now: `limit: 25 (press
+  enter to edit)`, type a number, Enter.
+- **The expert toggle moved out from under the cursor.** `terminal` is a
+  debug-gated group, so turning expert on inserted a row *above* the
+  switch and the selection slid onto whatever took its place — a switch
+  you could not turn back off. Everything expert reveals now sits below
+  it.
 
 ## [0.3.0] — 2026-07
 

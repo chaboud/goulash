@@ -97,9 +97,23 @@ you — `CMD: #@/path commandRef.md` arrives as a normal pullable chip.
 Thinking follows whatever the bound model actually speaks — a level
 string for `gpt-oss`, a boolean for `qwen3`, nothing at all for
 `gemma3`, which is told nothing rather than handed a field it rejects.
-The reasoning budget is the model's own, kept separate from the response
-budget so reasoning can't eat the answer, and the dial says plainly when
-a model will ignore it.
+Goulash asks the server what the model can do and believes the answer
+over its own table, which ages. The dial says plainly when a model will
+ignore it.
+
+There is **one** token budget covering reasoning and answer together,
+and it is deliberately generous. Reasoning is not ours to ration: a chat
+template reasons whatever we send, and `deepseek-r1` reasons straight
+through `think: false` — so splitting the meter only ever produced empty
+answers with the whole allowance spent thinking. Brevity comes from the
+prompt asking for one line, not from starving the budget; measured,
+answers that arrive use a median of 32 tokens.
+
+**Goulash tries not to disturb your engine.** It asks what context
+window is already loaded and requests exactly that, dropping to
+`num_ctx_min` only when the loaded window is too small to work in.
+Saying nothing would not be polite — an omitted window is a request for
+the model's own default, which reloads it just the same.
 
 ## Nerd Stuff: Build & modify
 ```
@@ -131,9 +145,20 @@ thinking   = "off"     # off | low | medium | high
 max_tokens = 8192      # ONE cap over reasoning and answer together
 num_ctx_min = 8192     # smallest window goulash can work in
 # num_ctx  = 32768     # set to pin a window exactly (forces a reload)
+slow = "manual"        # when slow volunteers: manual | query | waldorf
+                       # (`#?` and pins always reach it, at every rung)
 
 [engine.divulge]
 platform = true        # tell the model your OS, shell and userland
+
+# The research lane. Every key here is an override; leave one out and
+# that setting follows the fast lane — absent, not a frozen copy, so
+# improving the fast default improves this with it. Naming a model is
+# what actually splits the lanes onto two bindings.
+[engine.slow_lane]
+# provider = "openai"          # call in the big guns for research only
+# model    = "gpt-oss:20b"
+thinking   = "medium"  # the default: the lane that can afford to think
 
 # Escape hatch for a model newer than goulash's capability table.
 [models."some-new-reasoner:8b"]

@@ -143,19 +143,34 @@ globs.
 
 ## When slow engages: a ladder, not a toggle
 
-| Value | Slow runs | Cost |
-|---|---|---|
-| `off` | never | zero |
-| `manual` | only `#?` / `?` | exactly what was asked for |
-| **`ingest`** *(default)* | + on `#@` — classify, card, wiki | bounded, and **the user triggered it by pinning** |
-| `volunteer` | + on ordinary `#` asks | unbounded — fires on everything typed |
+The ladder says when slow speaks up **unasked**. It never governs what
+you asked for.
 
-`ingest` versus `volunteer` is the line that matters, and `ingest` is
-the default because it is the original promise exactly: pin something,
-lose no speed in general operation, gain more thoughtful options. The
-work is bounded and user-triggered. `volunteer` is where the GPU burns
+| Value | Slow runs unasked | Cost |
+|---|---|---|
+| **`manual`** *(default)* | never | only what you asked for |
+| `query` | on `#` as well as `#?` | one research pass per question |
+| `waldorf` | whenever fast runs, including commentary | unbounded — fires on everything typed |
+
+**There is no `off` rung, and that is the point.** `#?` *is* the request
+for this lane, and a pin always goes to it. A setting able to refuse
+either would not be a preference, it would be a key that silently
+stopped working — the worst failure this codebase has, because nothing
+on screen says why. So the ladder governs volunteering only, and an
+explicit `#?` is honoured at every rung.
+
+`query` versus `waldorf` is the line that matters. `query` spends one
+research pass on a question you actually asked; `waldorf` heckles from
+the balcony after every command, which is where the GPU burns
 continuously for questions that already had a good answer — opt-in, and
 honest about why.
+
+Untouched, the slow lane is the fast model with thinking turned on:
+`[engine.slow_lane]` leaves every key absent, each meaning "follow
+fast", and `thinking` alone defaults to `medium`. Naming a slow *model*
+is what actually splits the lanes into two bindings; until then one
+model serves both roles, and two roles on one model must not mean two
+loads, two KV caches, or two entries in the same server's queue.
 
 ### Scheduling: fast first, current first
 
@@ -783,8 +798,9 @@ first and degrades the pin to a slug then a bare `@`; amendments insert at their
 reference, and never jump the queue; a pair renders only within one turn
 and the blue means *superseded*, not *researched*; solo findings need no
 marker; slow gets pin **paths** and reads sources itself, so the
-card/digest layer exists purely for fast; `#?` with slow off answers via
-fast and says so; retention is a content-hashed cache that survives
+card/digest layer exists purely for fast; the ladder governs
+volunteering only, so `#?` dispatches research at every rung; retention
+is a content-hashed cache that survives
 unpinning ([working-context](working-context.md)); classification is the
 model's call except for `directive`.
 
