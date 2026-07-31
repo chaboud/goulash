@@ -576,6 +576,24 @@ bindkey '^X' __dump
 """
 
 
+def settle(fd, seconds):
+    """Sleep, but keep reading. A pty has a small buffer: leave it unread
+    and the shell BLOCKS on write partway through its own output, so the
+    next keystroke is never processed. Tab is the worst case — a listing
+    of the whole directory is exactly the output that fills it — which is
+    why the reference shell in tab_buffer produced an empty buffer and
+    the differential compared nothing to nothing."""
+    end = time.time() + seconds
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if fd in r:
+            try:
+                if not os.read(fd, 65536):
+                    return
+            except OSError:
+                return
+
+
 def tab_buffer(keys, home, via_goulash):
     """Type `keys` at a real zsh, then dump $BUFFER. The only honest way
     to ask what Tab did — the screen is a rendering, the buffer is the
@@ -588,13 +606,13 @@ def tab_buffer(keys, home, via_goulash):
         # goulash's child inherits the RUNNER's cwd; the bare shell below
         # starts in $HOME. Completion is cwd-relative, so pin both.
         os.write(mfd, b'cd "$HOME"\r')
-        time.sleep(1.0)
+        settle(mfd, 1.0)
         os.write(mfd, keys)
-        time.sleep(1.2)
+        settle(mfd, 1.2)
         os.write(mfd, b"\x18")          # ^X: dump and break
-        time.sleep(0.8)
+        settle(mfd, 0.8)
         os.write(mfd, b"\x03")
-        time.sleep(0.3)
+        settle(mfd, 0.3)
         os.write(mfd, b"exit\r")
         drain_exit(proc, mfd)
     else:
@@ -605,13 +623,13 @@ def tab_buffer(keys, home, via_goulash):
             os.chdir(home)
             os.execv(shutil.which("zsh"), ["zsh", "-i"])
         set_winsize(fd, ROWS, COLS)
-        time.sleep(1.2)
+        settle(fd, 1.2)
         os.write(fd, keys)
-        time.sleep(1.0)
+        settle(fd, 1.2)
         os.write(fd, b"\x18")
-        time.sleep(0.6)
+        settle(fd, 0.8)
         os.write(fd, b"\x03exit\n")
-        time.sleep(0.4)
+        settle(fd, 0.4)
         try:
             os.close(fd)
         except OSError:
@@ -649,10 +667,20 @@ def test_tab_completion():
                         ("ls mini", b"ls mini\t")):
         want = tab_buffer(keys, home, via_goulash=False)
         got = tab_buffer(keys, home, via_goulash=True)
-        check(f"Tab after '{label}' behaves as bare zsh", want == got,
-              f"bare={want!r} goulash={got!r}")
-        check(f"Tab after '{label}' actually completed",
-              "miniconda3" in want, repr(want))
+        # Order matters. A differential test whose REFERENCE produced
+        # nothing compares empty to empty and reports green — the loudest
+        # possible way to learn nothing. So the reference is validated
+        # first, and the comparison is only claimed when it means
+        # something.
+        usable = "miniconda3" in want
+        check(f"Tab after '{label}' actually completed in bare zsh",
+              usable, f"reference buffer: {want!r}")
+        if usable:
+            check(f"Tab after '{label}' behaves as bare zsh", want == got,
+                  f"bare={want!r} goulash={got!r}")
+        else:
+            check(f"Tab after '{label}' behaves as bare zsh — NOT TESTED",
+                  False, "reference never completed, so nothing was compared")
 
 
 def test_engine_openai():
