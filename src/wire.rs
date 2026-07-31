@@ -252,9 +252,17 @@ impl Wire {
                     "options": {
                         "temperature": g.temperature,
                         "num_predict": g.max_tokens as i64,
-                        "num_ctx": g.num_ctx as i64,
                     },
                 });
+                // Zero means "say nothing", and it has to be spelled by
+                // ABSENCE. Sent as a number it is not ignored: ollama
+                // takes it as a real request, clamps it to a few tokens,
+                // and reloads the model to that — so the one value that
+                // meant "leave the load alone" was the one that reloaded
+                // it every single ask.
+                if g.num_ctx > 0 {
+                    b["options"]["num_ctx"] = json!(g.num_ctx as i64);
+                }
                 if !g.stop.is_empty() {
                     b["options"]["stop"] = json!(g.stop);
                 }
@@ -464,6 +472,25 @@ mod tests {
         assert!(o["options"].get("num_keep").is_none());
         assert!(o["options"].get("seed").is_none());
         assert!(a.get("seed").is_none());
+    }
+
+    /// `num_ctx: 0` is the caller saying "I have no opinion", and the
+    /// only way to say that to ollama is to leave the key out.
+    ///
+    /// Sent as a literal zero it is not ignored: ollama treats it as a
+    /// real window, clamps it to a handful of tokens, and reloads the
+    /// model to match — measured, on a model that was already resident
+    /// at 8192, as a 5.3 s eviction down to 2048. `negotiate_ctx`
+    /// returned 0 to MEAN "leave the load alone", so the option that was
+    /// supposed to cost nothing reloaded the model on every ask.
+    #[test]
+    fn a_window_of_zero_is_an_absent_key_not_a_zero() {
+        let mut g = req("p", &[]);
+        g.num_ctx = 0;
+        assert!(Wire::Ollama.body(&g)["options"].get("num_ctx").is_none());
+        // ...and a real window still travels.
+        g.num_ctx = 8192;
+        assert_eq!(Wire::Ollama.body(&g)["options"]["num_ctx"], 8192);
     }
 
     #[test]

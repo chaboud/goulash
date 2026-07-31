@@ -1398,8 +1398,10 @@ keeps its own files.\n\n";
 ///   * the resident window is below `num_ctx_min`: too small to hold a
 ///     session log, so nudge the host and eat the reload.
 ///
-/// Returns 0 when nothing should be sent; the wire layer omits the
-/// option entirely at zero, leaving the server's own setting alone.
+/// Returns 0 only when there is genuinely nothing to say — no floor
+/// configured and nothing resident. The wire layer omits the option
+/// entirely at zero, which is the *only* way to say nothing: a literal
+/// `num_ctx: 0` is a request, not a silence.
 ///
 /// `resident` is None when we could not ask (an OpenAI-compatible
 /// server has no residency view) — which is *not* the same as "nothing
@@ -1533,11 +1535,19 @@ fn negotiate_ctx(cfg: &EngineConfig, resident: Option<usize>) -> usize {
         return cfg.num_ctx;
     }
     match resident {
-        // Loaded and roomy enough: say nothing, keep the load.
-        Some(c) if c >= cfg.num_ctx_min => 0,
+        // Loaded and roomy enough: ask for exactly what is loaded.
+        //
+        // Not "say nothing". Silence is not neutral here — ollama reads
+        // an absent `num_ctx` as the model's own default (131072 for
+        // gemma4:e4b, measured) and reloads to reach it. The only
+        // request that matches the current load identity, and so the
+        // only one that does not evict, is the resident number itself.
+        Some(c) if c >= cfg.num_ctx_min => c,
         // Loaded but too small: the expensive case, on purpose.
         Some(_) if cfg.nudge_small_context => cfg.num_ctx_min,
-        Some(_) => 0,
+        // Too small, and we were told not to nudge: take what is there
+        // rather than reload to something we were asked not to ask for.
+        Some(c) => c,
         // Nothing to preserve — ask for the floor.
         None => cfg.num_ctx_min,
     }
@@ -2065,12 +2075,19 @@ mod ctx_tests {
     }
 
     /// The default case, and the whole point: a model is loaded with
-    /// room to spare, so send NOTHING and keep it loaded. Sending 8192
-    /// at a model loaded with 32768 evicts it — 206ms became 1847ms.
+    /// room to spare, so keep it loaded. Sending 8192 at a model loaded
+    /// with 32768 evicts it — 206ms became 1847ms.
+    ///
+    /// "Keep it" is spelled by echoing the resident number, NOT by
+    /// staying silent. This test used to assert 0, and 0 is the one
+    /// answer that reloads: absent, ollama reaches for the model's own
+    /// default (131072 on gemma4:e4b) and evicts to get there. The
+    /// negotiation was reloading the model on every ask precisely
+    /// because it was trying not to.
     #[test]
-    fn a_roomy_resident_model_is_left_alone() {
-        assert_eq!(negotiate_ctx(&cfg(0, 8192, true), Some(32768)), 0);
-        assert_eq!(negotiate_ctx(&cfg(0, 8192, true), Some(8192)), 0);
+    fn a_roomy_resident_model_is_asked_for_what_it_already_has() {
+        assert_eq!(negotiate_ctx(&cfg(0, 8192, true), Some(32768)), 32768);
+        assert_eq!(negotiate_ctx(&cfg(0, 8192, true), Some(8192)), 8192);
     }
 
     /// Too small to hold a session log: pay the reload, once.
@@ -2079,16 +2096,35 @@ mod ctx_tests {
         assert_eq!(negotiate_ctx(&cfg(0, 8192, true), Some(2048)), 8192);
     }
 
-    /// ...unless the user said never provoke a reload.
+    /// ...unless the user said never provoke a reload — in which case
+    /// we take the cramped window as it stands, and say so on the wire.
     #[test]
     fn nudging_can_be_refused() {
-        assert_eq!(negotiate_ctx(&cfg(0, 8192, false), Some(2048)), 0);
+        assert_eq!(negotiate_ctx(&cfg(0, 8192, false), Some(2048)), 2048);
     }
 
     /// Nothing loaded, so nothing to protect — ask for the floor.
     #[test]
     fn a_cold_model_gets_the_floor() {
         assert_eq!(negotiate_ctx(&cfg(0, 8192, true), None), 8192);
+    }
+
+    /// With a resident model, the negotiated value is never 0 — because
+    /// 0 does not reach the server as a window at all, and every path
+    /// that produced it was an eviction wearing a "leave it alone" hat.
+    #[test]
+    fn a_resident_model_never_negotiates_to_silence() {
+        for floor in [0, 2048, 8192, 131072] {
+            for nudge in [true, false] {
+                for res in [512, 2048, 8192, 131072] {
+                    assert_ne!(
+                        negotiate_ctx(&cfg(0, floor, nudge), Some(res)),
+                        0,
+                        "floor={floor} nudge={nudge} resident={res}"
+                    );
+                }
+            }
+        }
     }
 }
 
