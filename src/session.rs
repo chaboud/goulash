@@ -414,6 +414,14 @@ struct Menu {
     viewing: Option<Viewer>,
     /// Which settings group is open. `None` is the root list.
     group: Option<String>,
+    /// The menu that opened this one, if any.
+    ///
+    /// A picker reached FROM the settings tree has to go back to it —
+    /// bailing to the shell throws away the place the user was working,
+    /// and there is no way back except retyping the command. Parentage
+    /// is what makes `..` and Esc mean the same thing everywhere: one
+    /// step back, and only out when there is nowhere left to step.
+    parent: Option<(MenuKind, Option<String>)>,
 }
 
 impl Menu {
@@ -429,6 +437,7 @@ impl Menu {
             composing: None,
             viewing: None,
             group: None,
+            parent: None,
         }
     }
 
@@ -2130,6 +2139,20 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // Terminal-hackery knobs, live-tunable from #/debug. Copied out of
     // cfg because the menu turns them mid-session.
     let mut dbg = cfg.debug.clone();
+    // Input typed while the shell is being handed its rows back.
+    //
+    // Closing a menu shrinks the reserved area, which is a real winsize
+    // change: the shell takes SIGWINCH and redraws its line. A keystroke
+    // that lands in that window is gone — measured, the whole line was
+    // lost with no trace in the transcript, so it was not slow, it was
+    // never delivered.
+    //
+    // So goulash keeps the keyboard through the resize instead of
+    // dropping it the instant the menu closes, and lets go when the
+    // SHELL says it is ready — its own prompt mark, not a duration.
+    // `Some` means holding; `None` means the shell has the keyboard.
+    let mut handback: Option<Vec<u8>> = None;
+
     macro_rules! redraw {
         () => {{
             // Painting is SUSPENDED while a resize is in flight: the
@@ -2202,6 +2225,18 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 )?;
                 last_rows = rows;
                 paint_deferred = false;
+                // The resize is done and the band is repainted, so the
+                // shell can have the keyboard back — along with anything
+                // typed while it was being handed its rows. Released on
+                // THIS event, not on the shell's next prompt: closing a
+                // menu makes the shell redraw its existing line, so a
+                // prompt mark may never come and the input would be held
+                // forever.
+                if let Some(held) = handback.take()
+                    && !held.is_empty()
+                {
+                    write_all(master, &held)?;
+                }
             }
         }};
     }
@@ -2333,6 +2368,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             Seg::Mark(m) => match m {
                                 Mark::Prompt => {
                                     hook = Some(HookPhase::Prompt);
+
                                     rec.prompt();
                                     // A cheap stat per pin. Goulash does
                                     // not watch the filesystem and pounce
@@ -2764,6 +2800,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     let mut nav_into: Option<String> = None;
                     let mut nav_up = false;
                     let mut open_picker: Option<String> = None;
+                    // Remembered before the picker replaces the menu.
+                    let group_at_open = menu.as_ref().and_then(|m| m.group.clone());
                     let mut kind = MenuKind::Model;
                     let mut new_memory: Option<String> = None;
                     let mut view: Option<String> = None;
@@ -2814,7 +2852,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         // whole menu away — one step
                                         // back is what the key means
                                         // everywhere else it appears.
-                                        if m.group.is_some() {
+                                        if m.parent.is_some() || m.group.is_some() {
                                             nav_up = true;
                                         } else {
                                             close = true;
@@ -2832,7 +2870,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             Some(t.trim_end_matches('\u{25b8}').trim().to_string());
                                     }
                                 }
-                                Key::Left if m.kind == MenuKind::Settings && m.group.is_some() => {
+                                Key::Left if m.parent.is_some() || m.group.is_some() => {
                                     nav_up = true;
                                 }
                                 // A horizontal arrow anywhere else in a
@@ -2843,10 +2881,18 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     let sel = m.filtered().get(m.cursor).map(|s| s.to_string());
                                     match m.kind {
                                         MenuKind::Model | MenuKind::SlowModel => {
-                                            committed = sel;
-                                            close = true;
+                                            if sel.as_deref() == Some("..") {
+                                                nav_up = true;
+                                            } else {
+                                                committed = sel;
+                                                close = true;
+                                            }
                                         }
-                                        MenuKind::Help => {}
+                                        MenuKind::Help => {
+                                            if sel.as_deref() == Some("..") {
+                                                nav_up = true;
+                                            }
+                                        }
                                         MenuKind::Settings | MenuKind::Debug => {
                                             // A group row opens; `..`
                                             // closes; anything else is a
@@ -3258,9 +3304,31 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             },
                         );
                         m.loaded = false;
+                        m.parent = Some((MenuKind::Settings, group_at_open.clone()));
                         menu = Some(m);
                     }
                     // Enter or leave a group, then rebuild the list.
+                    // Going up out of a CHILD menu means restoring the
+                    // parent, not clearing a group we never had.
+                    let up_to_parent = nav_up
+                        .then(|| menu.as_ref().and_then(|m| m.parent.clone()))
+                        .flatten();
+                    if let Some((kind, group)) = up_to_parent {
+                        let mut m = Menu::open(
+                            match kind {
+                                MenuKind::Settings => "settings",
+                                _ => "menu",
+                            },
+                            kind,
+                        );
+                        m.group = group;
+                        m.loaded = true;
+                        menu = Some(m);
+                        nav_up = false;
+                        nav_into = menu.as_ref().and_then(|m| m.group.clone());
+                        // Fall through to the rebuild below, which fills
+                        // the items for whichever group we landed in.
+                    }
                     if nav_into.is_some() || nav_up {
                         if let Some(m) = menu.as_mut() {
                             m.group = if nav_up { None } else { nav_into.clone() };
@@ -3287,6 +3355,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     }
                     if close {
                         menu = None;
+                        // Keep the keyboard until the shell has redrawn
+                        // at its new size and told us so.
+                        handback = Some(Vec::new());
                     }
                     dirty = true;
                 }
@@ -3471,6 +3542,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         write_all(master, &paste)?;
                         write_all(master, &chunk[p + ALT_DOWN.len()..])?;
                         dirty = true;
+                    } else if let Some(held) = handback.as_mut() {
+                        held.extend_from_slice(chunk);
                     } else {
                         write_all(master, chunk)?;
                     }
@@ -3800,7 +3873,16 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         Some(m) if !m.loaded => {
                             // "auto" is a first-class entry: it restores
                             // the probe chain and clears the pin.
-                            m.items = std::iter::once("auto".to_string())
+                            // `..` leads every list that has somewhere
+                            // to go back to. Esc works too, but only one
+                            // of the two is visible, and a picker with no
+                            // visible exit is a dead end.
+                            m.items = m
+                                .parent
+                                .is_some()
+                                .then(|| "..".to_string())
+                                .into_iter()
+                                .chain(std::iter::once("auto".to_string()))
                                 .chain(names.iter().cloned())
                                 .collect();
                             m.loaded = true;
