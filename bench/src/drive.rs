@@ -180,7 +180,7 @@ pub fn generate(
     let level = req.think.level();
     let stop: Vec<&str> = req.stop.iter().map(String::as_str).collect();
 
-    let body = wire.body(&Gen {
+    let mut body = wire.body(&Gen {
         model: &req.model,
         prompt: &req.prompt,
         stream: req.stream,
@@ -194,6 +194,11 @@ pub fn generate(
         num_keep: 0,
         seed: None,
     });
+
+    // OpenAI-compatible servers omit usage from a stream unless asked.
+    if req.stream && wire != Wire::Ollama {
+        body["stream_options"] = serde_json::json!({"include_usage": true});
+    }
 
     let t0 = Instant::now();
     let resp = cl
@@ -211,11 +216,31 @@ pub fn generate(
             let line = line.map_err(|e| e.to_string())?;
             // The final JSONL object carries the timings; keep it so the
             // cache signal survives streaming.
-            if wire == Wire::Ollama
-                && let Ok(v) = serde_json::from_str::<Value>(&line)
-                && v["done"].as_bool() == Some(true)
-            {
-                absorb_ollama(&mut stats, &v);
+            if wire == Wire::Ollama {
+                if let Ok(v) = serde_json::from_str::<Value>(&line)
+                    && v["done"].as_bool() == Some(true)
+                {
+                    absorb_ollama(&mut stats, &v);
+                }
+            } else if let Some(p) = line.trim().strip_prefix("data:") {
+                // An OpenAI-compatible stream carries finish_reason on
+                // the last content chunk and usage only in the trailing
+                // one (and only if asked). Absorbing whatever is present
+                // is the difference between a performance table and a
+                // column of "None".
+                let p = p.trim();
+                if p != "[DONE]"
+                    && let Ok(v) = serde_json::from_str::<Value>(p)
+                {
+                    if v["choices"][0]["finish_reason"].is_string() {
+                        stats.stop_reason = v["choices"][0]["finish_reason"]
+                            .as_str()
+                            .map(str::to_string);
+                    }
+                    if v["usage"].is_object() {
+                        absorb_openai(&mut stats, &v);
+                    }
+                }
             }
             if let Some(c) = wire.chunk(&line) {
                 if !c.text.is_empty() {
