@@ -25,6 +25,11 @@ pub const TEXT_SGR: &str = "\x1b[0m"; // plain answer text
 /// caret was before, so there is nothing to fall back to.
 pub const CARET: &str = "\x1b[5m\u{258f}\x1b[25m";
 
+/// The working marquee wears its lane's colour on the chip background,
+/// so it reads as part of the chip rather than a second widget.
+pub const WORKING_FAST_SGR: &str = "\x1b[0;96;48;5;238m";
+pub const WORKING_SLOW_SGR: &str = "\x1b[0;93;48;5;238m";
+
 /// One styled run inside a chip: the text, and the SGR it wears.
 ///
 /// A chip is a list of these rather than one string and one colour
@@ -114,6 +119,57 @@ pub fn lane_dots(fast: bool, slow: bool, phase: u8) -> String {
         if fast { FAST_SGR } else { OFF_SGR },
         if slow { SLOW_SGR } else { OFF_SGR },
     )
+}
+
+/// The working bar: an answer you asked for is still on its way, so the
+/// command in the slot belongs to the PREVIOUS question.
+///
+/// That is the dangerous state and the reason this exists. The lane dots
+/// say a lane is busy; they do not say the thing you are about to pull
+/// is stale. Down on a held suggestion during a new generation puts a
+/// command you did not ask for on your prompt line, looking exactly like
+/// one you did.
+///
+/// Three acts, all a pure function of elapsed time:
+///
+/// - **grow** — slides out to full width over `GROW_MS`, pushing the
+///   chip right, so the arrival is what catches the eye rather than a
+///   blink appearing in place;
+/// - **sweep** — a bright head ping-pongs along the body. Movement with
+///   no progress claim: goulash cannot know how far along a generation
+///   is, and a bar that pretended to would be lying;
+/// - **shrink** — snaps back in `SHRINK_MS`, about a third of the grow,
+///   because the answer landing should feel like a release.
+///
+/// Returns `None` once the shrink is done, which is also the caller's
+/// signal to stop asking for repaints.
+const CELLS: usize = 5;
+const GROW_MS: u64 = 180;
+const STEP_MS: u64 = 90;
+const SHRINK_MS: u64 = 70;
+
+pub fn working_bar(ms: u64, running: bool) -> Option<String> {
+    let width = if running {
+        if ms >= GROW_MS {
+            CELLS
+        } else {
+            1 + (ms as usize * CELLS) / GROW_MS as usize
+        }
+    } else {
+        let gone = (ms as usize * CELLS) / SHRINK_MS as usize;
+        CELLS.checked_sub(gone).filter(|w| *w > 0)?
+    };
+    let mut cells = vec!['\u{25b1}'; width];      // ▱ body
+    if running && width > 1 {
+        // Ping-pong: 0,1,..,w-1,..,1 and around again.
+        let span = (width - 1) * 2;
+        let p = ((ms / STEP_MS) as usize) % span;
+        let head = if p < width { p } else { span - p };
+        cells[head] = '\u{25b0}';                 // ▰ head
+    } else if running {
+        cells[0] = '\u{25b0}';
+    }
+    Some(cells.into_iter().collect())
 }
 
 fn dot(active: bool, phase: u8) -> char {
@@ -220,7 +276,7 @@ pub fn pad_row(text: &str, cols: usize, sgr: &str) -> String {
 mod tests {
     use super::{
         IDLE_CHIP_SGR, SUGGEST_SGR, Size, TEXT_SGR, chrome_row, lane_dots, pad_row_with_note,
-        rule_row,
+        rule_row, working_bar,
     };
 
     fn width(row: &str) -> usize {
@@ -271,6 +327,40 @@ mod tests {
     /// runs are on the row, and the SGR between them costs no columns —
     /// a chip measured as text would eat real cells and drag the rule
     /// off the right edge.
+    /// Grow, sweep, snap back — and above all, END. The bar is the only
+    /// thing in the band that writes without the user or the shell
+    /// having done something, so a shrink that never returns None is an
+    /// idle session repainting forever.
+    #[test]
+    fn the_working_bar_grows_sweeps_and_finishes() {
+        assert_eq!(working_bar(0, true).unwrap().chars().count(), 1, "starts small");
+        assert_eq!(working_bar(500, true).unwrap().chars().count(), 5, "grows to full");
+        assert_eq!(working_bar(9_999, true).unwrap().chars().count(), 5, "and stays");
+
+        // The head moves, and it reverses rather than wrapping.
+        // Char position, not byte offset: these are 3-byte glyphs, and
+        // `find` counts bytes.
+        let heads: Vec<usize> = (0..14)
+            .map(|i| {
+                working_bar(200 + i * 90, true)
+                    .unwrap()
+                    .chars()
+                    .position(|c| c == '\u{25b0}')
+                    .unwrap()
+            })
+            .collect();
+        assert!(heads.windows(2).any(|w| w[1] > w[0]), "sweeps out: {heads:?}");
+        assert!(heads.windows(2).any(|w| w[1] < w[0]), "and back: {heads:?}");
+        assert!(heads.iter().all(|h| *h <= 4), "stays inside: {heads:?}");
+
+        // Shrinking is monotone and terminates.
+        let widths: Vec<usize> = (0..5)
+            .map(|i| working_bar(i * 15, false).map_or(0, |b| b.chars().count()))
+            .collect();
+        assert!(widths.windows(2).all(|w| w[1] <= w[0]), "monotone: {widths:?}");
+        assert_eq!(working_bar(1_000, false), None, "the shrink must END");
+    }
+
     #[test]
     fn a_two_tone_chip_keeps_its_width() {
         let one = rule_row(&[(" \u{2193} suggestion: du -sh * ", SUGGEST_SGR)], None, 60);

@@ -756,6 +756,10 @@ fn compose_rows(
     pin: Option<&str>,
     stats: Option<&str>,
     dots: &str,
+    // The working bar, already rendered, and which lane it belongs to.
+    // Separate from `dots`, which only says a lane is busy: this says the
+    // thing on the rule is STALE, which is the part that can bite.
+    working: Option<(String, bool)>,
 ) -> Vec<String> {
     // Never write the terminal's LAST cell. A row that fills the final
     // column is flagged as continued/soft-wrapped, and a width change
@@ -1098,21 +1102,47 @@ fn compose_rows(
     // text sitting on your prompt line. Painting both orange all the
     // time left nothing for the colour to distinguish.
     const SUG_LABEL: &str = " \u{2193} suggestion: ";
-    let chip: Vec<status::Seg> = match (&sug_cmd, &notice_text) {
-        (Some(cmd), _) => vec![
-            (SUG_LABEL, status::SUGGEST_SGR),
-            (
+    // An answer you asked for is still coming, so whatever is in the slot
+    // belongs to the PREVIOUS question. Say so at the head of the chip:
+    // without it, Down pulls a command you did not ask for and it looks
+    // exactly like one you did. Only for work the user requested — an
+    // ordinary command session never sees it.
+    let mut chip: Vec<status::Seg> = Vec::new();
+    if let Some((bar, is_fast)) = &working {
+        chip.push((
+            bar.as_str(),
+            if *is_fast {
+                status::WORKING_FAST_SGR
+            } else {
+                status::WORKING_SLOW_SGR
+            },
+        ));
+    }
+    let fast_working = working.as_ref().is_some_and(|(_, f)| *f);
+    match (&sug_cmd, &notice_text) {
+        (Some(cmd), _) => {
+            chip.push((SUG_LABEL, status::SUGGEST_SGR));
+            chip.push((
                 cmd.as_str(),
-                if taken {
+                // Never orange while a newer answer is on its way: orange
+                // means "this is what Down gives you", and during a
+                // generation that is a promise about stale text.
+                if taken && !fast_working {
                     status::SUGGEST_SGR
                 } else {
                     status::IDLE_CHIP_SGR
                 },
-            ),
-        ],
-        (None, Some(n)) => vec![(n.as_str(), status::TEXT_SGR)],
-        (None, None) => vec![],
-    };
+            ));
+        }
+        (None, Some(n)) => chip.push((n.as_str(), status::TEXT_SGR)),
+        // Nothing held yet: the marquee is the whole chip, which is the
+        // honest state -- something is coming, nothing is pullable.
+        (None, None) => {
+            if !chip.is_empty() {
+                chip.push((" working\u{2026} ", status::IDLE_CHIP_SGR));
+            }
+        }
+    }
     rows.push(status::rule_row(&chip, tip.as_deref(), cols));
     // The question row doubles as the slot for a researched finding.
     // When one exists for the browsed turn it overlays here, indented
@@ -2332,6 +2362,15 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // `Some` means holding; `None` means the shell has the keyboard.
     let mut handback: Option<Vec<u8>> = None;
 
+    // The working bar's clock. `Some(start)` from the moment an ASKED-FOR
+    // generation begins; `ended` starts the shrink. Both clear when the
+    // shrink is done, which is also when we stop asking for repaints —
+    // the animation is the only thing here that writes without the user
+    // or the shell having done something, so it must not outlive itself.
+    let mut work_from: Option<Instant> = None;
+    let mut work_ended: Option<Instant> = None;
+    let mut work_bar: Option<(String, bool)> = None;
+
     macro_rules! redraw {
         () => {{
             // Painting is SUSPENDED while a resize is in flight: the
@@ -2381,6 +2420,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         researching.is_some(),
                         ((anim_start.elapsed().as_millis() / 250) % 4) as u8,
                     ),
+                    work_bar.clone(),
                 );
                 let pre = sync_reserved(&mut layout, &mut parser, master, rows.len() as u16);
                 if !pre.is_empty() {
@@ -4203,6 +4243,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     engine::Event::Busy { model, warm, kind } => {
                         fuse.busy(&model);
                         if kind == engine::Work::Ask {
+                            if !fast_busy {
+                                work_from = Some(Instant::now());
+                                work_ended = None;
+                            }
                             fast_busy = true;
                         }
                         if warm {
@@ -4216,6 +4260,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     engine::Event::Idle { kind } => {
                         fuse.idle();
                         if kind == engine::Work::Ask {
+                            if fast_busy && work_ended.is_none() {
+                                work_ended = Some(Instant::now());
+                            }
                             fast_busy = false;
                         }
                         if let Some(m) = warming.take() {
@@ -4257,6 +4304,43 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     },
                 }
                 dirty = true;
+            }
+        }
+
+        // Recompute the working bar and ask for a repaint only while it
+        // actually moves. A frame that renders identically writes
+        // nothing, so the cost is bounded by the animation, not by the
+        // poll loop -- and when the shrink finishes, both clocks clear
+        // and goulash goes back to writing only on events.
+        {
+            let next = work_from.map(|start| {
+                let running = work_ended.is_none();
+                let ms = match work_ended {
+                    Some(end) => end.elapsed().as_millis() as u64,
+                    None => start.elapsed().as_millis() as u64,
+                };
+                status::working_bar(ms, running).map(|b| (b, true))
+            });
+            match next {
+                // Shrink complete: stop animating, stop repainting.
+                Some(None) => {
+                    work_from = None;
+                    work_ended = None;
+                    if work_bar.take().is_some() {
+                        dirty = true;
+                    }
+                }
+                Some(Some(bar)) => {
+                    if work_bar.as_ref() != Some(&bar) {
+                        work_bar = Some(bar);
+                        dirty = true;
+                    }
+                }
+                None => {
+                    if work_bar.take().is_some() {
+                        dirty = true;
+                    }
+                }
             }
         }
 
@@ -4347,6 +4431,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         researching.is_some(),
                         ((anim_start.elapsed().as_millis() / 250) % 4) as u8,
                     ),
+                    work_bar.clone(),
                 );
                 if rows != last_rows {
                     // Same paint as redraw!, which also erases wherever
