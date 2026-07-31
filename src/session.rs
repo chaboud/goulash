@@ -1377,8 +1377,9 @@ fn setting_help(name: &str) -> &'static str {
 }
 
 fn settings_items(v: &Live) -> Vec<String> {
-    let (commentary, slow, thinking, max_tokens, command_first, stats, memory, caps) = (
+    let (commentary, platform, slow, thinking, max_tokens, command_first, stats, memory, caps) = (
         v.commentary,
+        v.platform,
         v.slow,
         v.thinking,
         v.max_tokens,
@@ -1397,6 +1398,7 @@ fn settings_items(v: &Live) -> Vec<String> {
                 "memory" => if memory.enabled { "on" } else { "off" }.to_string(),
                 "max_tokens" => max_tokens.to_string(),
                 "command_first" => if command_first { "on" } else { "off" }.to_string(),
+                "platform" => if platform { "on" } else { "off" }.to_string(),
                 "stats" => if stats { "on" } else { "off" }.to_string(),
                 _ => String::new(),
             };
