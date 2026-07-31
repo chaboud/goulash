@@ -356,8 +356,14 @@ const TERMINAL_ROWS: &[(&str, &[&str])] = &[
     // Rate and duration. Listed rather than typed because the useful
     // range is narrow and the difference between neighbours is visible
     // — you cycle and watch, which is the only way to pick these.
-    ("bar_rate_ms", &["60", "45", "30", "90", "120"]),
-    ("bar_slide_ms", &["340", "500", "700", "220", "140"]),
+    // Ascending, so cycling walks one way through the range; the
+    // DEFAULT must appear in each list or the row shows a value it
+    // cannot find and silently restarts from the first entry.
+    ("bar_rate_ms", &["15", "30", "45", "60", "90", "120"]),
+    (
+        "bar_slide_ms",
+        &["60", "90", "120", "150", "180", "250", "500", "750", "1000"],
+    ),
 ];
 
 const GROUPS: &[Group] = &[
@@ -2518,9 +2524,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
             // TIME passed, so without a tick of its own it advanced only
             // when a stream chunk happened to wake us — and the grow and
             // shrink, being short, often rendered in a single frame.
-            // Bounded twice over: only while the bar exists, and a frame
-            // that renders identically still writes nothing.
-            16
+            //
+            // Derived from the configured rate rather than fixed: a
+            // 15ms sweep cannot render on a 16ms tick, and a fixed tick
+            // would quietly make the fastest setting the same as the
+            // next one up. Half the step, so every frame gets a chance.
+            // Bounded twice over — only while the bar exists, and a
+            // frame that renders identically still writes nothing.
+            (dbg.working_bar_step_ms / 2).clamp(8, 40)
         } else if dirty {
             30
         } else {
@@ -4687,6 +4698,38 @@ mod row_tests {
             split_row("fast lane \u{25b8}"),
             ("fast lane \u{25b8}".into(), "".into())
         );
+    }
+
+    /// A default the menu cannot find renders correctly and then
+    /// cycles from somewhere else — the exact shape of the stale
+    /// `slow = "ingest"` that hid a broken test block. Every default
+    /// with a value list must appear in it.
+    #[test]
+    fn every_default_appears_in_its_own_value_list() {
+        let d = crate::config::DebugConfig::default();
+        let e = crate::config::EngineConfig::default();
+        let cases: &[(&str, &str, String)] = &[
+            ("terminal", "cursor_save", d.cursor_save.clone()),
+            ("terminal", "idle_repaint", bool_word(d.idle_repaint)),
+            ("terminal", "wrap_guard", bool_word(d.wrap_guard)),
+            ("terminal", "working_bar", bool_word(d.working_bar)),
+            ("terminal", "bar_rate_ms", d.working_bar_step_ms.to_string()),
+            ("terminal", "bar_slide_ms", d.working_bar_grow_ms.to_string()),
+            ("slow lane", "mode", e.slow.clone()),
+            ("fast lane", "thinking", e.thinking.clone()),
+            ("fast lane", "max_tokens", e.max_tokens.to_string()),
+        ];
+        for (group, row, val) in cases {
+            let vals = row_values(Some(group), row).unwrap_or(&[]);
+            assert!(
+                vals.contains(&val.as_str()),
+                "{group}/{row} defaults to {val:?}, not in {vals:?}"
+            );
+        }
+    }
+
+    fn bool_word(b: bool) -> String {
+        if b { "on" } else { "off" }.to_string()
     }
 
     /// A typed row must not also claim to cycle. `limit` carries an

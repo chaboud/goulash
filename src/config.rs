@@ -416,8 +416,11 @@ impl Default for DebugConfig {
             idle_repaint: false,
             wrap_guard: false,
             working_bar: true,
+            // Both of these MUST appear in the menu's value lists
+            // (session.rs TERMINAL_ROWS) — a default the row cannot
+            // find renders fine and then cycles from somewhere else.
             working_bar_step_ms: 60,
-            working_bar_grow_ms: 340,
+            working_bar_grow_ms: 250,
         }
     }
 }
