@@ -352,6 +352,12 @@ const TERMINAL_ROWS: &[(&str, &[&str])] = &[
     ("cursor_save", &["decsc", "absolute"]),
     ("idle_repaint", &["off", "on"]),
     ("wrap_guard", &["off", "on"]),
+    ("working_bar", &["on", "off"]),
+    // Rate and duration. Listed rather than typed because the useful
+    // range is narrow and the difference between neighbours is visible
+    // — you cycle and watch, which is the only way to pick these.
+    ("bar_rate_ms", &["60", "45", "30", "90", "120"]),
+    ("bar_slide_ms", &["340", "500", "700", "220", "140"]),
 ];
 
 const GROUPS: &[Group] = &[
@@ -759,7 +765,7 @@ fn compose_rows(
     // The working bar, already rendered, and which lane it belongs to.
     // Separate from `dots`, which only says a lane is busy: this says the
     // thing on the rule is STALE, which is the part that can bite.
-    working: Option<(String, bool)>,
+    working: Option<Vec<status::Seg<'static>>>,
 ) -> Vec<String> {
     // Never write the terminal's LAST cell. A row that fills the final
     // column is flagged as continued/soft-wrapped, and a width change
@@ -1050,8 +1056,12 @@ fn compose_rows(
     // The chip always shows FAST's command; the finding has its own row
     // below. Which of the two is orange says which one Enter pulls.
     let sug_cmd = match browsed {
-        Some((_, t, _)) => Some(format!("{} ", t.cmd)),
-        None => suggestions.first().map(|s| format!("{} ", s.1)),
+        // Leading space: the gap between label and command belongs to
+        // the COMMAND's run, so the orange stops at the colon instead of
+        // one cell past it. Purely where the boundary falls — the text
+        // on screen is unchanged.
+        Some((_, t, _)) => Some(format!(" {} ", t.cmd)),
+        None => suggestions.first().map(|s| format!(" {} ", s.1)),
     };
     let alt_selected = browsed.map(|(_, _, is_alt)| is_alt).unwrap_or(false);
     // Pulled onto the prompt line, and still the thing sitting there.
@@ -1101,24 +1111,17 @@ fn compose_rows(
     // content: grey while it is merely on offer, orange once it is the
     // text sitting on your prompt line. Painting both orange all the
     // time left nothing for the colour to distinguish.
-    const SUG_LABEL: &str = " \u{2193} suggestion: ";
+    const SUG_LABEL: &str = " \u{2193} suggestion:";
     // An answer you asked for is still coming, so whatever is in the slot
     // belongs to the PREVIOUS question. Say so at the head of the chip:
     // without it, Down pulls a command you did not ask for and it looks
     // exactly like one you did. Only for work the user requested — an
     // ordinary command session never sees it.
     let mut chip: Vec<status::Seg> = Vec::new();
-    if let Some((bar, is_fast)) = &working {
-        chip.push((
-            bar.as_str(),
-            if *is_fast {
-                status::WORKING_FAST_SGR
-            } else {
-                status::WORKING_SLOW_SGR
-            },
-        ));
+    if let Some(bar) = &working {
+        chip.extend(bar.iter().copied());
     }
-    let fast_working = working.as_ref().is_some_and(|(_, f)| *f);
+    let fast_working = working.is_some();
     match (&sug_cmd, &notice_text) {
         (Some(cmd), _) => {
             chip.push((SUG_LABEL, status::SUGGEST_SGR));
@@ -1653,6 +1656,9 @@ fn setting_help(slow: bool, name: &str, value: &str) -> &'static str {
         ("stats", _) => "counters in the bar, for spotting something climbing",
         ("idle_repaint", _) => "redraw the bar unprompted after output settles",
         ("wrap_guard", _) => "skip a paint while the cursor sits in the last column",
+        ("working_bar", _) => "the sweep that says the slot holds the PREVIOUS answer",
+        ("bar_rate_ms", _) => "how fast the sweep moves; lower is smoother and writes more",
+        ("bar_slide_ms", _) => "how long it takes to slide in — the part the eye reads",
         ("divulge_tools", _) => "list which common tools are installed (debug)",
         ("divulge_path", _) => "every executable on PATH — ~3900 tokens (debug)",
         ("..", _) => "back",
@@ -1760,6 +1766,9 @@ fn settings_items(v: &Live) -> Vec<String> {
                 }
                 "max_tokens" => max_tokens.to_string(),
                 "cursor_save" => v.dbg.cursor_save.clone(),
+                "working_bar" => if v.dbg.working_bar { "on" } else { "off" }.to_string(),
+                "bar_rate_ms" => v.dbg.working_bar_step_ms.to_string(),
+                "bar_slide_ms" => v.dbg.working_bar_grow_ms.to_string(),
                 "idle_repaint" => if v.dbg.idle_repaint { "on" } else { "off" }.to_string(),
                 "wrap_guard" => if v.dbg.wrap_guard { "on" } else { "off" }.to_string(),
                 "divulge_tools" => if v.tools { "on" } else { "off" }.to_string(),
@@ -2369,7 +2378,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // or the shell having done something, so it must not outlive itself.
     let mut work_from: Option<Instant> = None;
     let mut work_ended: Option<Instant> = None;
-    let mut work_bar: Option<(String, bool)> = None;
+    let mut work_bar: Option<Vec<status::Seg<'static>>> = None;
 
     macro_rules! redraw {
         () => {{
@@ -2502,6 +2511,16 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         // while a resize settles so the drag debounce can expire.
         let timeout = PollTimeout::try_from(if winch_at.is_some() {
             20
+        } else if work_from.is_some() && dbg.working_bar {
+            // The working bar is on screen and must be allowed to move.
+            // Everything else here repaints in response to an event; an
+            // animation is the one thing whose next frame is due because
+            // TIME passed, so without a tick of its own it advanced only
+            // when a stream chunk happened to wake us — and the grow and
+            // shrink, being short, often rendered in a single frame.
+            // Bounded twice over: only while the bar exists, and a frame
+            // that renders identically still writes nothing.
+            16
         } else if dirty {
             30
         } else {
@@ -3422,6 +3441,25 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 // through here or they do not cycle at
                                 // all — they were rendering and changing
                                 // nothing.
+                                "working_bar" => {
+                                    dbg.working_bar = next == "on";
+                                    let _ = Config::persist_key(
+                                        "debug",
+                                        "working_bar",
+                                        &(next == "on").to_string(),
+                                    );
+                                }
+                                "bar_rate_ms" | "bar_slide_ms" => {
+                                    let n: u64 = next.parse().unwrap_or(60);
+                                    let key = if name == "bar_rate_ms" {
+                                        dbg.working_bar_step_ms = n;
+                                        "working_bar_step_ms"
+                                    } else {
+                                        dbg.working_bar_grow_ms = n;
+                                        "working_bar_grow_ms"
+                                    };
+                                    let _ = Config::persist_key("debug", key, next);
+                                }
                                 "cursor_save" | "idle_repaint" | "wrap_guard" => {
                                     match name.as_str() {
                                         "cursor_save" => dbg.cursor_save = next.to_string(),
@@ -4323,7 +4361,21 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     Some(end) => end.elapsed().as_millis() as u64,
                     None => start.elapsed().as_millis() as u64,
                 };
-                status::working_bar(ms, running).map(|b| (b, true))
+                // `fast` picks the palette: the bar wears its lane's
+                // colour, the same rule the dots follow.
+                // Off is a real preference: motion in the periphery
+                // costs some people more than the stale-suggestion risk
+                // it guards against.
+                if !dbg.working_bar {
+                    return None;
+                }
+                status::working_bar(
+                    ms,
+                    running,
+                    true,
+                    dbg.working_bar_step_ms,
+                    dbg.working_bar_grow_ms,
+                )
             });
             match next {
                 // Shrink complete: stop animating, stop repainting.

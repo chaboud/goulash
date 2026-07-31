@@ -390,6 +390,22 @@ pub struct DebugConfig {
     /// deferring it to the next tick. Belt-and-braces on top of
     /// `cursor_save = "decsc"`, and a way to isolate wrap effects.
     pub wrap_guard: bool,
+    /// Show the working bar — the sweeping indicator that says the
+    /// command in the slot belongs to the PREVIOUS question while a new
+    /// answer is on its way.
+    ///
+    /// On by default because the thing it prevents is pulling a command
+    /// you did not ask for. Off is for anyone who finds motion in the
+    /// periphery worse than that risk, which is a real preference.
+    pub working_bar: bool,
+    /// How long the head takes to move one cell, in ms. Lower is
+    /// smoother and writes more.
+    pub working_bar_step_ms: u64,
+    /// How long the bar takes to slide in, and (at ~70% of this) back
+    /// out. The entrance and exit are what the eye actually reads, so
+    /// this is the knob that decides whether it feels like a slide or a
+    /// pop.
+    pub working_bar_grow_ms: u64,
 }
 
 impl Default for DebugConfig {
@@ -399,6 +415,9 @@ impl Default for DebugConfig {
             cursor_save: "decsc".to_string(),
             idle_repaint: false,
             wrap_guard: false,
+            working_bar: true,
+            working_bar_step_ms: 60,
+            working_bar_grow_ms: 340,
         }
     }
 }

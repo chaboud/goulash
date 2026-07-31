@@ -30,6 +30,28 @@ pub const CARET: &str = "\x1b[5m\u{258f}\x1b[25m";
 pub const WORKING_FAST_SGR: &str = "\x1b[0;96;48;5;238m";
 pub const WORKING_SLOW_SGR: &str = "\x1b[0;93;48;5;238m";
 
+/// The working bar's comet tail: four intensities from the head back.
+///
+/// A single solid glyph jumping one whole cell per frame is all a
+/// terminal can do positionally, and it reads as chunky because there is
+/// nothing between the two positions for the eye to interpolate. Shading
+/// the trail gives it that: as the head advances, every cell behind it
+/// steps down one level, so the *pattern* moves continuously even though
+/// each glyph still snaps to its cell.
+const TRAIL_FAST: [&str; 4] = [
+    "\x1b[0;1;97;48;5;31m",  // head: bright on cyan
+    "\x1b[0;96;48;5;24m",
+    "\x1b[0;36;48;5;23m",
+    "\x1b[0;90;48;5;238m",   // tail, fading into the chip
+];
+const TRAIL_SLOW: [&str; 4] = [
+    "\x1b[0;1;97;48;5;136m", // head: bright on amber
+    "\x1b[0;93;48;5;94m",
+    "\x1b[0;33;48;5;58m",
+    "\x1b[0;90;48;5;238m",
+];
+const TRAIL_GLYPH: [&str; 4] = ["\u{2588}", "\u{2593}", "\u{2592}", "\u{2591}"];
+
 /// One styled run inside a chip: the text, and the SGR it wears.
 ///
 /// A chip is a list of these rather than one string and one colour
@@ -144,32 +166,80 @@ pub fn lane_dots(fast: bool, slow: bool, phase: u8) -> String {
 /// Returns `None` once the shrink is done, which is also the caller's
 /// signal to stop asking for repaints.
 const CELLS: usize = 5;
-const GROW_MS: u64 = 180;
-const STEP_MS: u64 = 90;
-const SHRINK_MS: u64 = 70;
+/// Longer than they feel they should be, because the eye reads the
+/// ENTRANCE and the exit, not the steady sweep. At 180ms/70ms the bar
+/// arrived and left in one or two frames — a pop, not a slide.
+/// Defaults live in `DebugConfig`; these are the shapes of the dials.
+/// The exit is deliberately quicker than the entrance — an answer
+/// landing should feel like a release.
+const SHRINK_RATIO: f32 = 0.7;
 
-pub fn working_bar(ms: u64, running: bool) -> Option<String> {
-    let width = if running {
-        if ms >= GROW_MS {
-            CELLS
+/// The bar, as styled runs. `None` once the shrink has finished, which
+/// is also the caller's signal to stop asking for frames.
+///
+/// Cell positions are all a terminal has, so smoothness comes from
+/// SHADE rather than position: the leading edge fades in through
+/// `░▒▓█` as it grows and back out as it shrinks, giving each cell four
+/// intermediate states instead of popping between present and absent.
+pub fn working_bar(
+    ms: u64,
+    running: bool,
+    fast: bool,
+    step_ms: u64,
+    grow_ms: u64,
+) -> Option<Vec<Seg<'static>>> {
+    let grow_ms = grow_ms.max(1);
+    let shrink_ms = ((grow_ms as f32 * SHRINK_RATIO) as u64).max(1);
+    let step_ms = step_ms.max(1);
+    let extent: f32 = if running {
+        if ms >= grow_ms {
+            CELLS as f32
         } else {
-            1 + (ms as usize * CELLS) / GROW_MS as usize
+            CELLS as f32 * (ms as f32 / grow_ms as f32)
         }
     } else {
-        let gone = (ms as usize * CELLS) / SHRINK_MS as usize;
-        CELLS.checked_sub(gone).filter(|w| *w > 0)?
+        let t = ms as f32 / shrink_ms as f32;
+        if t >= 1.0 {
+            return None;
+        }
+        CELLS as f32 * (1.0 - t)
     };
-    let mut cells = vec!['\u{25b1}'; width];      // ▱ body
-    if running && width > 1 {
-        // Ping-pong: 0,1,..,w-1,..,1 and around again.
-        let span = (width - 1) * 2;
-        let p = ((ms / STEP_MS) as usize) % span;
-        let head = if p < width { p } else { span - p };
-        cells[head] = '\u{25b0}';                 // ▰ head
-    } else if running {
-        cells[0] = '\u{25b0}';
+    let full = extent.floor() as usize;
+    let frac = extent - full as f32;
+    // While RUNNING there is always at least one cell. At ms=0 the
+    // extent is genuinely zero, and returning None there would tell the
+    // caller the shrink had finished — cancelling the animation on its
+    // own first frame.
+    let width = (full + usize::from(frac > 0.02)).max(usize::from(running));
+    if width == 0 {
+        return None;
     }
-    Some(cells.into_iter().collect())
+    let trail = if fast { &TRAIL_FAST } else { &TRAIL_SLOW };
+    // Ping-pong: reversing rather than wrapping, because a head that
+    // teleports from the right edge back to the left reads as a glitch.
+    let head = if running && width > 1 {
+        let span = (width - 1) * 2;
+        let p = ((ms / step_ms) as usize) % span;
+        if p < width { p } else { span - p }
+    } else {
+        0
+    };
+    Some(
+        (0..width)
+            .map(|i| {
+                // Distance from the head sets the shade...
+                let mut d = if running { i.abs_diff(head).min(3) } else { 2 };
+                // ...and the leading cell is dimmed further by how much
+                // of it has actually arrived, so growth and shrink read
+                // as a fade rather than a jump.
+                if i == full {
+                    let fading = 3usize.saturating_sub((frac * 4.0) as usize);
+                    d = d.max(fading.min(3));
+                }
+                (TRAIL_GLYPH[d], trail[d])
+            })
+            .collect(),
+    )
 }
 
 fn dot(active: bool, phase: u8) -> char {
@@ -333,32 +403,47 @@ mod tests {
     /// idle session repainting forever.
     #[test]
     fn the_working_bar_grows_sweeps_and_finishes() {
-        assert_eq!(working_bar(0, true).unwrap().chars().count(), 1, "starts small");
-        assert_eq!(working_bar(500, true).unwrap().chars().count(), 5, "grows to full");
-        assert_eq!(working_bar(9_999, true).unwrap().chars().count(), 5, "and stays");
+        const STEP: u64 = 60;
+        const GROW: u64 = 340;
+        let bar = |ms, run| working_bar(ms, run, true, STEP, GROW);
+        let width = |ms, run| bar(ms, run).map_or(0, |b| b.len());
 
-        // The head moves, and it reverses rather than wrapping.
-        // Char position, not byte offset: these are 3-byte glyphs, and
-        // `find` counts bytes.
-        let heads: Vec<usize> = (0..14)
-            .map(|i| {
-                working_bar(200 + i * 90, true)
-                    .unwrap()
-                    .chars()
-                    .position(|c| c == '\u{25b0}')
-                    .unwrap()
-            })
-            .collect();
+        assert_eq!(width(0, true), 1, "starts small");
+        assert_eq!(width(GROW + 10, true), 5, "grows to full");
+        assert_eq!(width(9_999, true), 5, "and stays");
+
+        // The head is the brightest cell; it moves, and it reverses
+        // rather than wrapping.
+        let head_at = |ms: u64| {
+            bar(ms, true)
+                .unwrap()
+                .iter()
+                .position(|(g, _)| *g == "\u{2588}")
+                .unwrap()
+        };
+        let heads: Vec<usize> = (0..14).map(|i| head_at(GROW + 20 + i * STEP)).collect();
         assert!(heads.windows(2).any(|w| w[1] > w[0]), "sweeps out: {heads:?}");
         assert!(heads.windows(2).any(|w| w[1] < w[0]), "and back: {heads:?}");
         assert!(heads.iter().all(|h| *h <= 4), "stays inside: {heads:?}");
 
         // Shrinking is monotone and terminates.
-        let widths: Vec<usize> = (0..5)
-            .map(|i| working_bar(i * 15, false).map_or(0, |b| b.chars().count()))
-            .collect();
+        let widths: Vec<usize> = (0..8).map(|i| width(i * 30, false)).collect();
         assert!(widths.windows(2).all(|w| w[1] <= w[0]), "monotone: {widths:?}");
-        assert_eq!(working_bar(1_000, false), None, "the shrink must END");
+        assert_eq!(bar(10_000, false), None, "the shrink must END");
+
+        // The dials are honoured, not decorative.
+        assert_eq!(width(100, true), 2, "grow tracks grow_ms");
+        assert_eq!(
+            working_bar(100, true, true, STEP, 1_000).map_or(0, |b| b.len()),
+            1,
+            "a slower grow is narrower at the same instant"
+        );
+
+        // Sub-cell fade: the leading cell arrives faint and firms up,
+        // which is what stops the entrance reading as a pop.
+        let lead = |ms: u64| bar(ms, true).unwrap().last().unwrap().0;
+        assert_eq!(lead(GROW / 5 + 4), "\u{2591}", "leading cell starts faint");
+        assert_ne!(lead(GROW / 5 * 2 - 6), "\u{2591}", "and firms up");
     }
 
     #[test]
