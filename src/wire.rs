@@ -185,6 +185,24 @@ impl Client {
     }
 }
 
+/// What one generation cost, as the server measured it.
+///
+/// Server-side numbers, not ours: a client stopwatch cannot separate
+/// prompt processing from generation, and cannot see reasoning spend at
+/// all. `reasoning` is the one goulash could never obtain before — no
+/// local engine reported it, so the only signal for a model burning its
+/// budget on thinking was an empty answer (bench/QUIRKS.md §5).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GenStats {
+    /// Tokens generated, reasoning included where the server counts it.
+    pub out_tokens: u64,
+    /// Of which were reasoning. Zero is a real answer here, not a
+    /// missing one — the wires that cannot say leave `None` upstream.
+    pub reasoning_tokens: u64,
+    pub tokens_per_second: f64,
+    pub ttft_ms: u64,
+}
+
 /// One generation request, in the terms the engine cares about.
 pub struct Gen<'a> {
     pub model: &'a str,
@@ -295,6 +313,61 @@ impl Wire {
             out.push((name.to_string(), ctx));
         }
         out
+    }
+
+    /// Read the terminal event's accounting, if this wire has one.
+    ///
+    /// Called on every streamed line and cheap to miss: a line that is
+    /// not the end simply answers None.
+    pub fn gen_stats(&self, line: &str) -> Option<GenStats> {
+        let payload = match self {
+            Wire::Ollama => line.trim(),
+            _ => line.trim().strip_prefix("data:")?.trim(),
+        };
+        let v: Value = serde_json::from_str(payload).ok()?;
+        match self {
+            Wire::Ollama => {
+                if v["done"].as_bool() != Some(true) {
+                    return None;
+                }
+                let eval = v["eval_count"].as_u64().unwrap_or(0);
+                let eval_ns = v["eval_duration"].as_u64().unwrap_or(0);
+                Some(GenStats {
+                    out_tokens: eval,
+                    // ollama does not separate reasoning from output.
+                    reasoning_tokens: 0,
+                    tokens_per_second: if eval_ns > 0 {
+                        eval as f64 * 1e9 / eval_ns as f64
+                    } else {
+                        0.0
+                    },
+                    // Load excluded: it is a property of the model being
+                    // cold, not of this answer.
+                    ttft_ms: v["prompt_eval_duration"].as_u64().unwrap_or(0) / 1_000_000,
+                })
+            }
+            Wire::LmStudio => {
+                if v["type"].as_str()? != "chat.end" {
+                    return None;
+                }
+                let st = if v["result"]["stats"].is_object() {
+                    &v["result"]["stats"]
+                } else {
+                    &v["stats"]
+                };
+                Some(GenStats {
+                    out_tokens: st["total_output_tokens"].as_u64().unwrap_or(0),
+                    reasoning_tokens: st["reasoning_output_tokens"].as_u64().unwrap_or(0),
+                    tokens_per_second: st["tokens_per_second"].as_f64().unwrap_or(0.0),
+                    ttft_ms: (st["time_to_first_token_seconds"].as_f64().unwrap_or(0.0) * 1000.0)
+                        as u64,
+                })
+            }
+            // An OpenAI-compatible stream omits usage unless asked, and
+            // goulash does not ask: the numbers would arrive for one
+            // wire and not the other, which is worse than none.
+            Wire::OpenAi | Wire::OpenAiChat => None,
+        }
     }
 
     pub fn body(&self, g: &Gen) -> Value {
@@ -615,6 +688,42 @@ mod tests {
     /// at 8192, as a 5.3 s eviction down to 2048. `negotiate_ctx`
     /// returned 0 to MEAN "leave the load alone", so the option that was
     /// supposed to cost nothing reloaded the model on every ask.
+    /// The server's own accounting, off each wire's terminal event.
+    /// `reasoning_output_tokens` is the number no local engine reported
+    /// before, and the reason the stats row can now show a model
+    /// burning its budget on thinking instead of leaving it inferable
+    /// only from an empty answer.
+    #[test]
+    fn generation_stats_come_off_the_terminal_event() {
+        let lms = r#"data: {"type":"chat.end","result":{"stats":{"input_tokens":911,
+            "total_output_tokens":485,"reasoning_output_tokens":458,
+            "tokens_per_second":21.4,"time_to_first_token_seconds":1.9}}}"#;
+        let g = Wire::LmStudio.gen_stats(lms).expect("chat.end parses");
+        assert_eq!(g.out_tokens, 485);
+        assert_eq!(g.reasoning_tokens, 458);
+        assert_eq!(g.ttft_ms, 1900);
+        assert!((g.tokens_per_second - 21.4).abs() < 0.01);
+        // Anything that is not the end event is silence, not a zero.
+        assert_eq!(
+            Wire::LmStudio.gen_stats(r#"data: {"type":"message.delta","content":"hi"}"#),
+            None
+        );
+
+        let oll = r#"{"done":true,"eval_count":32,"eval_duration":1000000000,
+            "prompt_eval_duration":1600000000}"#;
+        let g = Wire::Ollama.gen_stats(oll).expect("done line parses");
+        assert_eq!(g.out_tokens, 32);
+        assert_eq!(g.ttft_ms, 1600);
+        assert!((g.tokens_per_second - 32.0).abs() < 0.01);
+        // ollama cannot separate reasoning from output; 0 is honest.
+        assert_eq!(g.reasoning_tokens, 0);
+        assert_eq!(Wire::Ollama.gen_stats(r#"{"done":false,"response":"x"}"#), None);
+
+        // The OpenAI wires omit usage unless asked, and goulash does not
+        // ask — better nothing than a number for one wire only.
+        assert_eq!(Wire::OpenAiChat.gen_stats(r#"data: {"usage":{}}"#), None);
+    }
+
     #[test]
     fn a_window_of_zero_is_an_absent_key_not_a_zero() {
         let mut g = req("p", &[]);

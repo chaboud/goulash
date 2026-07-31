@@ -58,15 +58,22 @@ two places, it belongs in one function with a test. `split_row` exists
 because the same `name: value` parse was inline in two apply paths and
 one of them forgot the parenthesised aside.
 
-**Ride along with the loaded model; never demand a window.** A context
-size is part of a model's *load identity* on every engine goulash
-speaks to. Asking for a different one is asking for a reload — it blows
-the prefix cache the whole design rests on, and can evict the model.
-This shape bit three times in one release: ollama `num_ctx: 0` (read as
-a real request, clamped, reloaded), ollama omission (read as "the
-model's default", reloaded), and LM Studio `context_length` (spawned a
-new model instance per ask, ten seconds each, and did not even apply).
-Ask the server what is loaded and take it.
+**Ride along with the loaded window; demand one only when it cannot
+hold a session log.** A context size is part of a model's *load
+identity* on every engine goulash speaks to, so asking for a different
+one is asking for a reload — it blows the prefix cache the whole design
+rests on, and can evict the model. Ask what is loaded and take it.
+
+The exception is real and already built (`num_ctx_min`,
+`nudge_small_context`): if the resident window is genuinely too small to
+work in, demand the floor **once** and eat the reload. That is a
+deliberate one-time cost with something to show for it. What is never
+acceptable is paying it per request, which is what happens when the
+demanded value differs from the loaded one on every ask. That shape bit
+three times in one release: ollama `num_ctx: 0` (read as a real
+request, clamped, reloaded), ollama omission (read as "the model's own
+default", reloaded), and LM Studio `context_length` (spawned a new
+model instance per ask, ten seconds each, and did not even apply).
 
 **Never solve timing with sleeps.** There is always a real signal —
 a mark, a hook, an event, held input. Sleeps here are a standing

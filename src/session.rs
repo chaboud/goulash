@@ -3945,6 +3945,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     // stats row picks it up on the next paint, and a
                     // number changing is not a reason to write.
                     engine::Event::Prompt { chars } => stats.prompt_chars = chars,
+                    // Measurement only, like Prompt: the row picks it up
+                    // on the next paint. A number arriving is not a
+                    // reason to write to someone's terminal.
+                    engine::Event::Gen(g) => stats.last_gen = Some(g),
                     engine::Event::Ready { provider, model } => {
                         rec.engine_ready(&provider, &model);
                         // Settings goulash is ignoring ride alongside the

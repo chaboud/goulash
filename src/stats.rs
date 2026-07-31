@@ -40,6 +40,10 @@ pub struct Stats {
     /// from the left — the preamble and the memories.
     pub prompt_chars: usize,
     pub num_ctx: usize,
+    /// What the SERVER said the last generation cost. Absent until one
+    /// completes, and absent for wires that do not report it, which is
+    /// why it is an Option rather than a confident zero.
+    pub last_gen: Option<crate::wire::GenStats>,
     /// Sampled.
     rss_kb: u64,
     disk_kb: u64,
@@ -67,7 +71,8 @@ impl Stats {
     /// the stores that grow forever.
     pub fn line(&self) -> String {
         format!(
-            "{} \u{b7} {}a/{}r/{}d \u{b7} q{}+{} \u{b7} {} slots \u{b7} {} ctx \u{b7} {}",
+            "{}{} \u{b7} {}a/{}r/{}d \u{b7} q{}+{} \u{b7} {} slots \u{b7} {} ctx \u{b7} {}",
+            self.last_gen_line(),
             human_kb(self.rss_kb),
             self.asks,
             self.research,
@@ -77,6 +82,31 @@ impl Stats {
             self.slots,
             self.ctx(),
             human_kb(self.disk_kb),
+        )
+    }
+
+    /// The last generation, as the server measured it: time to first
+    /// token, throughput, and how much of it was reasoning.
+    ///
+    /// Reasoning is shown ONLY when there was some. A model that was
+    /// asked not to think and did not is the normal case, and a
+    /// permanent `0r` would train the eye to skip the field on the one
+    /// day it says 900.
+    fn last_gen_line(&self) -> String {
+        let Some(g) = self.last_gen else {
+            return String::new();
+        };
+        let reas = if g.reasoning_tokens > 0 {
+            format!("/{}r", human_n(g.reasoning_tokens as usize))
+        } else {
+            String::new()
+        };
+        format!(
+            "{:.1}s\u{2192}{:.0}t/s {}{} \u{b7} ",
+            g.ttft_ms as f64 / 1000.0,
+            g.tokens_per_second,
+            human_n(g.out_tokens as usize),
+            reas,
         )
     }
 

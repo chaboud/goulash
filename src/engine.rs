@@ -61,6 +61,10 @@ pub enum Event {
     Prompt {
         chars: usize,
     },
+    /// What the SERVER said the last generation cost. Only the wires
+    /// that report it send this, so the stats row shows nothing rather
+    /// than a confident zero on the ones that do not.
+    Gen(crate::wire::GenStats),
     /// A pin's compressed form, or its card (None when the model gave
     /// nothing usable — the pin keeps its deterministic version).
     Digest {
@@ -1714,6 +1718,12 @@ fn generate(
             return Err(String::new());
         }
         let line = line.map_err(|e| e.to_string())?;
+        // The terminal event carries the server's own accounting. Read
+        // before the chunk check, because on some wires the end event
+        // is not a text chunk at all and would be skipped below.
+        if let Some(gs) = cl.be.wire.gen_stats(&line) {
+            let _ = ev.send(Event::Gen(gs));
+        }
         // A line we cannot read is a keep-alive or a blank separator,
         // not a failure: SSE is full of both, and aborting the stream
         // over one would lose an answer that was arriving fine.
