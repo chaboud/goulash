@@ -527,10 +527,8 @@ impl Config {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let mut doc: toml_edit::DocumentMut =
             text.parse().map_err(|e| format!("config parse: {e}"))?;
-        if doc.get(section).is_none() {
-            doc[section] = toml_edit::table();
-        }
-        doc[section][key] = match value {
+        let node = descend(&mut doc, section)?;
+        let item = match value {
             "true" => toml_edit::value(true),
             "false" => toml_edit::value(false),
             v => match v.parse::<i64>() {
@@ -538,6 +536,7 @@ impl Config {
                 Err(_) => toml_edit::value(v),
             },
         };
+        node.insert(key, item);
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
@@ -555,11 +554,44 @@ impl Config {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let mut doc: toml_edit::DocumentMut =
             text.parse().map_err(|e| format!("config parse: {e}"))?;
-        if let Some(t) = doc.get_mut(section).and_then(|t| t.as_table_like_mut()) {
-            t.remove(key);
+        let mut node = doc.as_table_mut() as &mut dyn toml_edit::TableLike;
+        for seg in section.split('.') {
+            match node.get_mut(seg).and_then(|i| i.as_table_like_mut()) {
+                Some(t) => node = t,
+                // Nothing there is nothing to remove, and creating the
+                // table on the way to deleting from it would be absurd.
+                None => return std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string()),
+            }
         }
+        node.remove(key);
         std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())
     }
+}
+
+/// Walk to `a.b.c`, creating tables on the way.
+///
+/// A dotted section is a PATH, not a name. `doc["engine.slow_lane"]`
+/// creates a top-level table whose key is the literal string
+/// `engine.slow_lane`, which TOML writes back quoted — and serde then
+/// looks for a field called that on `Config`, finds none, and falls back
+/// to defaults. So every sub-table the settings menu saved
+/// (`engine.slow_lane`, `engine.divulge`) was written to a file, read
+/// back as nothing, and silently reverted on the next launch.
+fn descend<'a>(
+    doc: &'a mut toml_edit::DocumentMut,
+    section: &str,
+) -> Result<&'a mut dyn toml_edit::TableLike, String> {
+    let mut node = doc.as_table_mut() as &mut dyn toml_edit::TableLike;
+    for seg in section.split('.') {
+        if node.get(seg).is_none() {
+            node.insert(seg, toml_edit::table());
+        }
+        node = node
+            .get_mut(seg)
+            .and_then(|i| i.as_table_like_mut())
+            .ok_or_else(|| format!("{seg} is not a table"))?;
+    }
+    Ok(node)
 }
 
 fn edit_model(text: &str, name: Option<&str>) -> Result<String, String> {
@@ -582,7 +614,56 @@ fn edit_model(text: &str, name: Option<&str>) -> Result<String, String> {
 
 #[cfg(test)]
 mod persist_tests {
-    use super::{Config, EngineConfig, edit_model};
+    use super::{Config, EngineConfig, descend, edit_model};
+
+    /// A dotted section is a path. Writing it as one KEY produces
+    /// `["engine.slow_lane"]` — valid TOML naming a top-level table
+    /// that `Config` has no field for, so serde ignores it and every
+    /// setting saved there reverts on the next launch. Silently: the
+    /// menu shows the new value until you restart.
+    ///
+    /// This shipped. A user's file had `["engine.divulge"]` and
+    /// `["engine.slow_lane"]` in it, both inert.
+    #[test]
+    fn a_dotted_section_nests_and_survives_a_round_trip() {
+        let mut doc: toml_edit::DocumentMut =
+            "[engine]\nmodel = \"m\"\n".parse().unwrap();
+        descend(&mut doc, "engine.slow_lane")
+            .unwrap()
+            .insert("thinking", toml_edit::value("medium"));
+        descend(&mut doc, "engine.divulge")
+            .unwrap()
+            .insert("platform", toml_edit::value(false));
+        let text = doc.to_string();
+        assert!(
+            !text.contains("\"engine."),
+            "sections must nest, not be quoted names: {text}"
+        );
+        // The half that actually matters: read it back the way the
+        // product does, and see the values.
+        let cfg: Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.engine.slow_lane.thinking.as_deref(), Some("medium"));
+        assert!(!cfg.engine.divulge.platform);
+        assert_eq!(cfg.engine.model.as_deref(), Some("m"), "siblings intact");
+    }
+
+    /// "Follow the fast lane" is the ABSENCE of a key, so removal has to
+    /// find the same nested table the write created.
+    #[test]
+    fn removing_a_nested_key_leaves_its_neighbours() {
+        let mut doc: toml_edit::DocumentMut = "[engine]\nmodel = \"m\"\n".parse().unwrap();
+        let t = descend(&mut doc, "engine.slow_lane").unwrap();
+        t.insert("thinking", toml_edit::value("high"));
+        t.insert("provider", toml_edit::value("ollama"));
+        descend(&mut doc, "engine.slow_lane").unwrap().remove("thinking");
+        let cfg: Config = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(cfg.engine.slow_lane.thinking, None, "gone");
+        assert_eq!(
+            cfg.engine.slow_lane.provider.as_deref(),
+            Some("ollama"),
+            "and only that one"
+        );
+    }
 
     #[test]
     fn surgical_edit_preserves_comments() {
