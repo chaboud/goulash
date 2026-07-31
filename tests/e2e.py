@@ -1648,13 +1648,7 @@ def test_working_context():
           "@ pinned ▸".encode() in out, out[-300:])
     check("browser offers a + pin row", "+ pin a file".encode() in out, out[-400:])
     os.write(mfd, b"\x1b")
-    # Closing a menu hands the rows back to the shell — a real resize.
-    # Wait for the scroll region to be restored before typing: a line
-    # sent DURING that resize is lost, and the failure then lands on
-    # whatever came next. Measured: a 0.4s sleep loses it, waiting for
-    # the region does not.
-    read_until(mfd, rb"\x1b\[1;20r", 4.0)
-    time.sleep(0.2)
+    time.sleep(0.4)
 
     # The deterministic form: no model involved at all.
     os.write(mfd, b"#@/path commandRef.md\r")
