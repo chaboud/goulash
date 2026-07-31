@@ -92,17 +92,43 @@ impl Caps {
     }
 
     /// The same intent for an OpenAI-compatible server, which spells it
-    /// `reasoning_effort` and takes only the level form. A `Think::Bool`
-    /// model has no standard way to say this over that wire, so it is
-    /// omitted rather than guessed at — this is a *spelling* difference,
-    /// not a fourth dialect, so `models.rs` stays the one place that
-    /// knows what a model can do. The budget allowance applies either
-    /// way, which is the half that actually prevents a blank bar.
+    /// `reasoning_effort`. A *spelling* difference, not a fourth
+    /// dialect, so `models.rs` stays the one place that knows what a
+    /// model can do.
+    ///
+    /// `none` is the value with teeth and it must travel for every
+    /// dialect that can reason at all. LM Studio also exposes the same
+    /// dial natively at `POST /api/v1/chat` as `reasoning:
+    /// off|on|low|medium|high`, and answers a level a model cannot do
+    /// with a 400 that NAMES what it supports — *"Supported settings:
+    /// 'off', 'on'"* — which is the LM Studio equivalent of ollama's
+    /// `/api/show` and the obvious way to learn a dialect from an
+    /// OpenAI-compatible server. Not wired up: `reasoning_effort` on
+    /// the endpoint we already use gets the same result and travels to
+    /// hosted providers too.
     pub fn effort_field(&self, level: &str) -> Option<&'static str> {
-        if self.think != Think::Levels {
+        // Only a model that cannot reason gets nothing. Everything else
+        // is told, including — especially — when the answer is "don't".
+        //
+        // This used to bail unless the model spoke `Levels`, so every
+        // BOOL-dialect model (all of gemma4, all of qwen3) was sent no
+        // reasoning control at all on an OpenAI wire and reasoned on
+        // every single ask. And even a Levels model fell through to
+        // `None` at `off`, which is the one setting that most needed to
+        // travel. Measured on LM Studio, gemma-4-e4b, identical prompt:
+        //
+        //   nothing sent          17.7s   366 tokens, 1296 chars of it reasoning
+        //   reasoning_effort=none  1.6s    27 tokens, none of it reasoning
+        //
+        // That 10x was never LM Studio being slow. It was us never
+        // asking it to stop. `none` is honoured; the named levels are
+        // ignored by a model that only has on/off, which is harmless —
+        // asking such a model for `high` means "reason", and it does.
+        if self.think == Think::None {
             return None;
         }
         match level {
+            "off" | "false" | "" => Some("none"),
             "low" => Some("low"),
             "medium" => Some("medium"),
             "high" => Some("high"),
@@ -168,6 +194,19 @@ const TABLE: &[(&str, Think, usize, bool)] = &[
     ("granite3.2", Think::Bool, 512, false),
     ("granite3.3", Think::Bool, 512, false),
     ("smollm3", Think::Bool, 512, false),
+    // gemma4 reasons; gemma3 does not, and longest-prefix keeps them
+    // apart. Both spellings, because ollama tags it `gemma4:e4b` and an
+    // OpenAI-compatible server serves the same weights as
+    // `google/gemma-4-e4b`.
+    //
+    // The bare `gemma` row below is right for gemma3 and was silently
+    // wrong here. On ollama it never showed, because `/api/show`
+    // reports `thinking` and overrules the table. An OpenAI-compatible
+    // server has no such probe, so the table stood — and gemma4 on LM
+    // Studio reasoned on every ask, 1300-1900 characters of it, for
+    // 20s an answer. Measured reasoning: ~350-500 tokens.
+    ("gemma4", Think::Bool, 1024, false),
+    ("gemma-4", Think::Bool, 1024, false),
     // Same family, no reasoning — these must not inherit the prefix.
     ("qwen3-coder", Think::None, 0, false),
     ("qwen3-embedding", Think::None, 0, false),
@@ -291,6 +330,23 @@ mod tests {
         caps_for(model, None, &Overrides::new())
     }
 
+    /// gemma3 and gemma4 are different animals under one prefix, and
+    /// the difference only bites where there is no provider probe to
+    /// correct it — an OpenAI-compatible server. Without this split,
+    /// gemma4 on LM Studio reasoned on every ask and nothing said so.
+    #[test]
+    fn gemma4_reasons_and_gemma3_does_not() {
+        // No probe: exactly what an OpenAI-compatible server gives us.
+        for m in ["gemma4:e4b", "gemma4:12b", "google/gemma-4-e4b", "google/gemma-4-12b-qat"] {
+            let c = caps_for(m, None, &Overrides::new());
+            assert_eq!(c.think, Think::Bool, "{m} reasons");
+            assert_eq!(c.effort_field("off"), Some("none"), "{m} must be silenceable");
+        }
+        for m in ["gemma3:4b", "gemma3:27b", "gemma:7b", "codegemma:7b"] {
+            assert_eq!(caps(m).think, Think::None, "{m} does not reason");
+        }
+    }
+
     #[test]
     fn longest_prefix_wins_over_table_order() {
         // phi4-reasoning must not be read as phi4, nor qwen3-coder as qwen3.
@@ -332,6 +388,28 @@ mod tests {
             caps("gpt-oss:20b").think_field("on"),
             Some(serde_json::json!("medium"))
         );
+    }
+
+    /// The gap that cost a 10x: nothing asserted that a BOOL-dialect
+    /// model gets a reasoning control on an OpenAI wire, so it got none
+    /// and reasoned on every ask. `off` has to travel for every dialect
+    /// that can reason -- it is the setting with teeth.
+    #[test]
+    fn every_reasoning_model_can_be_told_to_stop() {
+        for m in ["gemma4:e4b", "qwen3:8b", "gpt-oss:20b", "deepseek-r1:7b"] {
+            let c = caps_for(m, Some(true), &Overrides::new());
+            assert_eq!(c.effort_field("off"), Some("none"), "{m} must be silenceable");
+            assert!(c.effort_field("high").is_some(), "{m} must be askable");
+        }
+        // A model that cannot reason is handed nothing at all: some
+        // servers reject the field rather than ignoring it.
+        let plain = caps_for("gemma3:4b", Some(false), &Overrides::new());
+        assert_eq!(plain.effort_field("off"), None);
+        assert_eq!(plain.effort_field("high"), None);
+        // Levels still map through unchanged.
+        let oss = caps_for("gpt-oss:20b", None, &Overrides::new());
+        assert_eq!(oss.effort_field("low"), Some("low"));
+        assert_eq!(oss.effort_field("on"), Some("medium"));
     }
 
     #[test]
