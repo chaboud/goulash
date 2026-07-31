@@ -853,7 +853,17 @@ fn compose_rows(
             } else {
                 status::TEXT_SGR
             };
-            rows.push(status::pad_row(&line, cols, sgr));
+            // Explain the row you are standing on, out to the right.
+            // Only the selected one: thirteen explanations at once is
+            // not help, it is wallpaper.
+            let help = match (m.kind, idx == m.cursor) {
+                (MenuKind::Settings | MenuKind::Debug, true) => filtered
+                    .get(idx)
+                    .map(|n| setting_help(n.split(':').next().unwrap_or(n).trim()))
+                    .unwrap_or(""),
+                _ => "",
+            };
+            rows.push(status::pad_row_with_note(&line, help, cols, sgr));
         }
         rows.push(status::chrome_row(
             layout.real,
@@ -1335,6 +1345,35 @@ struct Live<'a> {
     stats: bool,
     memory: &'a MemoryStore,
     caps: Option<&'a crate::models::Caps>,
+}
+
+/// One line saying what a setting *does*, shown beside it while it is
+/// selected.
+///
+/// A menu of bare names is a quiz. `command_first` and `num_keep` mean
+/// nothing to someone who has not read the source, and the cost of
+/// guessing wrong is a worse assistant with no clue why — so the
+/// explanation belongs at the moment of choosing, not in a manual.
+///
+/// Kept to one clause. This shares a row with the setting, and a
+/// sentence that wraps would take rows from the shell.
+fn setting_help(name: &str) -> &'static str {
+    match name {
+        "commentary" => "unprompted tips after a command",
+        "slow" => "when the research lane joins: ask only, on pins, or on everything",
+        "thinking" => "reasoning effort; models that cannot will ignore it",
+        "memory" => "let the model keep notes across sessions",
+        "max_tokens" => "ceiling on one answer, reasoning included",
+        "command_first" => "put CMD: before the prose, so truncation eats the words",
+        "platform" => "tell the model your OS and shell, so it stops suggesting Linux flags",
+        "stats" => "counters in the bar, for spotting something climbing",
+        "cursor_save" => "how the cursor is parked while goulash paints",
+        "idle_repaint" => "redraw the bar unprompted after output settles",
+        "wrap_guard" => "skip a paint while the cursor sits in the last column",
+        "divulge_tools" => "list which common tools are installed (debug)",
+        "divulge_path" => "list every executable on PATH — ~3900 tokens (debug)",
+        _ => "",
+    }
 }
 
 fn settings_items(v: &Live) -> Vec<String> {

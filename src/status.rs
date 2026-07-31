@@ -160,6 +160,26 @@ pub fn inset_row(stub: &str, body: &str, cols: usize, selected: bool) -> String 
     format!("{QUERY_SGR}{stub}\x1b[0m{sgr}{text}\x1b[0m")
 }
 
+/// A band row with an explanatory note pushed to the right edge.
+///
+/// The note is dimmed and yields entirely when the row is tight: it is
+/// the least important thing on the line, and a note that pushed the
+/// setting's own value off the screen would be worse than no note.
+pub fn pad_row_with_note(text: &str, note: &str, cols: usize, sgr: &str) -> String {
+    let used = text.chars().count();
+    // 2 spaces of gap, and only bother if a useful amount of the note
+    // survives — a three-character stub is noise, not help.
+    if note.is_empty() || used + note.chars().count() + 3 > cols {
+        return pad_row(text, cols, sgr);
+    }
+    let gap = cols - used - note.chars().count() - 1;
+    format!(
+        "{sgr}{text}{}\x1b[2m{note}\x1b[22m {}\x1b[0m",
+        " ".repeat(gap),
+        ""
+    )
+}
+
 /// One full-width styled band row (padded/truncated to cols).
 pub fn pad_row(text: &str, cols: usize, sgr: &str) -> String {
     let mut line: String = text.chars().take(cols).collect();
@@ -170,7 +190,7 @@ pub fn pad_row(text: &str, cols: usize, sgr: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Size, chrome_row, lane_dots, rule_row};
+    use super::{Size, TEXT_SGR, chrome_row, lane_dots, pad_row_with_note, rule_row};
 
     fn width(row: &str) -> usize {
         // Strip escape sequences; what's left is the printed cells.
@@ -274,5 +294,26 @@ mod tests {
         let row = chrome_row(size, 16, 4, "zsh", "prompt", None, None, &lane_dots(true, true, 1));
         assert_eq!(width(&row), 19);
         assert!(row.chars().any(|c| c == '\u{2022}' || c == '\u{25cf}'));
+    }
+
+    /// The note rides the right edge and the row still measures exactly
+    /// `cols` — an off-by-one here writes the terminal's last cell,
+    /// which flags the row as soft-wrapped and makes a resize reflow it
+    /// up the scrollback.
+    #[test]
+    fn a_note_keeps_the_row_exactly_full_width() {
+        for cols in [40usize, 80, 157] {
+            let row = pad_row_with_note(" thinking: off", "reasoning effort", cols, TEXT_SGR);
+            assert_eq!(width(&row), cols, "at {cols} cols");
+        }
+    }
+
+    /// When there is no room, the note goes rather than the setting.
+    #[test]
+    fn a_tight_row_drops_the_note_not_the_value() {
+        let row = pad_row_with_note(" thinking: off", "a very long explanation indeed", 24, TEXT_SGR);
+        assert_eq!(width(&row), 24);
+        assert!(row.contains("thinking: off"), "the value survives");
+        assert!(!row.contains("explanation"), "the note yields");
     }
 }
