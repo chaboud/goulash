@@ -265,10 +265,6 @@ enum MenuKind {
     Settings,
     /// A browsable command reference; Enter does nothing.
     Help,
-    /// Terminal-hackery toggles. Same cycle-on-Enter mechanic as
-    /// Settings, kept separate because these are levers on how goulash
-    /// talks to the emulator, not preferences.
-    Debug,
     /// `#@` working context. Enter opens the pin in the reading pane;
     /// Backspace/Delete twice unpins — same keymap as Memory, for the
     /// same reason.
@@ -301,51 +297,9 @@ struct Group {
 /// column shows what is bound now.
 const OPENS_MENU: &[&str] = &["model", "research model"];
 
-const FAST_ROWS: &[(&str, &[&str])] = &[
-    ("provider", &["auto", "ollama", "openai", "openai-chat", "none"]),
-    ("model", &[]),
-    ("thinking", &["off", "low", "medium", "high"]),
-    ("command_first", &["on", "off"]),
-    ("max_tokens", &["2048", "4096", "8192", "16384"]),
-];
-
-const SLOW_ROWS: &[(&str, &[&str])] = &[
-    // When the lane joins at all — the first thing anyone wants to
-    // decide about it, so the first row.
-    ("mode", &["ingest", "volunteer", "manual", "off"]),
-    // The rest mirror the fast lane, and each can simply follow it.
-    (
-        "provider",
-        &["same as fast", "ollama", "openai", "openai-chat"],
-    ),
-    ("model", &[]),
-    (
-        "thinking",
-        &["same as fast", "off", "low", "medium", "high"],
-    ),
-    (
-        "max_tokens",
-        &["same as fast", "2048", "4096", "8192", "16384"],
-    ),
-];
-
-const CONTEXT_ROWS: &[(&str, &[&str])] = &[
-    ("platform", &["on", "off"]),
-    ("memory", &["off", "on"]),
-    ("divulge_tools", &["off", "on"]),
-    ("divulge_path", &["off", "on"]),
-];
-
-const BAND_ROWS: &[(&str, &[&str])] = &[
-    ("commentary", &["on", "off"]),
-    ("stats", &["off", "on"]),
-];
-
-const TERMINAL_ROWS: &[(&str, &[&str])] = &[
-    ("cursor_save", &["decsc", "absolute"]),
-    ("idle_repaint", &["on", "off"]),
-    ("wrap_guard", &["off", "on"]),
-];
+/// Rows that take a typed value. Enter opens a little field on the row,
+/// pre-filled with what is set now; Enter again commits, Esc cancels.
+const TEXT_ENTRY: &[&str] = &["limit"];
 
 /// Rows hidden until `expert` is on.
 ///
@@ -354,13 +308,46 @@ const TERMINAL_ROWS: &[(&str, &[&str])] = &[
 /// for nothing; the terminal knobs exist to bisect a field problem in
 /// place. A menu that shows everything at once teaches nobody which
 /// three things actually matter.
-const ADVANCED: &[&str] = &[
-    "command_first",
-    "max_tokens",
-    "divulge_tools",
-    "divulge_path",
-    "cursor_save",
-    "wrap_guard",
+const ADVANCED: &[&str] = &["command_first", "max_tokens", "divulge_tools", "divulge_path"];
+
+const FAST_ROWS: &[(&str, &[&str])] = &[
+    ("provider", &["auto", "ollama", "openai", "openai-chat", "none"]),
+    ("model", &[]),
+    ("thinking", &["off", "low", "medium", "high"]),
+    ("command_first", &["on", "off"]),
+    ("max_tokens", &["2048", "4096", "8192", "16384"]),
+];
+
+/// The slow lane. Every row but `mode` defaults to `auto`, which means
+/// **follow the fast lane** — rendered with that in parentheses, because
+/// "auto" alone does not say what it follows.
+const SLOW_ROWS: &[(&str, &[&str])] = &[
+    // When the lane joins at all, and the first thing to decide about it.
+    // No `off`: `#?` is a request for this lane, and a setting that
+    // silently refused it would be a lie. Untouched, the slow lane is
+    // just the fast one with thinking on.
+    ("mode", &["manual", "query", "waldorf"]),
+    ("provider", &["auto", "ollama", "openai", "openai-chat"]),
+    ("model", &[]),
+    ("thinking", &["medium", "off", "low", "high", "auto"]),
+    ("max_tokens", &["auto", "2048", "4096", "8192", "16384"]),
+];
+
+const CONTEXT_ROWS: &[(&str, &[&str])] = &[
+    ("platform", &["on", "off"]),
+    ("divulge_tools", &["off", "on"]),
+    ("divulge_path", &["off", "on"]),
+];
+
+const MEMORY_ROWS: &[(&str, &[&str])] = &[
+    ("memory", &["off", "on"]),
+    ("limit", &[]),
+];
+
+const TERMINAL_ROWS: &[(&str, &[&str])] = &[
+    ("cursor_save", &["decsc", "absolute"]),
+    ("idle_repaint", &["off", "on"]),
+    ("wrap_guard", &["off", "on"]),
 ];
 
 const GROUPS: &[Group] = &[
@@ -383,9 +370,9 @@ const GROUPS: &[Group] = &[
         debug: false,
     },
     Group {
-        name: "band",
-        what: "what goulash shows unprompted",
-        rows: BAND_ROWS,
+        name: "memory",
+        what: "what goulash remembers between sessions",
+        rows: MEMORY_ROWS,
         debug: false,
     },
     Group {
@@ -398,13 +385,25 @@ const GROUPS: &[Group] = &[
 
 /// Every row, whichever group it lives in — for applying a value
 /// without caring where the user found it.
-fn row_values(name: &str) -> Option<&'static [&'static str]> {
-    // Not in any group: it lives on the root list, beside them.
-    if name == "expert" {
-        return Some(&["off", "on"]);
+/// The value list for a row **in a given group**.
+///
+/// Name alone is not enough: `thinking` exists in both lanes with
+/// different lists, and a name-keyed lookup returned whichever group
+/// came first — so the slow lane cycled the fast lane's values and
+/// `same as fast` was unreachable. A row is (group, name), everywhere.
+fn row_values(group: Option<&str>, name: &str) -> Option<&'static [&'static str]> {
+    // The root rows live beside the groups, not inside one, so the
+    // group-keyed lookup below never finds them — which is why `stats`
+    // and `commentary` rendered and would not cycle.
+    if group.is_none() {
+        return match name {
+            "expert" | "commentary" | "stats" => Some(&["off", "on"]),
+            _ => None,
+        };
     }
     GROUPS
         .iter()
+        .filter(|g| group == Some(g.name))
         .flat_map(|g| g.rows)
         .find(|(n, _)| *n == name)
         .map(|(_, v)| *v)
@@ -459,6 +458,8 @@ struct Menu {
     viewing: Option<Viewer>,
     /// Which settings group is open. `None` is the root list.
     group: Option<String>,
+    /// Which row the open text field belongs to, when one is open.
+    compose_row: Option<String>,
     /// The menu that opened this one, if any.
     ///
     /// A picker reached FROM the settings tree has to go back to it —
@@ -482,6 +483,7 @@ impl Menu {
             composing: None,
             viewing: None,
             group: None,
+            compose_row: None,
             parent: None,
         }
     }
@@ -923,15 +925,21 @@ fn compose_rows(
             Some(g) => format!("{} \u{25b8} {}", m.title, g),
             None => m.title.clone(),
         };
-        let chip = match &m.composing {
-            Some(text) => format!(" {path} \u{25b8} + {text}\u{258f} "),
-            None => format!(" {path} \u{25b8} {}\u{258f} ", m.filter),
+        let chip = match (&m.composing, &m.compose_row) {
+            // Editing a row's value: name the row. `+` means "a new
+            // memory", and it read as one on a row that already exists.
+            (Some(text), Some(row)) => {
+                format!(" {path} \u{25b8} {row}: {text}{} ", status::CARET)
+            }
+            (Some(text), None) => format!(" {path} \u{25b8} + {text}{} ", status::CARET),
+            (None, _) => format!(" {path} \u{25b8} {}\u{258f} ", m.filter),
         };
         // Feedback for in-menu actions has nowhere else to go: the rule
         // row belongs to the menu while it is open, so a notice takes
         // the keymap's place until the next keystroke.
         let tip = match notice {
             Some(n) => format!(" {n} "),
+            None if m.compose_row.is_some() => " \u{23ce} set \u{b7} esc cancel ".to_string(),
             None if m.composing.is_some() => " \u{23ce} save \u{b7} esc cancel ".to_string(),
             None => format!(
                 " \u{2191}\u{2193} \u{b7} {} \u{b7} esc \u{b7} {}/{} ",
@@ -939,7 +947,7 @@ fn compose_rows(
                     MenuKind::Model | MenuKind::SlowModel => "\u{23ce} save",
                     MenuKind::Memory => "\u{23ce} read \u{b7} \u{232b}\u{232b} forget",
                     MenuKind::Pins => "\u{23ce} read \u{b7} \u{232b}\u{232b} unpin",
-                    MenuKind::Settings | MenuKind::Debug => "\u{23ce} cycles",
+                    MenuKind::Settings => "\u{23ce} cycles",
                     MenuKind::Help => "reference",
                 },
                 (m.cursor + 1).min(filtered.len()),
@@ -991,7 +999,7 @@ fn compose_rows(
             // Only the selected one: thirteen explanations at once is
             // not help, it is wallpaper.
             let help = match (m.kind, idx == m.cursor) {
-                (MenuKind::Settings | MenuKind::Debug, true) => filtered
+                (MenuKind::Settings, true) => filtered
                     .get(idx)
                     .map(|n| {
                         if let Some(g) = n.strip_suffix('\u{25b8}') {
@@ -1577,12 +1585,11 @@ fn setting_help(slow: bool, name: &str, value: &str) -> &'static str {
     // they mean nothing until you are told, and being told after you
     // picked wrong is not help.
     match (name, value) {
-        ("mode", "off") => "the research lane never runs",
-        ("mode", "manual") => "only when you ask with #?",
-        ("mode", "ingest") => "on #? and when you pin a file with #@",
-        ("mode", "volunteer") => "on every # ask too — it will amend a lot",
+        ("mode", "manual") => "only when you ask: #?",
+        ("mode", "query") => "on # as well as #?",
+        ("mode", "waldorf") => "whenever fast runs — always in the party",
 
-        (_, "same as fast") => "follows the fast lane; change it to differ",
+        (_, "auto") => "follows the fast lane; change it to differ",
         ("provider", _) if slow => "send research somewhere better — a bigger box, or a hosted model",
         ("model", _) if slow => "the slow lane can use a different model, or machine",
         ("thinking", _) if slow => "let the slow lane think harder than the one that answers",
@@ -1605,6 +1612,7 @@ fn setting_help(slow: bool, name: &str, value: &str) -> &'static str {
 
         ("commentary", _) => "unprompted tips after a command",
         ("memory", _) => "let the model keep notes across sessions",
+        ("limit", _) => "how many notes to keep; the oldest fall off the end",
         ("max_tokens", _) => "ceiling on one answer, reasoning included",
         ("command_first", _) => "put CMD: first, so truncation eats the words",
         ("platform", _) => "name your OS and shell, so it stops suggesting Linux flags",
@@ -1616,6 +1624,29 @@ fn setting_help(slow: bool, name: &str, value: &str) -> &'static str {
         ("..", _) => "back",
         _ => "",
     }
+}
+
+/// A settings row read back off the screen: `("thinking", "off")`.
+///
+/// Rows are rendered `name: value`, and some of them carry a
+/// parenthesised aside — `auto (follow fast)`, `25 (press enter to
+/// edit)` — that is there for the reader and must not reach the code
+/// that decides what to do next. This is the one place that knows the
+/// aside starts at " (", so a row can gain one without every apply arm
+/// learning about it.
+fn split_row(item: &str) -> (String, String) {
+    let mut parts = item.splitn(2, ':');
+    let name = parts.next().unwrap_or("").trim().to_string();
+    let value = parts
+        .next()
+        .unwrap_or("")
+        .trim()
+        .split(" (")
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    (name, value)
 }
 
 /// What a group is for, shown against it in the root list.
@@ -1641,15 +1672,33 @@ fn settings_items(v: &Live) -> Vec<String> {
     );
     // Root: the groups themselves, with an arrow saying they open.
     let Some(group) = v.group else {
-        return GROUPS
-            .iter()
-            .filter(|g| v.debug || !g.debug)
-            .map(|g| format!("{} \u{25b8}", g.name))
-            .chain(std::iter::once(format!(
-                "expert: {}",
-                if v.debug { "on" } else { "off" }
-            )))
-            .collect();
+        let mut out = vec![format!(
+            "commentary: {}",
+            if v.commentary { "on" } else { "off" }
+        )];
+        out.extend(
+            GROUPS
+                .iter()
+                .filter(|g| !g.debug)
+                .map(|g| format!("{} \u{25b8}", g.name)),
+        );
+        // The toggle, then everything it reveals — in that order, and
+        // never the reverse. `terminal` is a debug-gated GROUP, so it
+        // used to appear up among the other groups: flipping `expert`
+        // inserted a row ABOVE the cursor and the selection slid onto
+        // whatever moved into its place. A switch that displaces itself
+        // is a switch you cannot flip twice.
+        out.push(format!("expert: {}", if v.debug { "on" } else { "off" }));
+        if v.debug {
+            out.push(format!("stats: {}", if v.stats { "on" } else { "off" }));
+            out.extend(
+                GROUPS
+                    .iter()
+                    .filter(|g| g.debug)
+                    .map(|g| format!("{} \u{25b8}", g.name)),
+            );
+        }
+        return out;
     };
     let in_slow = group == "slow lane";
     let Some(g) = GROUPS.iter().find(|g| g.name == group) else {
@@ -1665,17 +1714,15 @@ fn settings_items(v: &Live) -> Vec<String> {
                 // says nothing. The LANE disambiguates, not the name.
                 "mode" => slow.to_string(),
                 "provider" if in_slow => {
-                    v.slow_provider.unwrap_or("same as fast").to_string()
+                    v.slow_provider.unwrap_or("auto").to_string()
                 }
                 "provider" => v.provider.to_string(),
-                "model" if in_slow => v.slow_model.unwrap_or("same as fast").to_string(),
+                "model" if in_slow => v.slow_model.unwrap_or("auto").to_string(),
                 "model" => v.fast_model.unwrap_or("(auto)").to_string(),
-                "thinking" if in_slow => {
-                    v.slow_thinking.unwrap_or("same as fast").to_string()
-                }
+                "thinking" if in_slow => v.slow_thinking.unwrap_or("medium").to_string(),
                 "thinking" => format!("{thinking}{}", thinking_note(caps)),
                 "max_tokens" if in_slow => {
-                    v.slow_max_tokens.unwrap_or("same as fast").to_string()
+                    v.slow_max_tokens.unwrap_or("auto").to_string()
                 }
                 "max_tokens" => max_tokens.to_string(),
                 "cursor_save" => v.dbg.cursor_save.clone(),
@@ -1685,10 +1732,20 @@ fn settings_items(v: &Live) -> Vec<String> {
                 "divulge_path" => if v.full_path { "on" } else { "off" }.to_string(),
                 "commentary" => if commentary { "on" } else { "off" }.to_string(),
                 "memory" => if memory.enabled { "on" } else { "off" }.to_string(),
+                // A number, not a list — so say how to change it. Every
+                // other row here cycles on Enter; without the hint this
+                // one just looks like a row that ignores you.
+                "limit" => format!("{} (press enter to edit)", memory.limit),
                 "command_first" => if command_first { "on" } else { "off" }.to_string(),
                 "platform" => if platform { "on" } else { "off" }.to_string(),
                 "stats" => if stats { "on" } else { "off" }.to_string(),
                 _ => String::new(),
+            };
+            // `auto` alone does not say what it follows.
+            let v = if in_slow && v == "auto" {
+                "auto (follow fast)".to_string()
+            } else {
+                v
             };
             format!("{name}: {v}")
         }))
@@ -1856,19 +1913,11 @@ fn ask_slow(
     let Some(eng) = engine else {
         return Some("no engine running".to_string());
     };
-    if slow == "off" {
-        eng.ask(
-            body.to_string(),
-            ctx_log.to_string(),
-            memories,
-            pinned,
-            cards,
-        );
-        // Said on the question row, not as a notice: a notice is
-        // transient and the answer arriving would wipe it, so the user
-        // would never learn why their `#?` behaved like a `#`.
-        return Some("answered by fast \u{b7} #/settings \u{2192} slow".to_string());
-    }
+    // No `off` branch. `#?` IS the request for this lane, so honouring
+    // a setting that refused it would make the key silently dead — and
+    // there is nothing to refuse anyway: an untouched slow lane is the
+    // fast model with thinking on.
+    let _ = slow;
     // Fast answers first and keeps the microphone; slow researches the
     // same turn and amends it if it finds something better.
     eng.ask(
@@ -2921,6 +2970,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     let group_at_open = menu.as_ref().and_then(|m| m.group.clone());
                     let mut kind = MenuKind::Model;
                     let mut new_memory: Option<String> = None;
+                    // A row that takes a typed value rather than cycling
+                    // a list: (row name, what was typed).
+                    let mut typed_setting: Option<(String, String)> = None;
                     let mut view: Option<String> = None;
                     notice = None; // a keystroke supersedes the last outcome
                     if let Some(m) = menu.as_mut() {
@@ -2938,10 +2990,17 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     }
                                     Key::KillLine => text.clear(),
                                     Key::Enter => {
-                                        new_memory = Some(std::mem::take(text));
+                                        let typed = std::mem::take(text);
+                                        match m.compose_row.take() {
+                                            Some(row) => typed_setting = Some((row, typed)),
+                                            None => new_memory = Some(typed),
+                                        }
                                         m.composing = None;
                                     }
-                                    Key::Esc | Key::CtrlC => m.composing = None,
+                                    Key::Esc | Key::CtrlC => {
+                                        m.composing = None;
+                                        m.compose_row = None;
+                                    }
                                     _ => {}
                                 }
                                 continue;
@@ -3002,7 +3061,17 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 nav_up = true;
                                             } else {
                                                 committed = sel;
-                                                close = true;
+                                                // Bind it, then go back to
+                                                // where it was picked from.
+                                                // A drop-down that ejects
+                                                // you from the menu means
+                                                // configuring two things
+                                                // costs two trips.
+                                                if m.parent.is_some() {
+                                                    nav_up = true;
+                                                } else {
+                                                    close = true;
+                                                }
                                             }
                                         }
                                         MenuKind::Help => {
@@ -3010,7 +3079,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 nav_up = true;
                                             }
                                         }
-                                        MenuKind::Settings | MenuKind::Debug => {
+                                        MenuKind::Settings => {
                                             // A group row opens; `..`
                                             // closes; anything else is a
                                             // value to cycle.
@@ -3164,14 +3233,56 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             m.clamp();
                         }
                     }
+                    // A typed row commits its own way: there is no list to
+                    // step through, so the cycle path below cannot carry
+                    // it — `limit` has an empty value list precisely
+                    // because the value comes from the keyboard.
+                    if let Some((row, typed)) = typed_setting {
+                        let typed = typed.trim();
+                        notice = Some(match (row.as_str(), typed.parse::<usize>()) {
+                            (_, _) if typed.is_empty() => format!("{row}: unchanged"),
+                            ("limit", Ok(n)) if n > 0 => {
+                                // set_limit persists the store itself;
+                                // memory.toml is its own file, not part
+                                // of config.toml.
+                                memory.set_limit(n);
+                                format!("limit: {n}")
+                            }
+                            ("limit", _) => format!("limit: '{typed}' is not a number"),
+                            _ => format!("{row}: nothing takes a typed value here"),
+                        });
+                        if let Some(m) = menu.as_mut() {
+                            m.items = settings_items(&Live {
+                                group: m.group.as_deref(),
+                                platform: opt_platform,
+                                tools: opt_tools,
+                                full_path: opt_full_path,
+                                fast_model: engine_model.as_deref(),
+                                slow_model: opt_slow_model.as_deref(),
+                                provider: &opt_provider,
+                                slow_provider: opt_slow_provider.as_deref(),
+                                slow_thinking: opt_slow_thinking.as_deref(),
+                                slow_max_tokens: opt_slow_max.as_deref(),
+                                debug: opt_dbg_rows,
+                                dbg: &dbg,
+                                commentary,
+                                slow: &opt_slow,
+                                thinking: &opt_thinking,
+                                max_tokens: opt_max_tokens,
+                                command_first: opt_command_first,
+                                stats: opt_stats,
+                                memory: &memory,
+                                caps: model_caps.as_ref(),
+                            });
+                            m.clamp();
+                        }
+                    }
                     if kind == MenuKind::Settings
                         && let Some(item) = committed.take()
                     {
                         // Enter cycles the value in place: apply live,
                         // persist, refresh the list under the cursor.
-                        let mut parts = item.splitn(2, ':');
-                        let name = parts.next().unwrap_or("").trim().to_string();
-                        let cur = parts.next().unwrap_or("").trim().to_string();
+                        let (name, cur) = split_row(&item);
                         // Row names repeat across the lanes, so the name
                         // alone does not identify a setting. Without
                         // this, cycling `provider` inside `slow lane`
@@ -3180,13 +3291,90 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         let in_slow =
                             menu.as_ref().and_then(|m| m.group.as_deref()) == Some("slow lane");
                         // Rows with no value list are doors, not dials.
-                        if OPENS_MENU.contains(&name.as_str()) {
-                            open_picker = Some(name.clone());
-                        } else if let Some(vals) = row_values(&name) {
+                        if TEXT_ENTRY.contains(&name.as_str()) {
+                            if let Some(m) = menu.as_mut() {
+                                // Empty, not pre-filled with the current
+                                // value: the first digit typed would
+                                // otherwise land beside it and turn 25
+                                // into 251. The row underneath still
+                                // shows what it is now, and Enter on an
+                                // empty field leaves it that way.
+                                m.composing = Some(String::new());
+                                m.compose_row = Some(name.clone());
+                            }
+                        } else if OPENS_MENU.contains(&name.as_str()) {
+                            // `model` exists in BOTH lanes, so the name
+                            // alone opened the fast picker from the slow
+                            // group — and binding it then changed the
+                            // fast lane.
+                            open_picker = Some(if in_slow {
+                                "research model".to_string()
+                            } else {
+                                name.clone()
+                            });
+                        } else if let Some(vals) =
+                            row_values(menu.as_ref().and_then(|m| m.group.as_deref()), &name)
+                        {
                             let idx = vals.iter().position(|v| *v == cur).unwrap_or(0);
                             let next = vals[(idx + 1) % vals.len()];
                             notice = Some(format!("{name}: {next}"));
                             match name.as_str() {
+                                _ if in_slow
+                                    && matches!(
+                                        name.as_str(),
+                                        "provider" | "thinking" | "max_tokens"
+                                    ) =>
+                                {
+                                    let follow = next == "auto";
+                                    let val = (!follow).then(|| next.to_string());
+                                    match name.as_str() {
+                                        "provider" => opt_slow_provider = val.clone(),
+                                        "thinking" => opt_slow_thinking = val.clone(),
+                                        _ => opt_slow_max = val.clone(),
+                                    }
+                                    if let Some(eng) = engine.as_ref() {
+                                        eng.set_option(&format!("slow_{name}"), next);
+                                        if name == "provider" {
+                                            // A new server invalidates
+                                            // the bound model.
+                                            eng.rebind();
+                                        }
+                                    }
+                                    let _ = match val {
+                                        Some(v) => {
+                                            Config::persist_key("engine.slow_lane", &name, &v)
+                                        }
+                                        None => Config::remove_key("engine.slow_lane", &name),
+                                    };
+                                }
+                                // The terminal knobs. They used to live
+                                // in a separate `#/debug` menu with its
+                                // own apply block; `terminal` is a group
+                                // of the settings tree now, so they cycle
+                                // through here or they do not cycle at
+                                // all — they were rendering and changing
+                                // nothing.
+                                "cursor_save" | "idle_repaint" | "wrap_guard" => {
+                                    match name.as_str() {
+                                        "cursor_save" => dbg.cursor_save = next.to_string(),
+                                        "idle_repaint" => dbg.idle_repaint = next == "on",
+                                        _ => dbg.wrap_guard = next == "on",
+                                    }
+                                    let _ = Config::persist_key(
+                                        "debug",
+                                        &name,
+                                        match name.as_str() {
+                                            "cursor_save" => next,
+                                            _ => {
+                                                if next == "on" {
+                                                    "true"
+                                                } else {
+                                                    "false"
+                                                }
+                                            }
+                                        },
+                                    );
+                                }
                                 "commentary" => {
                                     commentary = next == "on";
                                     let _ = Config::persist_key(
@@ -3255,71 +3443,23 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         Config::persist_key("engine.divulge", key, &on.to_string());
                                 }
                                 // Anything in the slow lane is an
-                                // OVERRIDE: "same as fast" means the key
+                                // OVERRIDE: "auto" means the key
                                 // is absent, not a frozen copy of what
                                 // fast happens to say today.
-                                _ if in_slow
-                                    && matches!(
-                                        name.as_str(),
-                                        "provider" | "thinking" | "max_tokens"
-                                    ) =>
-                                {
-                                    let follow = next == "same as fast";
-                                    let val = (!follow).then(|| next.to_string());
-                                    match name.as_str() {
-                                        "provider" => opt_slow_provider = val.clone(),
-                                        "thinking" => opt_slow_thinking = val.clone(),
-                                        _ => opt_slow_max = val.clone(),
-                                    }
-                                    if let Some(eng) = engine.as_ref() {
-                                        eng.set_option(&format!("slow_{name}"), next);
-                                        if name == "provider" {
-                                            // A new server invalidates
-                                            // the bound model.
-                                            eng.rebind();
-                                        }
-                                    }
-                                    let _ = match val {
-                                        Some(v) => {
-                                            Config::persist_key("engine.slow_lane", &name, &v)
-                                        }
-                                        None => Config::remove_key("engine.slow_lane", &name),
-                                    };
-                                }
-                                // The terminal knobs. They used to live
-                                // in a separate `#/debug` menu with its
-                                // own apply block; `terminal` is a group
-                                // of the settings tree now, so they cycle
-                                // through here or they do not cycle at
-                                // all — they were rendering and changing
-                                // nothing.
-                                "cursor_save" | "idle_repaint" | "wrap_guard" => {
-                                    match name.as_str() {
-                                        "cursor_save" => dbg.cursor_save = next.to_string(),
-                                        "idle_repaint" => dbg.idle_repaint = next == "on",
-                                        _ => dbg.wrap_guard = next == "on",
-                                    }
-                                    let _ = Config::persist_key(
-                                        "debug",
-                                        &name,
-                                        match name.as_str() {
-                                            "cursor_save" => next,
-                                            _ => {
-                                                if next == "on" {
-                                                    "true"
-                                                } else {
-                                                    "false"
-                                                }
-                                            }
-                                        },
-                                    );
-                                }
                                 "mode" => {
                                     opt_slow = next.to_string();
                                     if let Some(eng) = engine.as_ref() {
                                         eng.set_option("slow", next);
                                     }
                                     let _ = Config::persist_key("engine", "slow", next);
+                                }
+                                "limit" => {
+                                    if let Ok(n) = next.parse::<usize>() {
+                                        // set_limit persists the store
+                                        // itself; memory.toml is its own
+                                        // file, not part of config.toml.
+                                        memory.set_limit(n);
+                                    }
                                 }
                                 "expert" => {
                                     opt_dbg_rows = next == "on";
@@ -3356,66 +3496,6 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 }
                                 _ => {}
                             }
-                            if let Some(m) = menu.as_mut() {
-                                m.items = settings_items(&Live {
-                                    group: m.group.as_deref(),
-                                    platform: opt_platform,
-                                    tools: opt_tools,
-                                    full_path: opt_full_path,
-                                    fast_model: engine_model.as_deref(),
-                                    slow_model: opt_slow_model.as_deref(),
-                                    provider: &opt_provider,
-                                    slow_provider: opt_slow_provider.as_deref(),
-                                    slow_thinking: opt_slow_thinking.as_deref(),
-                                    slow_max_tokens: opt_slow_max.as_deref(),
-                                    debug: opt_dbg_rows,
-                                    dbg: &dbg,
-                                    commentary,
-                                    slow: &opt_slow,
-                                    thinking: &opt_thinking,
-                                    max_tokens: opt_max_tokens,
-                                    command_first: opt_command_first,
-                                    stats: opt_stats,
-                                    memory: &memory,
-                                    caps: model_caps.as_ref(),
-                                });
-                            }
-                        }
-                    }
-                    if kind == MenuKind::Debug
-                        && let Some(item) = committed.take()
-                    {
-                        // Same cycle-in-place as Settings. These apply to
-                        // the very next paint — the point is to be able
-                        // to watch a terminal artifact appear and vanish
-                        // while the shell keeps running.
-                        let mut parts = item.splitn(2, ':');
-                        let name = parts.next().unwrap_or("").trim().to_string();
-                        let cur = parts.next().unwrap_or("").trim().to_string();
-                        if let Some(vals) = row_values(&name) {
-                            let idx = vals.iter().position(|v| *v == cur).unwrap_or(0);
-                            let next = vals[(idx + 1) % vals.len()];
-                            notice = Some(format!("{name}: {next}"));
-                            match name.as_str() {
-                                "cursor_save" => dbg.cursor_save = next.to_string(),
-                                "idle_repaint" => dbg.idle_repaint = next == "on",
-                                "wrap_guard" => dbg.wrap_guard = next == "on",
-                                _ => {}
-                            }
-                            let _ = Config::persist_key(
-                                "debug",
-                                &name,
-                                match name.as_str() {
-                                    "cursor_save" => next,
-                                    _ => {
-                                        if next == "on" {
-                                            "true"
-                                        } else {
-                                            "false"
-                                        }
-                                    }
-                                },
-                            );
                             if let Some(m) = menu.as_mut() {
                                 m.items = settings_items(&Live {
                                     group: m.group.as_deref(),
@@ -4352,6 +4432,99 @@ mod key_tests {
         assert_eq!(kinds(b"\x03\r\x7f\x15q"), "C\u{23ce}<Kq");
     }
 }
+#[cfg(test)]
+mod root_tests {
+    use super::{Live, settings_items};
+    use crate::config::DebugConfig;
+    use crate::memory::MemoryStore;
+
+    fn root(debug: bool) -> Vec<String> {
+        let mem = MemoryStore::default();
+        let dbg = DebugConfig::default();
+        settings_items(&Live {
+            group: None,
+            commentary: true,
+            platform: true,
+            tools: false,
+            full_path: false,
+            fast_model: None,
+            slow_model: None,
+            provider: "ollama",
+            slow_provider: None,
+            slow_thinking: None,
+            slow_max_tokens: None,
+            debug,
+            dbg: &dbg,
+            slow: "manual",
+            thinking: "off",
+            max_tokens: 2048,
+            command_first: true,
+            stats: false,
+            memory: &mem,
+            caps: None,
+        })
+    }
+
+    /// Flipping `expert` must not move `expert`. Everything the toggle
+    /// reveals sits below it, so the cursor is still standing on the
+    /// switch after it fires and a second Enter turns it back off.
+    #[test]
+    fn the_expert_toggle_does_not_move_under_the_cursor() {
+        let at = |rows: &[String]| {
+            rows.iter()
+                .position(|r| r.starts_with("expert:"))
+                .expect("expert row")
+        };
+        let (off, on) = (root(false), root(true));
+        assert_eq!(at(&off), at(&on));
+        // ...and it really does reveal something, or the test above
+        // passes for the wrong reason.
+        assert!(on.len() > off.len());
+        assert!(on.iter().any(|r| r.starts_with("terminal")));
+        assert!(!off.iter().any(|r| r.starts_with("terminal")));
+    }
+}
+
+#[cfg(test)]
+mod row_tests {
+    use super::{TEXT_ENTRY, row_values, split_row};
+
+    /// A row is read back off the screen, so anything rendered into it
+    /// for the reader has to survive the trip out. Both asides in the
+    /// tree end up here.
+    #[test]
+    fn a_parenthesised_aside_never_reaches_the_apply_path() {
+        assert_eq!(split_row("thinking: off"), ("thinking".into(), "off".into()));
+        assert_eq!(
+            split_row("provider: auto (follow fast)"),
+            ("provider".into(), "auto".into())
+        );
+        assert_eq!(
+            split_row("limit: 25 (press enter to edit)"),
+            ("limit".into(), "25".into())
+        );
+        // A group row is a door: a name and nothing after the colon.
+        assert_eq!(
+            split_row("fast lane \u{25b8}"),
+            ("fast lane \u{25b8}".into(), "".into())
+        );
+    }
+
+    /// A typed row must not also claim to cycle. `limit` carries an
+    /// empty value list, and the cycle path indexes `vals[(i+1) %
+    /// len]` — which is a divide-by-zero panic the moment anything
+    /// routes a text row through it.
+    #[test]
+    fn every_typed_row_has_no_values_to_cycle() {
+        for name in TEXT_ENTRY {
+            let vals = row_values(Some("memory"), name)
+                .or_else(|| row_values(Some("fast lane"), name))
+                .unwrap_or(&[]);
+            assert!(vals.is_empty(), "{name} is both typed and cycled");
+        }
+    }
+}
+
 #[cfg(test)]
 mod view_tests {
     use super::{item_id, wrap_hard};

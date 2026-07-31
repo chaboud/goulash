@@ -1522,7 +1522,10 @@ pub fn directive_for(command_first: bool, proactive: bool, pin_ask: bool) -> &'s
 /// immediate, slow is the one that can afford to think. One shared
 /// setting made that impossible to express.
 fn slow_thinking(cfg: &EngineConfig) -> &str {
-    cfg.slow_lane.thinking.as_deref().unwrap_or(&cfg.thinking)
+    // Default `medium`, not the fast lane's `off`. The lanes exist to
+    // differ here — a research pass that does not think is just a
+    // slower version of the answer you already have.
+    cfg.slow_lane.thinking.as_deref().unwrap_or("medium")
 }
 
 /// The slow lane's ceiling, falling back to the fast lane's.

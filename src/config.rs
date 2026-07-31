@@ -130,15 +130,18 @@ pub struct EngineConfig {
     /// putting it first means truncation eats the explanation instead of
     /// the command, and the suggestion can vend mid-stream.
     pub command_first: bool,
-    /// When the slow lane engages, as a ladder rather than a toggle:
+    /// When the slow lane engages *unasked*, as a ladder rather than a
+    /// toggle:
     ///
-    /// - `off` — never.
-    /// - `manual` — only when asked, `#?` / `?`.
-    /// - `ingest` — also on `#@`, to classify and card a pin. Bounded,
-    ///   and the user triggered it by pinning. **Default.**
-    /// - `volunteer` — also on ordinary `#` asks, contributing an
-    ///   amendment when it finds something better. Unbounded: fires on
-    ///   everything typed.
+    /// - `manual` — only when you ask, `#?` / `?`. **Default.**
+    /// - `query` — on `#` as well as `#?`.
+    /// - `waldorf` — whenever fast runs, heckling from the balcony
+    ///   after the fact. Unbounded: fires on everything typed.
+    ///
+    /// There is no `off`. `#?` IS the request for this lane, and a
+    /// pin always goes to it — a setting that could refuse either
+    /// would make the key silently dead. The ladder says when the lane
+    /// speaks up on its own, nothing more.
     ///
     /// (wiki: architecture/two-lane-engagement.md)
     pub slow: String,
@@ -326,7 +329,7 @@ impl Default for EngineConfig {
             max_tokens: 8192,
             thinking: "off".to_string(),
             command_first: true,
-            slow: "ingest".to_string(),
+            slow: "manual".to_string(),
             backfill_abandoned: false,
             slow_max_steps: 8,
             slow_max_secs: 180,
