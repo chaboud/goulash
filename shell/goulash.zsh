@@ -180,7 +180,6 @@ __goulash_accept_line() {
       # the newline commits it to the scrollback before the buffer is
       # cleared.
       zle -I
-      print -r -- ""
       BUFFER=""
       ;;
   esac
