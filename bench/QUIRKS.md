@@ -130,12 +130,36 @@ instruction-following.** Those cells' quality numbers should not be
 compared against ollama's. Pass A's `google/gemma-4-e4b` row — recorded
 as "answers" — was a single junk token followed by a stop.
 
-**For the product:** goulash's OpenAI-compatible wire sends the prompt
-verbatim to `/v1/completions`, so pointing 0.4.0 at LM Studio with a
-Gemma model produces garbage, and with a qwen model produces plausible
-nonsense. It needs to either apply the model's template or use the chat
-endpoint and pay the reasoning cost. That is an open 0.4.0 question, not
-a settled one — see [open-questions](../wiki/product/open-questions.md).
+### Resolved (2026-07-31): it was a port regression, and it is fixed
+
+Not an open design question — a bug I introduced. The
+`engine-characterization` branch shipped
+`OpenAiCompat { chat: true }`: **chat was the default and raw was the
+opt-in**, exactly so the server would apply the template. The port to
+`wire.rs` inverted it, mapping `openai` / `lmstudio` / `llamacpp` /
+`vllm` onto raw completions.
+
+Restored: every friendly spelling now resolves to
+`/v1/chat/completions`, and raw is reachable only by asking for
+`openai-raw` by name. A test pins each spelling, because this inverted
+silently once already.
+
+Verified the way it should have been verified the first time — by
+reading answers, not counting tokens. Same question, same server,
+through the real binary:
+
+| path | answer |
+|---|---|
+| `openai` (chat) `gemma-4-e4b` | `ls -lSh` |
+| `openai` (chat) `qwen3-8b` | `ls -lS` |
+| `openai-raw` `gemma-4-e4b` | *no suggestion at all* |
+| `ollama` `gemma3:4b` | `ls -lSr` (unaffected by the change) |
+
+**The cost of not looking:** ~4,000 benchmark generations and a full
+Pass A were run against the broken mode. Every `openai-raw` number in
+this file and in [QUALITY](QUALITY.md) describes untemplated completion
+and should not be compared with ollama's. One qualitative read of one
+answer would have caught it before any of them.
 
 ### `google/gemma-4-12b-qat` is separately broken
 

@@ -141,6 +141,10 @@ enabled = true
 rows = 1
 
 [engine]
+provider   = "auto"    # auto | ollama | openai | openai-raw | none
+                       # "openai" covers LM Studio, llama.cpp, vLLM and
+                       # hosted /v1 endpoints; openai-raw skips the
+                       # server's chat template and is for measurement
 thinking   = "off"     # off | low | medium | high
 max_tokens = 8192      # ONE cap over reasoning and answer together
 num_ctx_min = 8192     # smallest window goulash can work in

@@ -108,8 +108,12 @@ should turn into edits on the linked pages.
   [heckle-mode](../interaction/heckle-mode.md).
 - Autonomy dial: scope-grant language and UI for `accept-each` /
   `auto-evaluated` modes — [chat-mode](../interaction/chat-mode.md).
-- **Prompt templating on OpenAI-compatible servers.** *(opened
-  2026-07-31, blocking-ish for 0.4.0)* ollama's `/api/generate` applies
+- ~~**Prompt templating on OpenAI-compatible servers.**~~ **Resolved
+  same day: a port regression, not a design question.** The provider
+  seam always defaulted to `/v1/chat/completions` so the server applies
+  the model's template; the port to `wire.rs` inverted it to raw
+  completions. Restored, with a test per spelling. Raw stays reachable
+  as `openai-raw` for cache measurement. Original writeup: ollama's `/api/generate` applies
   the model's chat template by default; LM Studio's `/v1/completions`
   applies nothing. goulash sends the same bytes to both, so on LM Studio
   the model *completes* the prompt instead of following it — Gemma

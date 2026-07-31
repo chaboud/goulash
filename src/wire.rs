@@ -1,13 +1,22 @@
 //! Provider wire formats.
 //!
-//! goulash sends a **raw completion prompt**, not chat messages, and
-//! that is not incidental: the whole engine design is a stable prefix
-//! plus prefix KV caching (wiki: llm-engine.md). Chat-completions hands
-//! prompt assembly to the server's template, which moves the prefix
-//! boundary out from under us and can silently stop the cache from
-//! hitting. So the OpenAI-compatible path targets `/v1/completions`,
-//! which llama.cpp's server, LM Studio and vLLM all expose — **same
-//! prompt bytes, different envelope**.
+//! goulash assembles one **stable-prefix string**, because the whole
+//! engine design is that prefix plus the provider's KV cache (wiki:
+//! llm-engine.md). Where that string goes differs by server, and the
+//! difference is bigger than an envelope:
+//!
+//! - **ollama `/api/generate`** applies the model's chat template to it.
+//! - **OpenAI-compatible `/v1/chat/completions`** applies it too, at the
+//!   cost of moving the prefix boundary. **This is the default.**
+//! - **OpenAI-compatible `/v1/completions`** applies *nothing*. Better
+//!   for the cache, and wrong for everything else: an instruction sent
+//!   there is continued rather than followed.
+//!
+//! That last point cost a release. The path defaulted to raw
+//! completions and Gemma answered in repetition loops while qwen3 wrote
+//! fluent replies to questions nobody asked — silently, with every
+//! mechanical metric green. Cache shape is worth optimising; it is not
+//! worth an answer that is not an answer. (bench/QUIRKS.md §3)
 //!
 //! Everything provider-shaped lives here. The engine builds a `Gen` and
 //! reads back text; it never learns which server it is talking to.
@@ -17,23 +26,35 @@ use serde_json::{Value, json};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Wire {
     Ollama,
-    /// OpenAI-compatible `/v1/completions`: LM Studio, llama.cpp
-    /// server, vLLM. **Preferred for a local server** — it takes
-    /// goulash's stable-prefix string verbatim, so the KV cache keeps
-    /// hitting.
+    /// OpenAI-compatible `/v1/completions` — a **raw** completion
+    /// endpoint. Opt-in only, spelled `openai-raw`.
+    ///
+    /// It applies NO chat template. That is the whole difference from
+    /// ollama's `/api/generate`, which templates by default, and it is
+    /// not a nuance: an instruction prompt sent here is *continued*
+    /// rather than followed. Gemma degenerates into a repetition loop
+    /// without its turn markers; qwen3 writes a plausible paragraph
+    /// answering nobody's question. Neither reports an error, and every
+    /// mechanical metric scores the qwen case as a success.
+    ///
+    /// Kept because it is the honest shape for measuring prefix caching
+    /// — it takes our stable-prefix string verbatim — and because a
+    /// server that pre-templates would want it. Not for general use.
+    /// (bench/QUIRKS.md §3)
     OpenAi,
-    /// OpenAI-compatible `/v1/chat/completions`.
+    /// OpenAI-compatible `/v1/chat/completions`. **The default** for
+    /// every OpenAI-compatible spelling.
     ///
-    /// The template wraps our prompt, which moves the prefix boundary
-    /// and costs cache hits — so it is not the default for a local
-    /// server. It is not optional either: **hosted providers offer
-    /// nothing else**, so an Anthropic/OpenAI adapter lands here.
+    /// The server applies the model's own template, which is what makes
+    /// an instruction behave like an instruction. It also means hosted
+    /// providers work, since they offer nothing else.
     ///
-    /// It also reasons whether or not we ask, because the template
-    /// decides. That is survivable and was measured: given a budget
+    /// The cost is real and was measured: the template moves the prefix
+    /// boundary, and it reasons whether or not we ask. Given a budget
     /// that is not starving it, the same weights that returned empty
     /// `content` at a 256-token ceiling answer normally, spending
-    /// 659-896 tokens thinking first. (bench/QUIRKS.md 1)
+    /// 659-896 tokens thinking first. That is a price worth paying for
+    /// answers that are answers. (bench/QUIRKS.md §1, §3)
     OpenAiChat,
 }
 
@@ -57,8 +78,8 @@ impl Backend {
     pub fn label(&self) -> &'static str {
         match self.wire {
             Wire::Ollama => "ollama",
-            Wire::OpenAi => "openai",
-            Wire::OpenAiChat => "openai-chat",
+            Wire::OpenAi => "openai-raw",
+            Wire::OpenAiChat => "openai",
         }
     }
 }
@@ -186,8 +207,18 @@ impl Wire {
     pub fn parse(s: &str) -> Option<Wire> {
         match s {
             "ollama" => Some(Wire::Ollama),
-            "openai" | "lmstudio" | "llamacpp" | "vllm" => Some(Wire::OpenAi),
-            "openai-chat" | "chat" => Some(Wire::OpenAiChat),
+            // Every friendly spelling lands on CHAT, because chat is the
+            // one that applies the model's template. This defaulted to
+            // raw completions for one release and it was a regression,
+            // not a choice: `engine-characterization` shipped
+            // `OpenAiCompat { chat: true }` and the port inverted it.
+            // The failure was silent — see the OpenAi variant's docs.
+            "openai" | "openai-chat" | "chat" | "lmstudio" | "llamacpp" | "vllm" => {
+                Some(Wire::OpenAiChat)
+            }
+            // Raw completions, named explicitly so nobody arrives here
+            // by accident.
+            "openai-raw" | "completions" => Some(Wire::OpenAi),
             _ => None,
         }
     }
@@ -615,7 +646,16 @@ mod tests {
             Wire::OpenAi.models_url("http://localhost:1234"),
             "http://localhost:1234/v1/models"
         );
-        assert_eq!(Wire::parse("lmstudio"), Some(Wire::OpenAi));
+        // Every friendly spelling must land on CHAT. Raw completions
+        // apply no template, so an instruction prompt is continued
+        // instead of followed -- reachable only by asking for it by
+        // name. This inverted once, silently, for a whole release.
+        for s in ["openai", "openai-chat", "chat", "lmstudio", "llamacpp", "vllm"] {
+            assert_eq!(Wire::parse(s), Some(Wire::OpenAiChat), "{s} must be chat");
+        }
+        for s in ["openai-raw", "completions"] {
+            assert_eq!(Wire::parse(s), Some(Wire::OpenAi), "{s} is opt-in raw");
+        }
         assert_eq!(Wire::parse("nope"), None);
     }
 }

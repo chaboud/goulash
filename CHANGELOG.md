@@ -46,8 +46,13 @@ and two engines ([`bench/`](bench/)).
   dial: `gemma3n` rejects the request, `gpt-oss` takes named levels,
   `qwen3` a boolean, `deepseek-r1` reasons whether asked or not.
 - **OpenAI-compatible provider** (`wire.rs`) — LM Studio, llama.cpp,
-  vLLM. Targets `/v1/completions`, so goulash's stable-prefix string
-  goes over verbatim and the KV cache keeps hitting.
+  vLLM, and any hosted `/v1`. Targets `/v1/chat/completions`, because
+  that is the endpoint that applies the model's own template. The raw
+  `/v1/completions` endpoint applies none, and an instruction sent
+  there is *continued* rather than followed — Gemma degenerates into a
+  repetition loop, qwen3 answers a question nobody asked. Available as
+  `provider = "openai-raw"` for measuring prefix caching, which is the
+  one thing it is genuinely better at.
 - **Machine facts** (`engine.divulge.platform`, on by default). The
   prompt now names the OS, shell and userland: *"BSD differs from GNU:
   `du -d N` not `--max-depth`…"*. Measured over 4355 vended commands, 91
