@@ -10,9 +10,12 @@ measured the pre-merge engine — before the stop sequence was dropped,
 before capability-gated thinking, and before the context negotiation was
 fixed. Numbers that moved are named in place rather than overwritten.
 
-**Answer, unchanged and now on more cells: no per-model table is
-needed.** Two provider-level capabilities are, and the engine carries
-both.
+**Answer, on more cells: no per-model *quirks* table is needed** — no
+model needed different wording, different settings, or a special case to
+work. Two provider-level capabilities are needed. The engine carries one
+of them and **not the other**: prompt templating on OpenAI-compatible
+servers is unhandled, and it is the sharpest open risk in this release
+(§3).
 
 ---
 
@@ -61,7 +64,7 @@ the stop sequence was truncating to nothing:
 
 | cell | with `["\n\n"]` | without |
 |---|---|---|
-| `google/gemma-4-e4b` (raw) | **empty** | answers |
+| `google/gemma-4-e4b` (raw) | **empty** | 3 tokens |
 | `qwen/qwen3-4b` (raw) | **empty** | 255 tokens |
 | `deepseek-r1:14b` | 42 tokens | 256 tokens |
 
@@ -80,16 +83,72 @@ with the same weights:
 | model | `/v1/completions` | `/v1/chat/completions` |
 |---|---|---|
 | `qwen/qwen3-8b` | 34 tokens | **empty ×12** |
-| `google/gemma-4-e4b` | answers | **empty ×12** |
+| `google/gemma-4-e4b` | 1 token | **empty ×12** |
+
+Read that raw column with the correction below in mind: neither cell was
+*answering*. One completed the text, the other emitted a token and
+stopped.
 
 The 2026-07-30 correction argued the chat path was *starved* rather than
 broken — measured at a 256 ceiling, it never got to finish. That remains
-the mechanism and does not change the operational call: **prefer
-`/v1/completions` for local OpenAI-compatible servers.** It is also the
-better cache shape, since the raw endpoint takes the stable-prefix string
-verbatim the way ollama's `/api/generate` does. Hosted providers offer
-chat only, so a future cloud adapter inherits this and needs its own
-reasoning control.
+the mechanism.
+
+### Correction (2026-07-31): "prefer `/v1/completions`" was wrong
+
+That advice stood in this file for two days and it is **not safe**. It
+came from seeing chat return empty and raw return non-empty, and reading
+non-empty as working. It is not.
+
+The two endpoints are not the same call with a different wrapper.
+**ollama's `/api/generate` applies the model's chat template by default;
+LM Studio's `/v1/completions` applies nothing.** goulash treats them as
+equivalent, and they are not. Sent the identical bare prompt
+`"Say hello."`:
+
+| engine / endpoint | model | result |
+|---|---|---|
+| ollama `/api/generate` | `gemma4:12b` | `Hello! How can I help you today?` ✓ |
+| LM Studio `/v1/completions` | `google/gemma-4-e4b` | `SaySay hello. SaySay hello. SaySay…` |
+| LM Studio `/v1/completions` | `qwen/qwen3-8b` | `Then, write a short paragraph about your favorite animal…` |
+
+Two distinct failures, and neither reports an error:
+
+- **Gemma degenerates without its turn markers.** Supplying them by hand
+  through the same endpoint fixes it outright — `google/gemma-4-e4b`
+  goes from an infinite `SaySay` loop to `Hello.` in 1.1 s with
+  `finish_reason: stop`. This is a template problem, not a model
+  problem.
+- **qwen3 does not degenerate; it *completes*.** Given an instruction it
+  continues the text rather than following it — inventing a follow-up
+  exercise, or answering as a fictional teenager. Coherent, non-empty,
+  and not an answer. This is the more dangerous of the two, because
+  every mechanical metric scores it as success.
+
+**Everything measured through `openai-raw` in this file and in
+[QUALITY](QUALITY.md) is therefore measuring untemplated completion, not
+instruction-following.** Those cells' quality numbers should not be
+compared against ollama's. Pass A's `google/gemma-4-e4b` row — recorded
+as "answers" — was a single junk token followed by a stop.
+
+**For the product:** goulash's OpenAI-compatible wire sends the prompt
+verbatim to `/v1/completions`, so pointing 0.4.0 at LM Studio with a
+Gemma model produces garbage, and with a qwen model produces plausible
+nonsense. It needs to either apply the model's template or use the chat
+endpoint and pay the reasoning cost. That is an open 0.4.0 question, not
+a settled one — see [open-questions](../wiki/product/open-questions.md).
+
+### `google/gemma-4-12b-qat` is separately broken
+
+Turn markers do **not** rescue it. Templated, it emits
+`<|channel|>` — a gpt-oss/harmony special token that has no business in
+a Gemma vocabulary — and fragments like `_end_turn>`, which is
+`<end_of_turn>` mis-split. That is a wrong or corrupt tokenizer in the
+downloaded file, not a prompting issue.
+
+It is also the single most expensive cell in the grid: 47 s per
+generation, every generation hitting the token ceiling because it never
+emits a stop token. 6.3 hours of the sweep to produce 476 walls of
+zeroes. **Re-download it or drop it from the catalog.**
 
 ## 4. `gpt-oss:20b` cannot be rescued by settings
 
@@ -153,8 +212,12 @@ What is required sits at the provider layer and is already built —
 
 | capability | who needs it |
 |---|---|
-| working reasoning suppression | ollama: ask `/api/show`, send `think: false`. OpenAI-compat: **use `/v1/completions`**; the chat template is what enables reasoning and no request-level kwarg reliably disables it |
-| endpoint choice per model | the qwen3 family and `gemma-4-12b-qat` are clean on raw; chat is unusable for both cells tested |
+| working reasoning suppression | ollama: ask `/api/show`, send `think: false` — this works and is shipped |
+| **prompt templating** | OpenAI-compat: `/v1/completions` applies NO template, so an instruction prompt is completed rather than followed. **Open, and the one thing 0.4.0 does not handle** (§3) |
+
+The second row is the sharpest open risk in this release: goulash's
+OpenAI-compatible path is measurably wrong on LM Studio, silently, and
+the failure scores as success on every mechanical metric.
 
 Get either wrong and the failure is silent — a blank bar and no reason
 given, which is the shape of every serious defect in this codebase

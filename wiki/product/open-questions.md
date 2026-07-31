@@ -108,3 +108,15 @@ should turn into edits on the linked pages.
   [heckle-mode](../interaction/heckle-mode.md).
 - Autonomy dial: scope-grant language and UI for `accept-each` /
   `auto-evaluated` modes — [chat-mode](../interaction/chat-mode.md).
+- **Prompt templating on OpenAI-compatible servers.** *(opened
+  2026-07-31, blocking-ish for 0.4.0)* ollama's `/api/generate` applies
+  the model's chat template by default; LM Studio's `/v1/completions`
+  applies nothing. goulash sends the same bytes to both, so on LM Studio
+  the model *completes* the prompt instead of following it — Gemma
+  degenerates into a repetition loop, qwen3 answers a question nobody
+  asked, and neither reports an error. Three ways out, none free:
+  (a) apply the model's template client-side, which needs per-model
+  knowledge goulash has deliberately avoided; (b) use
+  `/v1/chat/completions` and pay the reasoning cost that made us leave
+  it; (c) document it and let the user pick the endpoint. Measured in
+  [bench/QUIRKS.md](../../bench/QUIRKS.md) §3.
