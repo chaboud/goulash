@@ -291,6 +291,10 @@ struct Group {
     name: &'static str,
     what: &'static str,
     rows: &'static [(&'static str, &'static [&'static str])],
+    /// Hidden unless `debug` is on. A group where every row is a lever
+    /// for bisecting a field problem is not a settings group, it is a
+    /// drawer — and leaving it open teaches the wrong three things.
+    debug: bool,
 }
 
 /// Rows that open another menu rather than cycling a value. The value
@@ -298,6 +302,7 @@ struct Group {
 const OPENS_MENU: &[&str] = &["model", "research model"];
 
 const FAST_ROWS: &[(&str, &[&str])] = &[
+    ("provider", &["auto", "ollama", "openai", "openai-chat", "none"]),
     ("model", &[]),
     ("thinking", &["off", "low", "medium", "high"]),
     ("command_first", &["on", "off"]),
@@ -305,8 +310,23 @@ const FAST_ROWS: &[(&str, &[&str])] = &[
 ];
 
 const SLOW_ROWS: &[(&str, &[&str])] = &[
-    ("research model", &[]),
-    ("slow", &["ingest", "volunteer", "manual", "off"]),
+    // When the lane joins at all — the first thing anyone wants to
+    // decide about it, so the first row.
+    ("mode", &["ingest", "volunteer", "manual", "off"]),
+    // The rest mirror the fast lane, and each can simply follow it.
+    (
+        "provider",
+        &["same as fast", "ollama", "openai", "openai-chat"],
+    ),
+    ("model", &[]),
+    (
+        "thinking",
+        &["same as fast", "off", "low", "medium", "high"],
+    ),
+    (
+        "max_tokens",
+        &["same as fast", "2048", "4096", "8192", "16384"],
+    ),
 ];
 
 const CONTEXT_ROWS: &[(&str, &[&str])] = &[
@@ -327,37 +347,62 @@ const TERMINAL_ROWS: &[(&str, &[&str])] = &[
     ("wrap_guard", &["off", "on"]),
 ];
 
+/// Rows hidden until `expert` is on.
+///
+/// Not secret — sharp. `command_first` is settled by measurement and
+/// turning it off makes goulash worse; `divulge_path` costs ~3900 tokens
+/// for nothing; the terminal knobs exist to bisect a field problem in
+/// place. A menu that shows everything at once teaches nobody which
+/// three things actually matter.
+const ADVANCED: &[&str] = &[
+    "command_first",
+    "max_tokens",
+    "divulge_tools",
+    "divulge_path",
+    "cursor_save",
+    "wrap_guard",
+];
+
 const GROUPS: &[Group] = &[
     Group {
         name: "fast lane",
         what: "the lane that answers; always on",
         rows: FAST_ROWS,
+        debug: false,
     },
     Group {
         name: "slow lane",
         what: "the lane that researches and amends",
         rows: SLOW_ROWS,
+        debug: false,
     },
     Group {
         name: "context",
         what: "what the model is told about your machine",
         rows: CONTEXT_ROWS,
+        debug: false,
     },
     Group {
         name: "band",
         what: "what goulash shows unprompted",
         rows: BAND_ROWS,
+        debug: false,
     },
     Group {
         name: "terminal",
         what: "how goulash drives the emulator",
         rows: TERMINAL_ROWS,
+        debug: true,
     },
 ];
 
 /// Every row, whichever group it lives in — for applying a value
 /// without caring where the user found it.
 fn row_values(name: &str) -> Option<&'static [&'static str]> {
+    // Not in any group: it lives on the root list, beside them.
+    if name == "expert" {
+        return Some(&["off", "on"]);
+    }
     GROUPS
         .iter()
         .flat_map(|g| g.rows)
@@ -962,7 +1007,7 @@ fn compose_rows(
                         // the first word.
                         let v = it.next().unwrap_or("").trim();
                         let v = v.split_whitespace().next().unwrap_or(v);
-                        setting_help(k, v)
+                        setting_help(m.group.as_deref() == Some("slow lane"), k, v)
                     })
                     .unwrap_or(""),
                 _ => "",
@@ -1271,6 +1316,11 @@ fn slash_command(
     full_path: bool,
     fast_model: Option<&str>,
     slow_model: Option<&str>,
+    provider: &str,
+    slow_provider: Option<&str>,
+    slow_thinking: Option<&str>,
+    slow_max_tokens: Option<&str>,
+    dbg_rows: bool,
 ) -> Option<String> {
     let mut it = cmdline.splitn(2, char::is_whitespace);
     let cmd = it.next().unwrap_or("");
@@ -1385,6 +1435,11 @@ fn slash_command(
                 full_path,
                 fast_model,
                 slow_model,
+                provider,
+                slow_provider,
+                slow_thinking,
+                slow_max_tokens,
+                debug: dbg_rows,
                 dbg,
             });
             *menu = Some(m);
@@ -1410,6 +1465,11 @@ fn slash_command(
                 full_path,
                 fast_model,
                 slow_model,
+                provider,
+                slow_provider,
+                slow_thinking,
+                slow_max_tokens,
+                debug: dbg_rows,
                 dbg,
             });
             m.loaded = true;
@@ -1477,6 +1537,11 @@ struct Live<'a> {
     full_path: bool,
     fast_model: Option<&'a str>,
     slow_model: Option<&'a str>,
+    provider: &'a str,
+    slow_provider: Option<&'a str>,
+    slow_thinking: Option<&'a str>,
+    slow_max_tokens: Option<&'a str>,
+    debug: bool,
     dbg: &'a crate::config::DebugConfig,
     slow: &'a str,
     thinking: &'a str,
@@ -1497,16 +1562,22 @@ struct Live<'a> {
 ///
 /// Kept to one clause. This shares a row with the setting, and a
 /// sentence that wraps would take rows from the shell.
-fn setting_help(name: &str, value: &str) -> &'static str {
+fn setting_help(slow: bool, name: &str, value: &str) -> &'static str {
     // Where the values are the thing that needs explaining, explain the
     // one you are standing on. `ingest` and `volunteer` are not English;
     // they mean nothing until you are told, and being told after you
     // picked wrong is not help.
     match (name, value) {
-        ("slow", "off") => "the research lane never runs",
-        ("slow", "manual") => "only when you ask with #?",
-        ("slow", "ingest") => "on #? and when you pin a file with #@",
-        ("slow", "volunteer") => "on every # ask too — it will amend a lot",
+        ("mode", "off") => "the research lane never runs",
+        ("mode", "manual") => "only when you ask with #?",
+        ("mode", "ingest") => "on #? and when you pin a file with #@",
+        ("mode", "volunteer") => "on every # ask too — it will amend a lot",
+
+        (_, "same as fast") => "follows the fast lane; change it to differ",
+        ("provider", _) if slow => "send research somewhere better — a bigger box, or a hosted model",
+        ("model", _) if slow => "the slow lane can use a different model, or machine",
+        ("thinking", _) if slow => "let the slow lane think harder than the one that answers",
+        ("max_tokens", _) if slow => "a considered answer can afford a longer one",
 
         ("thinking", "off") => "ask for no reasoning; some models do anyway",
         ("thinking", "low") => "brief reasoning where the model supports levels",
@@ -1516,8 +1587,12 @@ fn setting_help(name: &str, value: &str) -> &'static str {
         ("cursor_save", "decsc") => "the terminal's own save/restore; keeps deferred wrap",
         ("cursor_save", "absolute") => "re-home from our mirror; loses the wrap flag",
 
+        ("provider", _) => "which server answers: ollama, an OpenAI-compatible one, or none",
+        ("slow_provider", _) => "send research somewhere better — a bigger box, or a hosted model",
+        ("slow_thinking", _) => "let the slow lane think harder than the one that answers",
+        ("slow_max_tokens", _) => "a considered answer can afford a longer one",
+        ("expert", _) => "show the sharp settings: CMD-first, token ceilings, terminal knobs",
         ("model", _) => "which model answers; \u{23ce} opens the picker",
-        ("research model", _) => "the slow lane can use a different model, or machine",
 
         ("commentary", _) => "unprompted tips after a command",
         ("memory", _) => "let the model keep notes across sessions",
@@ -1559,29 +1634,48 @@ fn settings_items(v: &Live) -> Vec<String> {
     let Some(group) = v.group else {
         return GROUPS
             .iter()
+            .filter(|g| v.debug || !g.debug)
             .map(|g| format!("{} \u{25b8}", g.name))
+            .chain(std::iter::once(format!(
+                "expert: {}",
+                if v.debug { "on" } else { "off" }
+            )))
             .collect();
     };
+    let in_slow = group == "slow lane";
     let Some(g) = GROUPS.iter().find(|g| g.name == group) else {
         return Vec::new();
     };
     // `..` first, so leaving is the thing your hand finds without being
     // told it exists.
     std::iter::once("..".to_string())
-        .chain(g.rows.iter().map(|(name, _)| {
+        .chain(g.rows.iter().filter(|(n, _)| v.debug || !ADVANCED.contains(n)).map(|(name, _)| {
             let v = match *name {
+                // Rows repeat across the lanes on purpose — inside a
+                // group already labelled `slow lane`, a `slow_` prefix
+                // says nothing. The LANE disambiguates, not the name.
+                "mode" => slow.to_string(),
+                "provider" if in_slow => {
+                    v.slow_provider.unwrap_or("same as fast").to_string()
+                }
+                "provider" => v.provider.to_string(),
+                "model" if in_slow => v.slow_model.unwrap_or("same as fast").to_string(),
                 "model" => v.fast_model.unwrap_or("(auto)").to_string(),
-                "research model" => v.slow_model.unwrap_or("(same as fast)").to_string(),
+                "thinking" if in_slow => {
+                    v.slow_thinking.unwrap_or("same as fast").to_string()
+                }
+                "thinking" => format!("{thinking}{}", thinking_note(caps)),
+                "max_tokens" if in_slow => {
+                    v.slow_max_tokens.unwrap_or("same as fast").to_string()
+                }
+                "max_tokens" => max_tokens.to_string(),
                 "cursor_save" => v.dbg.cursor_save.clone(),
                 "idle_repaint" => if v.dbg.idle_repaint { "on" } else { "off" }.to_string(),
                 "wrap_guard" => if v.dbg.wrap_guard { "on" } else { "off" }.to_string(),
                 "divulge_tools" => if v.tools { "on" } else { "off" }.to_string(),
                 "divulge_path" => if v.full_path { "on" } else { "off" }.to_string(),
                 "commentary" => if commentary { "on" } else { "off" }.to_string(),
-                "slow" => slow.to_string(),
-                "thinking" => format!("{thinking}{}", thinking_note(caps)),
                 "memory" => if memory.enabled { "on" } else { "off" }.to_string(),
-                "max_tokens" => max_tokens.to_string(),
                 "command_first" => if command_first { "on" } else { "off" }.to_string(),
                 "platform" => if platform { "on" } else { "off" }.to_string(),
                 "stats" => if stats { "on" } else { "off" }.to_string(),
@@ -2101,6 +2195,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut opt_full_path = cfg.engine.divulge.full_path;
     // What the research lane is bound to, when it differs from fast.
     let mut opt_slow_model: Option<String> = cfg.engine.slow_lane.model.clone();
+    let mut opt_provider = cfg.engine.provider.clone();
+    let mut opt_slow_provider: Option<String> = cfg.engine.slow_lane.provider.clone();
+    let mut opt_slow_thinking: Option<String> = cfg.engine.slow_lane.thinking.clone();
+    let mut opt_slow_max: Option<String> = None;
+    // Whether the sharp rows are shown. Session-scoped: you turn it on
+    // to look at something, not to live there.
+    let mut opt_dbg_rows = cfg.debug.show_advanced;
     let mut opt_stats = cfg.status.stats;
     let mut stats = crate::stats::Stats::new();
     // Findings that arrived while the user was browsing. The lineage
@@ -2625,6 +2726,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             cfg.engine.divulge.full_path,
                                             engine_model.as_deref(),
                                             opt_slow_model.as_deref(),
+                                            &opt_provider,
+                                            opt_slow_provider.as_deref(),
+                                            opt_slow_thinking.as_deref(),
+                                            opt_slow_max.as_deref(),
+                                            opt_dbg_rows,
                                         );
                                     } else if let Some(eng) = engine.as_ref() {
                                         eng.ask(
@@ -3055,6 +3161,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         let mut parts = item.splitn(2, ':');
                         let name = parts.next().unwrap_or("").trim().to_string();
                         let cur = parts.next().unwrap_or("").trim().to_string();
+                        // Row names repeat across the lanes, so the name
+                        // alone does not identify a setting. Without
+                        // this, cycling `provider` inside `slow lane`
+                        // fell through to the fast lane's arm and edited
+                        // the wrong one, silently.
+                        let in_slow =
+                            menu.as_ref().and_then(|m| m.group.as_deref()) == Some("slow lane");
                         // Rows with no value list are doors, not dials.
                         if OPENS_MENU.contains(&name.as_str()) {
                             open_picker = Some(name.clone());
@@ -3130,6 +3243,92 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     let _ =
                                         Config::persist_key("engine.divulge", key, &on.to_string());
                                 }
+                                // Anything in the slow lane is an
+                                // OVERRIDE: "same as fast" means the key
+                                // is absent, not a frozen copy of what
+                                // fast happens to say today.
+                                _ if in_slow
+                                    && matches!(
+                                        name.as_str(),
+                                        "provider" | "thinking" | "max_tokens"
+                                    ) =>
+                                {
+                                    let follow = next == "same as fast";
+                                    let val = (!follow).then(|| next.to_string());
+                                    match name.as_str() {
+                                        "provider" => opt_slow_provider = val.clone(),
+                                        "thinking" => opt_slow_thinking = val.clone(),
+                                        _ => opt_slow_max = val.clone(),
+                                    }
+                                    if let Some(eng) = engine.as_ref() {
+                                        eng.set_option(&format!("slow_{name}"), next);
+                                        if name == "provider" {
+                                            // A new server invalidates
+                                            // the bound model.
+                                            eng.rebind();
+                                        }
+                                    }
+                                    let _ = match val {
+                                        Some(v) => {
+                                            Config::persist_key("engine.slow_lane", &name, &v)
+                                        }
+                                        None => Config::remove_key("engine.slow_lane", &name),
+                                    };
+                                }
+                                // The terminal knobs. They used to live
+                                // in a separate `#/debug` menu with its
+                                // own apply block; `terminal` is a group
+                                // of the settings tree now, so they cycle
+                                // through here or they do not cycle at
+                                // all — they were rendering and changing
+                                // nothing.
+                                "cursor_save" | "idle_repaint" | "wrap_guard" => {
+                                    match name.as_str() {
+                                        "cursor_save" => dbg.cursor_save = next.to_string(),
+                                        "idle_repaint" => dbg.idle_repaint = next == "on",
+                                        _ => dbg.wrap_guard = next == "on",
+                                    }
+                                    let _ = Config::persist_key(
+                                        "debug",
+                                        &name,
+                                        match name.as_str() {
+                                            "cursor_save" => next,
+                                            _ => {
+                                                if next == "on" {
+                                                    "true"
+                                                } else {
+                                                    "false"
+                                                }
+                                            }
+                                        },
+                                    );
+                                }
+                                "mode" => {
+                                    opt_slow = next.to_string();
+                                    if let Some(eng) = engine.as_ref() {
+                                        eng.set_option("slow", next);
+                                    }
+                                    let _ = Config::persist_key("engine", "slow", next);
+                                }
+                                "expert" => {
+                                    opt_dbg_rows = next == "on";
+                                    let _ = Config::persist_key(
+                                        "debug",
+                                        "show_advanced",
+                                        &opt_dbg_rows.to_string(),
+                                    );
+                                }
+                                "provider" => {
+                                    opt_provider = next.to_string();
+                                    if let Some(eng) = engine.as_ref() {
+                                        eng.set_option("provider", next);
+                                        // A new server means a new model
+                                        // list; the old binding is not
+                                        // valid there.
+                                        eng.rebind();
+                                    }
+                                    let _ = Config::persist_key("engine", "provider", next);
+                                }
                                 "command_first" => {
                                     // The session vends mid-stream off its
                                     // OWN copy, so telling only the engine
@@ -3154,6 +3353,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     full_path: opt_full_path,
                                     fast_model: engine_model.as_deref(),
                                     slow_model: opt_slow_model.as_deref(),
+                                    provider: &opt_provider,
+                                    slow_provider: opt_slow_provider.as_deref(),
+                                    slow_thinking: opt_slow_thinking.as_deref(),
+                                    slow_max_tokens: opt_slow_max.as_deref(),
+                                    debug: opt_dbg_rows,
                                     dbg: &dbg,
                                     commentary,
                                     slow: &opt_slow,
@@ -3209,6 +3413,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     full_path: opt_full_path,
                                     fast_model: engine_model.as_deref(),
                                     slow_model: opt_slow_model.as_deref(),
+                                    provider: &opt_provider,
+                                    slow_provider: opt_slow_provider.as_deref(),
+                                    slow_thinking: opt_slow_thinking.as_deref(),
+                                    slow_max_tokens: opt_slow_max.as_deref(),
+                                    debug: opt_dbg_rows,
                                     dbg: &dbg,
                                     commentary,
                                     slow: &opt_slow,
@@ -3341,6 +3550,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 full_path: opt_full_path,
                                 fast_model: engine_model.as_deref(),
                                 slow_model: opt_slow_model.as_deref(),
+                                provider: &opt_provider,
+                                slow_provider: opt_slow_provider.as_deref(),
+                                slow_thinking: opt_slow_thinking.as_deref(),
+                                slow_max_tokens: opt_slow_max.as_deref(),
+                                debug: opt_dbg_rows,
                                 dbg: &dbg,
                                 commentary,
                                 slow: &opt_slow,
@@ -3480,6 +3694,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 cfg.engine.divulge.full_path,
                                 engine_model.as_deref(),
                                 opt_slow_model.as_deref(),
+                                &opt_provider,
+                                opt_slow_provider.as_deref(),
+                                opt_slow_thinking.as_deref(),
+                                opt_slow_max.as_deref(),
+                                opt_dbg_rows,
                             );
                             if let (Some(c), Some(msg)) = (chat.as_mut(), out) {
                                 c.lines.push(format!("goulash: {msg}"));
@@ -3587,6 +3806,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     full_path: opt_full_path,
                                     fast_model: engine_model.as_deref(),
                                     slow_model: opt_slow_model.as_deref(),
+                                    provider: &opt_provider,
+                                    slow_provider: opt_slow_provider.as_deref(),
+                                    slow_thinking: opt_slow_thinking.as_deref(),
+                                    slow_max_tokens: opt_slow_max.as_deref(),
+                                    debug: opt_dbg_rows,
                                     dbg: &dbg,
                                 commentary,
                                 slow: &opt_slow,
@@ -4081,6 +4305,8 @@ mod key_tests {
                 Key::Down => 'D',
                 Key::Esc => 'E',
                 Key::CtrlC => 'C',
+                Key::Right => '>',
+                Key::Left => '<',
             })
             .collect()
     }

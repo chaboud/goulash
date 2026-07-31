@@ -553,6 +553,14 @@ fn worker(
                 },
                 Job::SetOption(k, v) => match k.as_str() {
                     "thinking" => cfg.thinking = v,
+                    "slow_max_tokens" => {
+                        cfg.slow_lane.max_tokens =
+                            (v != "same as fast").then(|| v.parse().ok()).flatten();
+                    }
+                    "slow_thinking" => {
+                        cfg.slow_lane.thinking =
+                            (v != "same as fast").then(|| v.to_string());
+                    }
                     "slow" => cfg.slow = v,
                     "command_first" => cfg.command_first = v == "true" || v == "on",
                     // Machine facts. Live because the reason to turn them
@@ -560,6 +568,15 @@ fn worker(
                     // and that comparison is worthless if it needs a
                     // restart in the middle.
                     "platform" => cfg.divulge.platform = v == "true" || v == "on",
+                    // Which server a lane talks to. Rebinding is the
+                    // caller's job: changing the provider invalidates
+                    // the bound model, and picking the new one is a
+                    // probe, not a field assignment.
+                    "provider" => cfg.provider = v,
+                    "slow_provider" => {
+                        cfg.slow_lane.provider =
+                            (v != "same as fast").then(|| v.to_string());
+                    }
                     "divulge_tools" => cfg.divulge.tools = v == "true" || v == "on",
                     "divulge_path" => cfg.divulge.full_path = v == "true" || v == "on",
                     "max_tokens" => {
@@ -872,11 +889,14 @@ fn research_once(
         prompt: &prompt,
         stream: false,
         temperature: 0.3,
-        max_tokens: budget.max(cfg.max_tokens),
+        max_tokens: budget.max(slow_max_tokens(cfg)),
         num_ctx: ctx_for(cl, cfg, model),
         stop: &[],
-        think: caps.think_field(&cfg.thinking),
-        effort: caps.effort_field(&cfg.thinking),
+        // The SLOW lane's own dial, which follows fast unless told
+        // otherwise. The lanes exist to differ here: fast has to be
+        // immediate, slow is the one that can afford to think.
+        think: caps.think_field(slow_thinking(cfg)),
+        effort: caps.effort_field(slow_thinking(cfg)),
         keep_alive: &cfg.keep_alive,
         num_keep: cfg.num_keep,
         seed: (cfg.seed >= 0).then_some(cfg.seed),
@@ -1492,6 +1512,20 @@ pub fn directive_for(command_first: bool, proactive: bool, pin_ask: bool) -> &'s
              command exists; otherwise send the SAY line alone."
         }
     }
+}
+
+/// What the slow lane asks for, falling back to the fast lane's dial.
+///
+/// The lanes exist to differ here: fast is the one that has to be
+/// immediate, slow is the one that can afford to think. One shared
+/// setting made that impossible to express.
+fn slow_thinking(cfg: &EngineConfig) -> &str {
+    cfg.slow_lane.thinking.as_deref().unwrap_or(&cfg.thinking)
+}
+
+/// The slow lane's ceiling, falling back to the fast lane's.
+fn slow_max_tokens(cfg: &EngineConfig) -> usize {
+    cfg.slow_lane.max_tokens.unwrap_or(cfg.max_tokens)
 }
 
 fn negotiate_ctx(cfg: &EngineConfig, resident: Option<usize>) -> usize {

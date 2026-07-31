@@ -225,6 +225,14 @@ pub struct LaneConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct LaneOverride {
+    /// Token ceiling for this lane alone. `None` follows the fast lane.
+    /// A considered answer can afford a longer one than a heckle.
+    pub max_tokens: Option<usize>,
+    /// Reasoning effort for this lane alone. `None` follows the fast
+    /// lane — which is the common case, and the reason the two lanes
+    /// exist at all is that it often should NOT: fast answers, slow
+    /// thinks.
+    pub thinking: Option<String>,
     pub provider: Option<String>,
     pub host: Option<String>,
     pub openai_host: Option<String>,
@@ -340,6 +348,13 @@ impl Default for EngineConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct DebugConfig {
+    /// Show the sharp settings in `#/settings`.
+    ///
+    /// Persistent on purpose — Android's developer options, not a
+    /// session toggle. Someone who needed these once will need them
+    /// again, and hiding them behind a switch that forgets is the same
+    /// as not having the switch.
+    pub show_advanced: bool,
     /// How the cursor is put back after painting the reserved rows.
     ///
     /// `decsc` uses the terminal's own save/restore (ESC 7 / ESC 8),
@@ -350,10 +365,13 @@ pub struct DebugConfig {
     /// express that flag and so silently cancels it. (wiki:
     /// architecture/status-rows.md)
     pub cursor_save: String,
-    /// The unprovoked repaint every few idle ticks: insurance against
-    /// output we mis-parsed, paid for with a write into a stream the
-    /// line editor believes it owns. Turn it off to find out whether it
-    /// is buying anything.
+    /// The unprovoked repaint after output settles: insurance against
+    /// something we mis-parsed, paid for with a write into a stream the
+    /// line editor believes it owns.
+    ///
+    /// **Off by default.** It is a guess that the band is damaged, and
+    /// the cure writes to the terminal at a moment nothing asked it to.
+    /// Every paint that matters is already triggered by something real.
     pub idle_repaint: bool,
     /// Skip a paint while the inner cursor sits in the last column,
     /// deferring it to the next tick. Belt-and-braces on top of
@@ -364,8 +382,9 @@ pub struct DebugConfig {
 impl Default for DebugConfig {
     fn default() -> Self {
         Self {
+            show_advanced: false,
             cursor_save: "decsc".to_string(),
-            idle_repaint: true,
+            idle_repaint: false,
             wrap_guard: false,
         }
     }
@@ -508,6 +527,23 @@ impl Config {
         };
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
+        }
+        std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())
+    }
+
+    /// Delete one key, leaving its section and everything else alone.
+    ///
+    /// "Follow the other lane" has to be the ABSENCE of an override, not
+    /// a copy of what the other lane currently says. Writing the value
+    /// would freeze it: the setting would read "same as fast" while
+    /// silently no longer tracking it.
+    pub fn remove_key(section: &str, key: &str) -> Result<(), String> {
+        let path = Self::dir().ok_or("no home dir")?.join("config.toml");
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut doc: toml_edit::DocumentMut =
+            text.parse().map_err(|e| format!("config parse: {e}"))?;
+        if let Some(t) = doc.get_mut(section).and_then(|t| t.as_table_like_mut()) {
+            t.remove(key);
         }
         std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())
     }
