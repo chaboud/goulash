@@ -176,9 +176,10 @@ __goulash_accept_line() {
       # the half the user wrote. bash keeps it for free (a `#` line is a
       # real comment there, so nothing rubs it out); zsh has to be told.
       #
-      # `zle -I` hands the display back so the typed line is final, and
-      # the newline commits it to the scrollback before the buffer is
-      # cleared.
+      # `zle -I` hands the display back, so the typed line is final
+      # before the buffer is cleared. Nothing else: a `print` here adds
+      # a newline that accept-line then adds again, costing a blank row
+      # and a repeated prompt on every ask.
       zle -I
       BUFFER=""
       ;;
