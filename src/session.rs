@@ -297,6 +297,17 @@ struct Group {
 /// column shows what is bound now.
 const OPENS_MENU: &[&str] = &["model", "research model"];
 
+/// The last entry on a list that also accepts a number. Cycling ONTO it
+/// opens the field immediately rather than resting here — a row showing
+/// `custom…` would be displaying something that is not the setting's
+/// value, and the next Esc would leave that lie on screen.
+const CUSTOM: &str = "custom\u{2026}";
+
+/// `(row, min, max)` for the rows that accept a typed number. Bounds are
+/// enforced, not suggested: these drive an animation, and a slide of
+/// 100000ms is not a preference, it is a bar that never arrives.
+const CUSTOM_BOUNDS: &[(&str, u64, u64)] = &[("bar_rate_ms", 15, 1000), ("bar_slide_ms", 60, 3000)];
+
 /// Rows that take a typed value. Enter opens an empty field on the row;
 /// Enter again commits, an empty field means unchanged, Esc cancels.
 ///
@@ -359,10 +370,15 @@ const TERMINAL_ROWS: &[(&str, &[&str])] = &[
     // Ascending, so cycling walks one way through the range; the
     // DEFAULT must appear in each list or the row shows a value it
     // cannot find and silently restarts from the first entry.
-    ("bar_rate_ms", &["15", "30", "45", "60", "90", "120"]),
+    (
+        "bar_rate_ms",
+        &["15", "30", "45", "60", "90", "120", "custom\u{2026}"],
+    ),
     (
         "bar_slide_ms",
-        &["60", "90", "120", "150", "180", "250", "500", "750", "1000"],
+        &[
+            "60", "90", "120", "150", "180", "250", "500", "750", "1000", "custom\u{2026}",
+        ],
     ),
 ];
 
@@ -3339,16 +3355,42 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     // because the value comes from the keyboard.
                     if let Some((row, typed)) = typed_setting {
                         let typed = typed.trim();
-                        notice = Some(match (row.as_str(), typed.parse::<usize>()) {
+                        let bounds = CUSTOM_BOUNDS.iter().find(|(n, ..)| *n == row);
+                        notice = Some(match (row.as_str(), typed.parse::<u64>()) {
                             (_, _) if typed.is_empty() => format!("{row}: unchanged"),
                             ("limit", Ok(n)) if n > 0 => {
                                 // set_limit persists the store itself;
                                 // memory.toml is its own file, not part
                                 // of config.toml.
-                                memory.set_limit(n);
+                                memory.set_limit(n as usize);
                                 format!("limit: {n}")
                             }
                             ("limit", _) => format!("limit: '{typed}' is not a number"),
+                            // Out of range is REFUSED, not clamped. A
+                            // silent clamp shows a number you did not
+                            // ask for and gives no reason, which is the
+                            // failure this codebase keeps making.
+                            (_, Ok(n)) if bounds.is_some_and(|(_, lo, hi)| n < *lo || n > *hi) => {
+                                let (_, lo, hi) = bounds.unwrap();
+                                format!("{row}: {n} is outside {lo}\u{2013}{hi}")
+                            }
+                            (_, Ok(n)) if bounds.is_some() => {
+                                let key = match row.as_str() {
+                                    "bar_rate_ms" => {
+                                        dbg.working_bar_step_ms = n;
+                                        "working_bar_step_ms"
+                                    }
+                                    _ => {
+                                        dbg.working_bar_grow_ms = n;
+                                        "working_bar_grow_ms"
+                                    }
+                                };
+                                let _ = Config::persist_key("debug", key, &n.to_string());
+                                format!("{row}: {n}")
+                            }
+                            (_, _) if bounds.is_some() => {
+                                format!("{row}: '{typed}' is not a number")
+                            }
                             _ => format!("{row}: nothing takes a typed value here"),
                         });
                         if let Some(m) = menu.as_mut() {
@@ -3415,8 +3457,31 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         } else if let Some(vals) =
                             row_values(menu.as_ref().and_then(|m| m.group.as_deref()), &name)
                         {
-                            let idx = vals.iter().position(|v| *v == cur).unwrap_or(0);
-                            let next = vals[(idx + 1) % vals.len()];
+                            // A value that is not on the list is a
+                            // custom one (or a stale config entry), and
+                            // cycling from it starts at the TOP rather
+                            // than one past a position it never had.
+                            let next = match vals.iter().position(|v| *v == cur) {
+                                Some(i) => vals[(i + 1) % vals.len()],
+                                None => vals[0],
+                            };
+                            // Cycling onto `custom…` is a request to
+                            // type, not a value to store. Open the field
+                            // and leave the setting alone until it
+                            // commits, so cancelling reverts to the real
+                            // number rather than stranding the sentinel.
+                            if next == CUSTOM {
+                                if let Some((_, lo, hi)) =
+                                    CUSTOM_BOUNDS.iter().find(|(n, ..)| *n == name)
+                                {
+                                    notice = Some(format!("{name}: {lo}\u{2013}{hi}"));
+                                }
+                                if let Some(m) = menu.as_mut() {
+                                    m.composing = Some(String::new());
+                                    m.compose_row = Some(name.clone());
+                                }
+                                continue;
+                            }
                             notice = Some(format!("{name}: {next}"));
                             match name.as_str() {
                                 _ if in_slow
@@ -4679,7 +4744,7 @@ mod root_tests {
 
 #[cfg(test)]
 mod row_tests {
-    use super::{TEXT_ENTRY, row_values, split_row};
+    use super::{CUSTOM, CUSTOM_BOUNDS, GROUPS, TEXT_ENTRY, row_values, split_row};
 
     /// A row is read back off the screen, so anything rendered into it
     /// for the reader has to survive the trip out. Both asides in the
@@ -4732,6 +4797,31 @@ mod row_tests {
 
     fn bool_word(b: bool) -> String {
         if b { "on" } else { "off" }.to_string()
+    }
+
+    /// `custom…` and its bounds have to agree. A list offering custom
+    /// with no bounds opens a field that refuses every number; bounds
+    /// with no list entry is a range nobody can reach.
+    #[test]
+    fn custom_rows_and_their_bounds_agree() {
+        let with_custom: Vec<&str> = GROUPS
+            .iter()
+            .flat_map(|g| g.rows)
+            .filter(|(_, vals)| vals.contains(&CUSTOM))
+            .map(|(n, _)| *n)
+            .collect();
+        let bounded: Vec<&str> = CUSTOM_BOUNDS.iter().map(|(n, ..)| *n).collect();
+        assert_eq!(with_custom, bounded, "custom rows must be exactly the bounded ones");
+        for (n, lo, hi) in CUSTOM_BOUNDS {
+            assert!(lo < hi, "{n}: {lo} is not below {hi}");
+            // The listed presets must all be reachable by typing too, or
+            // the list and the field disagree about what is legal.
+            for v in row_values(Some("terminal"), n).unwrap_or(&[]) {
+                if let Ok(x) = v.parse::<u64>() {
+                    assert!((*lo..=*hi).contains(&x), "{n}: preset {x} outside {lo}-{hi}");
+                }
+            }
+        }
     }
 
     /// A typed row must not also claim to cycle. `limit` carries an
