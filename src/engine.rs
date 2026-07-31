@@ -1590,7 +1590,7 @@ fn generate(
     // most stable thing in the prompt — they change when the machine
     // changes, which is approximately never — so they cost one cache
     // miss ever, and every later turn reads them for free.
-    let facts = crate::facts::block(&cfg.divulge);
+    let facts = crate::facts::block(&cfg.divulge, &cfg.shell);
     let prompt = build_prompt(
         &facts, memories, pinned, context, cards, question, directive, &local_now(),
     );

@@ -2151,6 +2151,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // down mid-load/mid-generation; land on last_good (or auto) instead.
     let mut fuse = StateFile::load(Config::dir());
     let mut eng_cfg = cfg.engine.clone();
+    // The shell we are about to launch, not $SHELL — see facts::shell.
+    eng_cfg.shell = shell_name.clone();
     let mut notice: Option<String> = None;
     if let Some(fallback) = fuse.veto(eng_cfg.model.as_deref()) {
         let bad = eng_cfg.model.take().unwrap_or_default();

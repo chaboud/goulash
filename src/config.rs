@@ -206,6 +206,15 @@ pub struct EngineConfig {
     pub commentary: bool,
     /// Machine facts prepended to the cached prefix (facts.rs).
     pub divulge: DivulgeConfig,
+    /// The shell goulash actually launched, for the platform line.
+    ///
+    /// Runtime, not a config key — it is an observation, and a stale
+    /// one written into a file would outlive the session that made it
+    /// true. `$SHELL` cannot answer this: it names the LOGIN shell, so
+    /// `goulash bash` from a zsh login told the model "zsh" and got
+    /// zsh-flavoured advice for a bash prompt.
+    #[serde(skip)]
+    pub shell: String,
 }
 
 /// Everything that decides WHERE a lane talks and WHAT it binds. The
@@ -336,6 +345,7 @@ impl Default for EngineConfig {
             debug: false,
             commentary: true,
             divulge: DivulgeConfig::default(),
+            shell: String::new(),
         }
     }
 }

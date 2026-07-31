@@ -33,7 +33,20 @@ fn uname() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-fn shell() -> String {
+/// The shell the model is actually talking to.
+///
+/// `$SHELL` is the *login* shell and answers a different question. Run
+/// `goulash bash` from a zsh login and it still says zsh — so the one
+/// line that exists to stop wrong-platform suggestions was naming the
+/// wrong platform, and confidently. Observed: bash under goulash, the
+/// model replying "…largest first on macOS zsh".
+///
+/// The caller passes the shell it launched. `$SHELL` remains the
+/// fallback for a caller that has not launched one (the bench).
+fn shell(actual: &str) -> String {
+    if !actual.is_empty() {
+        return actual.rsplit('/').next().unwrap_or(actual).to_string();
+    }
     std::env::var("SHELL")
         .ok()
         .and_then(|s| s.rsplit('/').next().map(String::from))
@@ -49,8 +62,8 @@ fn shell() -> String {
 /// one flag, over and over, with the failure sitting in the session log
 /// the whole time. Naming the userland is the cheapest thing that has
 /// ever worked on it.
-pub fn platform_line() -> String {
-    let (os, sh) = (uname(), shell());
+pub fn platform_line(actual_shell: &str) -> String {
+    let (os, sh) = (uname(), shell(actual_shell));
     if os == "Darwin" {
         format!(
             "Environment: macOS ({os}), BSD userland, {sh} shell. BSD differs from GNU: \
@@ -87,10 +100,10 @@ pub fn full_path_line() -> String {
 
 /// The block prepended to the prompt's cached prefix. Empty when nothing
 /// is enabled, so the prompt is byte-identical to having no feature.
-pub fn block(cfg: &DivulgeConfig) -> String {
+pub fn block(cfg: &DivulgeConfig, actual_shell: &str) -> String {
     let mut s = String::new();
     if cfg.platform {
-        s.push_str(&platform_line());
+        s.push_str(&platform_line(actual_shell));
     }
     // full_path replaces tools rather than stacking with it.
     if cfg.full_path {
@@ -113,7 +126,7 @@ mod tests {
             tools: false,
             full_path: false,
         };
-        assert_eq!(block(&off), "");
+        assert_eq!(block(&off, "zsh"), "");
     }
 
     /// The cache argument depends on this: same machine, same bytes, so
@@ -126,8 +139,8 @@ mod tests {
             tools: true,
             full_path: false,
         };
-        assert_eq!(block(&cfg), block(&cfg));
-        assert_eq!(platform_line(), platform_line());
+        assert_eq!(block(&cfg, "zsh"), block(&cfg, "zsh"));
+        assert_eq!(platform_line("zsh"), platform_line("zsh"));
     }
 
     #[test]
@@ -137,7 +150,7 @@ mod tests {
             tools: true,
             full_path: true,
         };
-        let b = block(&both);
+        let b = block(&both, "zsh");
         assert!(b.starts_with("Every executable on PATH"));
         assert!(!b.contains("NOT installed, never suggest"));
     }

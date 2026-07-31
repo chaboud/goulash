@@ -135,7 +135,8 @@ pub fn shape_prompt(
     let log = format!("{log}\n{mem_after}");
     let cards = mem_suffix;
 
-    let facts = goulash::facts::block(&shape.divulge);
+    // No PTY here, so no launched shell: fall back to $SHELL.
+    let facts = goulash::facts::block(&shape.divulge, "");
     let built = build_prompt(
         &facts, mem_before, "", &log, cards, question, directive, now,
     );
