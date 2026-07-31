@@ -3,7 +3,9 @@ use crate::models::{Caps, Overrides, Source, Think, caps_for};
 use crate::wire::{Backend, Client, Gen, Wire};
 use std::io::BufRead;
 use std::os::fd::OwnedFd;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// The LLM engine: a worker thread so inference latency never touches the
@@ -200,6 +202,18 @@ pub struct Engine {
     pub events: mpsc::Receiver<Event>,
     /// poll() this; a readable byte means events are waiting.
     pub wake: OwnedFd,
+    /// Set when a `#/` control job is queued; the generation in flight
+    /// polls it between stream chunks and gives up the worker.
+    ///
+    /// The worker is single-threaded and only looks at its queue BETWEEN
+    /// jobs, so a control command used to wait out whatever was
+    /// generating — `#/model` sat on "probing…" for as long as the
+    /// answer took. A `#/` command is the user taking the wheel and must
+    /// not queue behind a guess we made on their behalf.
+    ///
+    /// It has to be set by the SENDER: the worker is inside `generate()`
+    /// at that moment and cannot see what has arrived.
+    preempt: Arc<AtomicBool>,
 }
 
 impl Engine {
@@ -207,11 +221,14 @@ impl Engine {
         let (job_tx, job_rx) = mpsc::channel::<Job>();
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let (rd, wr) = nix::unistd::pipe()?;
-        std::thread::spawn(move || worker(cfg, over, job_rx, ev_tx, wr));
+        let preempt = Arc::new(AtomicBool::new(false));
+        let worker_preempt = Arc::clone(&preempt);
+        std::thread::spawn(move || worker(cfg, over, job_rx, ev_tx, wr, worker_preempt));
         Ok(Engine {
             job_tx,
             events: ev_rx,
             wake: rd,
+            preempt,
         })
     }
 
@@ -280,7 +297,15 @@ impl Engine {
         });
     }
 
+    /// Take the wheel: whatever is generating gives up the worker at
+    /// its next stream chunk. Cleared by the worker when it picks up
+    /// the next job, so it can never strand a later generation.
+    fn interrupt(&self) {
+        self.preempt.store(true, Ordering::Relaxed);
+    }
+
     pub fn set_model(&self, name: String) {
+        self.interrupt();
         let _ = self.job_tx.send(Job::SetModel { slow: false, name });
     }
 
@@ -295,20 +320,24 @@ impl Engine {
     }
 
     pub fn describe_lanes(&self) {
+        self.interrupt();
         let _ = self.job_tx.send(Job::DescribeLanes);
     }
 
     pub fn set_option(&self, key: &str, value: &str) {
+        self.interrupt();
         let _ = self
             .job_tx
             .send(Job::SetOption(key.to_string(), value.to_string()));
     }
 
     pub fn rebind(&self) {
+        self.interrupt();
         let _ = self.job_tx.send(Job::Rebind);
     }
 
     pub fn list_models(&self) {
+        self.interrupt();
         let _ = self.job_tx.send(Job::ListModels { slow: false });
     }
 
@@ -366,6 +395,7 @@ fn worker(
     jobs: mpsc::Receiver<Job>,
     ev: mpsc::Sender<Event>,
     wr: OwnedFd,
+    preempt: Arc<AtomicBool>,
 ) {
     let path_set = crate::vendor::path_executable_set();
     let agent = new_agent();
@@ -505,6 +535,10 @@ fn worker(
         // ListModels — the menu answers from cache instantly.
         let mut latest_ask = None;
         let mut pending_warm = false;
+        // Taking a job satisfies whatever asked to interrupt. Leaving it
+        // set would abort the very generation the control command was
+        // clearing the way for.
+        preempt.store(false, Ordering::Relaxed);
         let mut job = first;
         loop {
             match job {
@@ -689,9 +723,16 @@ fn worker(
             notify(&wr);
             let result = generate(
                 &cl, &cfg, &caps, model, &question, &context, &memories, &pinned, &cards, &ev, &wr,
-                proactive, pin_ask,
+                proactive, pin_ask, &preempt,
             );
             let _ = ev.send(Event::Idle { kind: Work::Ask });
+            // An EMPTY error is the yield above, not a failure. The user
+            // asked for something else and got it; reporting "engine
+            // error" for their own keystroke would be a lie.
+            if matches!(&result, Err(e) if e.is_empty()) {
+                notify(&wr);
+                continue;
+            }
             let _ = match result {
                 Ok((ans, early)) => {
                     if cfg.debug {
@@ -1570,6 +1611,9 @@ fn generate(
     wr: &OwnedFd,
     proactive: bool,
     pin_ask: bool,
+    // Polled between stream chunks. A `#/` command is the user taking
+    // the wheel, and it must not wait out a guess we made for them.
+    preempt: &AtomicBool,
 ) -> Result<(String, Option<String>), String> {
     // Volatile parts (current time, question) go AFTER the stable prefix.
     // The command directive is repeated at point-of-use: small models
@@ -1656,6 +1700,15 @@ fn generate(
     let mut last_emit = Instant::now();
     let mut early: Option<String> = None;
     for line in reader.lines() {
+        // Give up the worker for a control command. Checked here rather
+        // than between jobs because BETWEEN JOBS is exactly where a long
+        // generation never is: the whole point is to leave one early.
+        // Whatever has accumulated is dropped — the user asked for
+        // something else, and half an answer to a superseded question is
+        // worse than none.
+        if preempt.load(Ordering::Relaxed) {
+            return Err(String::new());
+        }
         let line = line.map_err(|e| e.to_string())?;
         // A line we cannot read is a keep-alive or a blank separator,
         // not a failure: SSE is full of both, and aborting the stream
