@@ -137,6 +137,35 @@ impl Caps {
         }
     }
 
+    /// The same intent again, in LM Studio's native vocabulary for
+    /// `POST /api/v1/chat`: `off | low | medium | high | on`.
+    ///
+    /// Distinct from `effort_field` because this endpoint **errors** on a
+    /// setting the model cannot do — the docs say so and the server
+    /// proves it: asking a bool-dialect model for `low` returns
+    /// *"Reasoning setting 'low' is not supported by model
+    /// 'google/gemma-4-e4b'. Supported settings: 'off', 'on'"*.
+    ///
+    /// So the dialect has to be respected on the way out rather than
+    /// discovered from a failure. A model with only on/off is asked for
+    /// `on`, never `high` — which is also the honest reading of the
+    /// user's setting: they asked it to think, and this is what thinking
+    /// means for that model.
+    pub fn reasoning_field(&self, level: &str) -> Option<&'static str> {
+        let wants = !matches!(level, "off" | "false" | "");
+        match self.think {
+            Think::None => None,
+            Think::Bool => Some(if wants { "on" } else { "off" }),
+            Think::Levels => Some(match level {
+                "low" => "low",
+                "medium" => "medium",
+                "high" => "high",
+                "on" | "true" => "medium",
+                _ => "off",
+            }),
+        }
+    }
+
     /// Tokens to add to the response budget to cover masked reasoning.
     /// A model that always reasons gets its allowance even at `off`,
     /// because the spend happens either way.

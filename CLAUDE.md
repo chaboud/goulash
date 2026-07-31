@@ -58,6 +58,16 @@ two places, it belongs in one function with a test. `split_row` exists
 because the same `name: value` parse was inline in two apply paths and
 one of them forgot the parenthesised aside.
 
+**Ride along with the loaded model; never demand a window.** A context
+size is part of a model's *load identity* on every engine goulash
+speaks to. Asking for a different one is asking for a reload — it blows
+the prefix cache the whole design rests on, and can evict the model.
+This shape bit three times in one release: ollama `num_ctx: 0` (read as
+a real request, clamped, reloaded), ollama omission (read as "the
+model's default", reloaded), and LM Studio `context_length` (spawned a
+new model instance per ask, ten seconds each, and did not even apply).
+Ask the server what is loaded and take it.
+
 **Never solve timing with sleeps.** There is always a real signal —
 a mark, a hook, an event, held input. Sleeps here are a standing
 instruction to find the actual flow instead.

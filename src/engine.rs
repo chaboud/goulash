@@ -938,6 +938,7 @@ fn research_once(
         // immediate, slow is the one that can afford to think.
         think: caps.think_field(slow_thinking(cfg)),
         effort: caps.effort_field(slow_thinking(cfg)),
+        reasoning: caps.reasoning_field(slow_thinking(cfg)),
         keep_alive: &cfg.keep_alive,
         num_keep: cfg.num_keep,
         seed: (cfg.seed >= 0).then_some(cfg.seed),
@@ -1094,6 +1095,7 @@ fn digest_once(
         // about a document it is only meant to shorten.
         think: caps.think_field("off"),
         effort: caps.effort_field("off"),
+        reasoning: caps.reasoning_field("off"),
         keep_alive: &cfg.keep_alive,
         num_keep: cfg.num_keep,
         seed: (cfg.seed >= 0).then_some(cfg.seed),
@@ -1216,7 +1218,7 @@ fn warm_marked(
             }
             b
         }
-        Wire::OpenAi | Wire::OpenAiChat => cl.be.wire.body(&Gen {
+        Wire::OpenAi | Wire::OpenAiChat | Wire::LmStudio => cl.be.wire.body(&Gen {
             model,
             prompt: "",
             stream: false,
@@ -1226,6 +1228,7 @@ fn warm_marked(
             stop: &[],
             think: None,
             effort: None,
+            reasoning: None,
             keep_alive: "",
             // A warm-up request carries no prompt worth protecting and
             // wants no reproducibility; both would be noise here.
@@ -1255,7 +1258,7 @@ fn resolve_backend(agent: ureq::Agent, lane: &LaneConfig) -> Client {
     let mk = |wire: Wire| {
         let host = match wire {
             Wire::Ollama => lane.host.clone(),
-            Wire::OpenAi | Wire::OpenAiChat => lane.openai_host.clone(),
+            Wire::OpenAi | Wire::OpenAiChat | Wire::LmStudio => lane.openai_host.clone(),
         };
         Backend {
             trusted: crate::wire::resolve_trust(&lane.trusted, &host),
@@ -1672,6 +1675,7 @@ fn generate(
         stop: &[],
         think: caps.think_field(&cfg.thinking),
         effort: caps.effort_field(&cfg.thinking),
+        reasoning: caps.reasoning_field(&cfg.thinking),
         keep_alive: &cfg.keep_alive,
         num_keep: cfg.num_keep,
         seed: (cfg.seed >= 0).then_some(cfg.seed),

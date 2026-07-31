@@ -56,6 +56,19 @@ pub enum Wire {
     /// 659-896 tokens thinking first. That is a price worth paying for
     /// answers that are answers. (bench/QUIRKS.md §1, §3)
     OpenAiChat,
+    /// LM Studio's own `POST /api/v1/chat`. **The default for LM
+    /// Studio**, and better than the OpenAI-compatible shim on three
+    /// counts that matter here:
+    ///
+    /// - `reasoning: off|low|medium|high|on` is a documented per-request
+    ///   dial that the server maps onto whatever switch the model
+    ///   actually has, instead of us guessing a chat-template kwarg;
+    /// - reasoning arrives as its OWN event type, so it cannot leak into
+    ///   the band the way a stray `<think>` tag does on other wires;
+    /// - `stats` reports `reasoning_output_tokens`, `tokens_per_second`
+    ///   and `time_to_first_token_seconds` — the reasoning spend that no
+    ///   other local engine will tell us (bench/QUIRKS.md §5).
+    LmStudio,
 }
 
 /// Where the engine is talking, resolved once by the probe chain rather
@@ -80,6 +93,7 @@ impl Backend {
             Wire::Ollama => "ollama",
             Wire::OpenAi => "openai-raw",
             Wire::OpenAiChat => "openai",
+            Wire::LmStudio => "lmstudio",
         }
     }
 }
@@ -185,6 +199,10 @@ pub struct Gen<'a> {
     /// The same intent for an OpenAI-compatible server, which spells it
     /// `reasoning_effort` and only accepts the level form.
     pub effort: Option<&'a str>,
+    /// And again in LM Studio's native vocabulary (`off|low|medium|
+    /// high|on`), already narrowed to what this model supports — that
+    /// endpoint errors on a setting the model cannot do.
+    pub reasoning: Option<&'a str>,
     pub keep_alive: &'a str,
     /// Leading prompt tokens the server must retain when the context
     /// overflows. llama.cpp truncates from the LEFT, which is exactly
@@ -213,9 +231,11 @@ impl Wire {
             // not a choice: `engine-characterization` shipped
             // `OpenAiCompat { chat: true }` and the port inverted it.
             // The failure was silent — see the OpenAi variant's docs.
-            "openai" | "openai-chat" | "chat" | "lmstudio" | "llamacpp" | "vllm" => {
-                Some(Wire::OpenAiChat)
-            }
+            // LM Studio gets its OWN api, not the compatibility shim:
+            // it is the only local server with a documented reasoning
+            // dial, and it reports the reasoning spend afterwards.
+            "lmstudio" | "lms" => Some(Wire::LmStudio),
+            "openai" | "openai-chat" | "chat" | "llamacpp" | "vllm" => Some(Wire::OpenAiChat),
             // Raw completions, named explicitly so nobody arrives here
             // by accident.
             "openai-raw" | "completions" => Some(Wire::OpenAi),
@@ -228,6 +248,7 @@ impl Wire {
             Wire::Ollama => format!("{host}/api/generate"),
             Wire::OpenAi => format!("{host}/v1/completions"),
             Wire::OpenAiChat => format!("{host}/v1/chat/completions"),
+            Wire::LmStudio => format!("{host}/api/v1/chat"),
         }
     }
 
@@ -235,6 +256,7 @@ impl Wire {
         match self {
             Wire::Ollama => format!("{host}/api/tags"),
             Wire::OpenAi | Wire::OpenAiChat => format!("{host}/v1/models"),
+            Wire::LmStudio => format!("{host}/api/v1/models"),
         }
     }
 
@@ -247,6 +269,8 @@ impl Wire {
         match self {
             Wire::Ollama => Some(format!("{host}/api/ps")),
             Wire::OpenAi | Wire::OpenAiChat => None,
+            // Residency is in the model listing, not a separate call.
+            Wire::LmStudio => None,
         }
     }
 
@@ -334,6 +358,50 @@ impl Wire {
                 }
                 b
             }
+            Wire::LmStudio => {
+                let mut b = json!({
+                    "model": g.model,
+                    "input": g.prompt,
+                    "stream": g.stream,
+                    "temperature": g.temperature,
+                    "max_output_tokens": g.max_tokens as i64,
+                });
+                // Already in this endpoint's own vocabulary, and already
+                // narrowed to what the model can do (models.rs
+                // reasoning_field) — this API ERRORS on a setting the
+                // model does not support rather than ignoring it.
+                if let Some(r) = g.reasoning {
+                    b["reasoning"] = json!(r);
+                }
+                // NO context_length, ever. Forcing a window does not
+                // resize anything — it makes LM Studio spin up a NEW
+                // MODEL INSTANCE for that request. Watched by instance
+                // id across four otherwise identical asks:
+                //
+                //   omitted          0.60s   instance :3
+                //   context_length  10.53s   instance :2   <- new
+                //   context_length   9.42s   instance :3   <- new again
+                //   omitted          1.24s   instance :3
+                //
+                // Ten seconds of model LOAD per ask, and the instance
+                // config stayed at its own 118272 throughout, so the
+                // request did not even get the window it demanded.
+                //
+                // Third time this shape has bitten in one release —
+                // ollama `num_ctx: 0`, ollama omission, now this — so
+                // the rule, stated once and for all engines: **ride
+                // along with the window that is loaded; never demand
+                // one.** A context window is part of a model's load
+                // identity everywhere we speak, so asking for a
+                // different one is asking for a reload: it blows the
+                // prefix cache the whole engine design rests on, and
+                // can evict the model outright.
+                //
+                // Not stored: goulash keeps its own session log, and a
+                // second copy on the server is state nobody asked for.
+                b["store"] = json!(false);
+                b
+            }
             Wire::OpenAiChat => {
                 // One user message carrying the whole stable-prefix
                 // string. The template will wrap it; that is the cost of
@@ -380,6 +448,17 @@ impl Wire {
                         .as_str()
                         .map(|s| s.to_string())
                 }),
+            // `output` is a list of typed blocks; take the message ones
+            // and leave the reasoning blocks where they are.
+            Wire::LmStudio => Some(
+                v["output"]
+                    .as_array()?
+                    .iter()
+                    .filter(|b| b["type"] == "message")
+                    .filter_map(|b| b["content"].as_str())
+                    .collect::<Vec<_>>()
+                    .join(""),
+            ),
             Wire::OpenAiChat => v["choices"][0]["message"]["content"]
                 .as_str()
                 .map(|s| s.to_string())
@@ -415,6 +494,26 @@ impl Wire {
                     done: v["done"].as_bool() == Some(true),
                 })
             }
+            // Typed events. `reasoning.delta` is deliberately dropped:
+            // it is the model's scratch work, and the whole reason a
+            // stray <think> tag has ever reached the band on another
+            // wire is that there it arrives in the same stream as the
+            // answer. Here it simply is not the answer.
+            Wire::LmStudio => {
+                let payload = line.strip_prefix("data:")?.trim();
+                let v: Value = serde_json::from_str(payload).ok()?;
+                match v["type"].as_str()? {
+                    "message.delta" => Some(Chunk {
+                        text: v["content"].as_str().unwrap_or_default().to_string(),
+                        done: false,
+                    }),
+                    "chat.end" => Some(Chunk {
+                        text: String::new(),
+                        done: true,
+                    }),
+                    _ => None,
+                }
+            }
             Wire::OpenAi | Wire::OpenAiChat => {
                 let payload = line.strip_prefix("data:")?.trim();
                 if payload == "[DONE]" {
@@ -442,6 +541,7 @@ impl Wire {
     pub fn models(&self, v: &Value) -> Vec<String> {
         let (arr, key) = match self {
             Wire::Ollama => (&v["models"], "name"),
+            Wire::LmStudio => (&v["models"], "key"),
             Wire::OpenAi | Wire::OpenAiChat => (&v["data"], "id"),
         };
         arr.as_array()
@@ -469,6 +569,7 @@ mod tests {
             stop,
             think: None,
             effort: None,
+            reasoning: None,
             keep_alive: "30m",
             num_keep: 512,
             seed: Some(7),
@@ -650,8 +751,12 @@ mod tests {
         // apply no template, so an instruction prompt is continued
         // instead of followed -- reachable only by asking for it by
         // name. This inverted once, silently, for a whole release.
-        for s in ["openai", "openai-chat", "chat", "lmstudio", "llamacpp", "vllm"] {
+        for s in ["openai", "openai-chat", "chat", "llamacpp", "vllm"] {
             assert_eq!(Wire::parse(s), Some(Wire::OpenAiChat), "{s} must be chat");
+        }
+        // LM Studio has a better door of its own.
+        for s in ["lmstudio", "lms"] {
+            assert_eq!(Wire::parse(s), Some(Wire::LmStudio), "{s} is native");
         }
         for s in ["openai-raw", "completions"] {
             assert_eq!(Wire::parse(s), Some(Wire::OpenAi), "{s} is opt-in raw");
