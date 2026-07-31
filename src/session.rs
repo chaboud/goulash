@@ -2525,13 +2525,15 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
             // when a stream chunk happened to wake us — and the grow and
             // shrink, being short, often rendered in a single frame.
             //
-            // Derived from the configured rate rather than fixed: a
-            // 15ms sweep cannot render on a 16ms tick, and a fixed tick
-            // would quietly make the fastest setting the same as the
-            // next one up. Half the step, so every frame gets a chance.
-            // Bounded twice over — only while the bar exists, and a
-            // frame that renders identically still writes nothing.
-            (dbg.working_bar_step_ms / 2).clamp(8, 40)
+            // A flat 16ms — roughly 60Hz, and the base every rate is
+            // read against. The fastest sweep (15ms) therefore lands
+            // about one frame in sixteen on the same tick as its
+            // neighbour, which is not a difference anyone can see;
+            // deriving the tick from the rate to chase that was
+            // machinery for nothing. Bounded twice over — only while
+            // the bar exists, and a frame that renders identically
+            // still writes nothing.
+            16
         } else if dirty {
             30
         } else {
