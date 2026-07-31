@@ -285,6 +285,7 @@ const SETTINGS: &[(&str, &[&str])] = &[
     ("memory", &["off", "on"]),
     ("max_tokens", &["2048", "4096", "8192", "16384"]),
     ("command_first", &["on", "off"]),
+    ("platform", &["on", "off"]),
     ("stats", &["off", "on"]),
 ];
 
@@ -295,6 +296,8 @@ const DEBUG_SETTINGS: &[(&str, &[&str])] = &[
     ("cursor_save", &["decsc", "absolute"]),
     ("idle_repaint", &["on", "off"]),
     ("wrap_guard", &["off", "on"]),
+    ("divulge_tools", &["off", "on"]),
+    ("divulge_path", &["off", "on"]),
 ];
 
 const HELP_ITEMS: &[&str] = &[
@@ -1149,6 +1152,7 @@ fn slash_command(
     caps: Option<&crate::models::Caps>,
     dbg: &crate::config::DebugConfig,
     slow: &str,
+    platform: bool,
 ) -> Option<String> {
     let mut it = cmdline.splitn(2, char::is_whitespace);
     let cmd = it.next().unwrap_or("");
@@ -1249,6 +1253,7 @@ fn slash_command(
         ("settings", _) | ("config", _) => {
             let mut m = Menu::open("settings", MenuKind::Settings);
             m.items = settings_items(&Live {
+                platform,
                 commentary: *commentary,
                 slow,
                 thinking,
@@ -1322,6 +1327,7 @@ fn slash_command(
 /// to know about it.
 struct Live<'a> {
     commentary: bool,
+    platform: bool,
     slow: &'a str,
     thinking: &'a str,
     max_tokens: usize,
@@ -1880,6 +1886,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut opt_thinking = cfg.engine.thinking.clone();
     let mut opt_max_tokens = cfg.engine.max_tokens;
     let mut opt_command_first = cfg.engine.command_first;
+    let mut opt_platform = cfg.engine.divulge.platform;
     let mut opt_stats = cfg.status.stats;
     let mut stats = crate::stats::Stats::new();
     // Findings that arrived while the user was browsing. The lineage
@@ -2372,6 +2379,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             model_caps.as_ref(),
                                             &dbg,
                                             &opt_slow,
+                                            opt_platform,
                                         );
                                     } else if let Some(eng) = engine.as_ref() {
                                         eng.ask(
@@ -2791,6 +2799,17 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         &opt_stats.to_string(),
                                     );
                                 }
+                                "platform" => {
+                                    opt_platform = next == "on";
+                                    if let Some(eng) = engine.as_ref() {
+                                        eng.set_option("platform", next);
+                                    }
+                                    let _ = Config::persist_key(
+                                        "engine.divulge",
+                                        "platform",
+                                        &(next == "on").to_string(),
+                                    );
+                                }
                                 "command_first" => {
                                     // The session vends mid-stream off its
                                     // OWN copy, so telling only the engine
@@ -2809,6 +2828,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             }
                             if let Some(m) = menu.as_mut() {
                                 m.items = settings_items(&Live {
+                platform: opt_platform,
                                     commentary,
                                     slow: &opt_slow,
                                     thinking: &opt_thinking,
@@ -3035,6 +3055,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 model_caps.as_ref(),
                                 &dbg,
                                 &opt_slow,
+                                opt_platform,
                             );
                             if let (Some(c), Some(msg)) = (chat.as_mut(), out) {
                                 c.lines.push(format!("goulash: {msg}"));
@@ -3134,6 +3155,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             && m.kind == MenuKind::Settings
                         {
                             m.items = settings_items(&Live {
+                platform: opt_platform,
                                 commentary,
                                 slow: &opt_slow,
                                 thinking: &opt_thinking,

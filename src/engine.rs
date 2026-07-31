@@ -555,6 +555,13 @@ fn worker(
                     "thinking" => cfg.thinking = v,
                     "slow" => cfg.slow = v,
                     "command_first" => cfg.command_first = v == "true" || v == "on",
+                    // Machine facts. Live because the reason to turn them
+                    // off is to see whether they are earning their tokens,
+                    // and that comparison is worthless if it needs a
+                    // restart in the middle.
+                    "platform" => cfg.divulge.platform = v == "true" || v == "on",
+                    "divulge_tools" => cfg.divulge.tools = v == "true" || v == "on",
+                    "divulge_path" => cfg.divulge.full_path = v == "true" || v == "on",
                     "max_tokens" => {
                         if let Ok(n) = v.parse() {
                             cfg.max_tokens = n;
