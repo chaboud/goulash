@@ -1,5 +1,20 @@
 # Quality — blind-graded
 
+> **Status, 2026-07-31: every graded number below is from the 2026-07-28
+> corpus and describes the PRE-MERGE engine.** It was measured with the
+> `["\n\n"]` stop sequence still on the answer path, without
+> capability-gated thinking, and with the context negotiation that
+> reloaded the model on every ask. All three are fixed in 0.4.0, and all
+> three plausibly move quality numbers.
+>
+> A re-run against the merged engine is **in flight** (Pass B,
+> `results/2026-07-31/`). It is mechanical-only so far: **nothing in the
+> new run has been graded**, because grading is a separate blind pass
+> over a finished corpus. §0 records what the new run already shows
+> without a grader; everything from §1 down is the old corpus, kept
+> because it is a real measurement of a real corpus and its method still
+> stands — not because it describes what ships today.
+
 **313 of 313 sampled answers graded**, blind (model, provider and shape
 hidden), then joined back to provenance. Eight questions across 24 model
 cells and both engines.
@@ -9,6 +24,65 @@ Scale: `correct` 0=wrong/harmful … 3=fully does the ask; `idiom` 0=bizarre
 … 3=crisp one-liner.
 
 ---
+
+## 0. What the 0.4.0 re-run shows so far (mechanical, ungraded)
+
+Partial: **~3,700 of 14,280 generations**, 8 of 30 cells complete. Rates
+below are compliance, not correctness — a model can hit every one of
+these and still be wrong, which is exactly why the graded pass exists.
+
+| model | p50 ttft | p50 total | answered | `CMD:` | 1-line |
+|---|---|---|---|---|---|
+| `qwen3.5:0.8b` | 1.2 s | 2.1 s | 89% | 57% | 93% |
+| `llama3.2:3b` | 1.9 s | 3.2 s | **64%** | 53% | 94% |
+| `gemma3:4b` | 2.2 s | 4.9 s | 100% | 96% | 85% |
+| `qwen3.5:2b` | 2.7 s | 4.7 s | 100% | 96% | 100% |
+| `llama3.1:8b` | 2.6 s | 4.9 s | 99% | 97% | 98% |
+| `qwen3.5:4b` | 7.7 s | 10.9 s | 100% | 93% | 93% |
+| `qwen3.5:9b` | 10.3 s | 14.0 s | 100% | 95% | 100% |
+
+Three things are already clear enough to act on:
+
+- **`llama3.2:3b` answers 64% of the time.** The other 35% is
+  `mem-only` — it replies with a bare `REMEMBER:` line instead of an
+  answer. That is the `mistral-nemo` failure mode from
+  [QUIRKS](QUIRKS.md) §6 appearing on a second model, so it is a
+  *prompt* problem, not one model's quirk. It should not be a default.
+- **Cost does not buy *compliance*.** `qwen3.5:4b` is 3.5× slower than
+  `gemma3:4b` for the same 100% answered and a slightly *worse* command
+  rate. `qwen3.5:9b` is 4.7× slower for no gain at all.
+
+  **But read §3 before concluding anything from that.** On the graded
+  corpus `gemma3:4b` scores **0.46 correct and 0.00 idiom — third from
+  bottom**, while `qwen3.5:4b` scores 1.46. So `gemma3:4b` emits a
+  well-formed command on essentially every question and the command is
+  usually *wrong*. It is the single sharpest illustration in this file
+  of why compliance is not quality: the model that looks best in §0
+  looks nearly worst in §3, and §3 is the one that measures whether the
+  answer helps. Any "which model should we ship" call has to wait for
+  the graded pass on the new corpus.
+- **Empty answers have collapsed.** 4–7% per shape, against 18–28% in
+  the equivalent early cells of the pre-merge run. Dropping the stop
+  sequence and gating thinking on capability is why — see
+  [QUIRKS](QUIRKS.md) §1 and §2.
+
+Shape comparison, the mechanical half of §1 below:
+
+| shape | p50 total | empty | `CMD:` |
+|---|---|---|---|
+| S1 (shipped) | 5.17 s | 4% | 72% |
+| S3 (`CMD:` first) | 5.03 s | 5% | **75%** |
+| S7 | 4.70 s | 5% | 74% |
+
+Command-first still shows a small vend-rate edge and no latency or
+compliance penalty, which is consistent with §1's graded conclusion of
+no quality difference. **It is not itself evidence about quality** —
+`CMD:` rate counts whether a command was emitted, never whether it was
+the right one.
+
+**Do not cite §0 as a quality result.** It is compliance and latency on
+a partial corpus. The moment the sweep finishes, the blind pass has to
+run before anything here becomes a claim about how good the answers are.
 
 ## 1. Command-first costs nothing — and my earlier number was overread
 
@@ -160,6 +234,10 @@ correctness does.
   rationale; `blind_sample_keys.jsonl` joins ids to provenance.
 - `goulash-bench replay DIR <id>` prints the exact prompt and raw
   response behind any grade.
+
+**Which run:** everything from §1 down is `results/2026-07-28/`, the
+pre-merge engine. The 0.4.0 re-run is `results/2026-07-31/` and is
+ungraded (§0).
 
 **Coverage:** 313 of 2299 total answers — the stratified sample from
 `sample_blind.py`, chosen for decision value (paired shapes, checkable
