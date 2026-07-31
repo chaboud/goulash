@@ -3366,27 +3366,33 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 format!("limit: {n}")
                             }
                             ("limit", _) => format!("limit: '{typed}' is not a number"),
-                            // Out of range is REFUSED, not clamped. A
-                            // silent clamp shows a number you did not
-                            // ask for and gives no reason, which is the
-                            // failure this codebase keeps making.
-                            (_, Ok(n)) if bounds.is_some_and(|(_, lo, hi)| n < *lo || n > *hi) => {
-                                let (_, lo, hi) = bounds.unwrap();
-                                format!("{row}: {n} is outside {lo}\u{2013}{hi}")
-                            }
+                            // Out of range is CLAMPED and said so.
+                            // Typing 9999 plainly means "as slow as it
+                            // goes"; refusing it makes you retype
+                            // something you already expressed. What
+                            // must not happen is clamping in silence —
+                            // a number you did not ask for with no
+                            // reason given — so the notice names the
+                            // edge it landed on.
                             (_, Ok(n)) if bounds.is_some() => {
+                                let (_, lo, hi) = bounds.unwrap();
+                                let v = n.clamp(*lo, *hi);
                                 let key = match row.as_str() {
                                     "bar_rate_ms" => {
-                                        dbg.working_bar_step_ms = n;
+                                        dbg.working_bar_step_ms = v;
                                         "working_bar_step_ms"
                                     }
                                     _ => {
-                                        dbg.working_bar_grow_ms = n;
+                                        dbg.working_bar_grow_ms = v;
                                         "working_bar_grow_ms"
                                     }
                                 };
-                                let _ = Config::persist_key("debug", key, &n.to_string());
-                                format!("{row}: {n}")
+                                let _ = Config::persist_key("debug", key, &v.to_string());
+                                match v.cmp(&n) {
+                                    std::cmp::Ordering::Equal => format!("{row}: {v}"),
+                                    std::cmp::Ordering::Less => format!("{row}: {v} (max)"),
+                                    std::cmp::Ordering::Greater => format!("{row}: {v} (min)"),
+                                }
                             }
                             (_, _) if bounds.is_some() => {
                                 format!("{row}: '{typed}' is not a number")
@@ -3476,6 +3482,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 {
                                     notice = Some(format!("{name}: {lo}\u{2013}{hi}"));
                                 }
+                                // The range is in the tip, so an
+                                // out-of-range number is a slip rather
+                                // than a surprise when it clamps.
                                 if let Some(m) = menu.as_mut() {
                                     m.composing = Some(String::new());
                                     m.compose_row = Some(name.clone());
