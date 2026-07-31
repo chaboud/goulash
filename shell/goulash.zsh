@@ -170,6 +170,17 @@ __goulash_accept_line() {
     '#'*)
       __goulash_osc "Q;$(__goulash_b64 "$BUFFER")"
       __goulash_hist="$BUFFER"
+      # Leave what was typed on screen. Clearing BUFFER makes zle redraw
+      # the line as empty, which ERASES the question — a session of asks
+      # reads back as a column of bare prompts, and the transcript loses
+      # the half the user wrote. bash keeps it for free (a `#` line is a
+      # real comment there, so nothing rubs it out); zsh has to be told.
+      #
+      # `zle -I` hands the display back so the typed line is final, and
+      # the newline commits it to the scrollback before the buffer is
+      # cleared.
+      zle -I
+      print -r -- ""
       BUFFER=""
       ;;
   esac
