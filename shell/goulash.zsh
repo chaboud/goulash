@@ -170,18 +170,19 @@ __goulash_accept_line() {
     '#'*)
       __goulash_osc "Q;$(__goulash_b64 "$BUFFER")"
       __goulash_hist="$BUFFER"
-      # Leave what was typed on screen. Clearing BUFFER makes zle redraw
-      # the line as empty, which ERASES the question — a session of asks
-      # reads back as a column of bare prompts, and the transcript loses
-      # the half the user wrote. bash keeps it for free (a `#` line is a
-      # real comment there, so nothing rubs it out); zsh has to be told.
+      # Abandon the line instead of blanking it.
       #
-      # `zle -I` hands the display back, so the typed line is final
-      # before the buffer is cleared. Nothing else: a `print` here adds
-      # a newline that accept-line then adds again, costing a blank row
-      # and a repeated prompt on every ask.
-      zle -I
-      BUFFER=""
+      # Clearing BUFFER makes zle redraw the line as empty, which ERASES
+      # the question — a session of asks reads back as a column of bare
+      # prompts. `zle -I` keeps the text but reprints the prompt, so
+      # every ask left a duplicate at the same history number.
+      #
+      # `send-break` is zsh's own "drop this line": the text stays
+      # exactly where it was typed, nothing is executed, and one fresh
+      # prompt follows. The same shape bash gets for free, because a `#`
+      # line is a real comment there.
+      zle send-break
+      return
       ;;
   esac
   zle $__goulash_accept
