@@ -18,22 +18,50 @@ pub const RULE_SGR: &str = "\x1b[0;37m"; // white rule on default bg
 pub const QUERY_SGR: &str = "\x1b[0;2m"; // dim question on default bg
 pub const TEXT_SGR: &str = "\x1b[0m"; // plain answer text
 
-/// Top boundary of the goulash area: a horizontal rule. An orange chip
-/// for a pullable suggestion (or plain inset text for a notice) cuts in
+/// A text field's insertion point, inside a chip that already set its
+/// own colours: blink on, the bar, blink off (`25`, not a full reset —
+/// resetting here would drop the chip's background for the rest of the
+/// row). A terminal without SGR 5 draws a solid bar, which is what the
+/// caret was before, so there is nothing to fall back to.
+pub const CARET: &str = "\x1b[5m\u{258f}\x1b[25m";
+
+/// One styled run inside a chip: the text, and the SGR it wears.
+///
+/// A chip is a list of these rather than one string and one colour
+/// because the suggestion chip says two different things at once: the
+/// label is an affordance (orange: Down reaches this) and the command
+/// is content (grey until you have actually pulled it). Painting both
+/// orange was most of the "too much orange" — the eye had nothing to
+/// look at because everything was shouting.
+pub type Seg<'a> = (&'a str, &'a str);
+
+/// Top boundary of the goulash area: a horizontal rule. A chip cuts in
 /// at the left edge; a dim ingress tip cuts in at the right edge and
 /// yields silently when space runs out.
-pub fn rule_row(text: Option<&str>, chip: Option<&str>, tip: Option<&str>, cols: usize) -> String {
-    // Left chip: one-dash lead-in. `chip` is the SGR it wears — orange
-    // when it is the selected, pullable thing, grey when something else
-    // is, and None for a plain notice that is not pullable at all.
-    let (left, left_len) = match text {
-        Some(t) => {
-            let clipped: String = t.chars().take(cols.saturating_sub(6)).collect();
-            let n = clipped.chars().count();
-            let sgr = chip.unwrap_or("\x1b[0m");
-            (format!("{RULE_SGR}\u{2500}{sgr}{clipped}"), n + 1)
+///
+/// An empty `chip` leaves a bare rule. The SGR runs are emitted between
+/// segments and never counted as width — the clip budget is spent on
+/// printed characters only, which is why the segments arrive separated
+/// rather than pre-styled into one string.
+pub fn rule_row(chip: &[Seg], tip: Option<&str>, cols: usize) -> String {
+    let (left, left_len) = if chip.is_empty() {
+        (format!("{RULE_SGR}\u{2500}"), 1)
+    } else {
+        let mut s = format!("{RULE_SGR}\u{2500}");
+        let mut room = cols.saturating_sub(6);
+        let mut n = 0;
+        for (text, sgr) in chip {
+            if room == 0 {
+                break;
+            }
+            let clipped: String = text.chars().take(room).collect();
+            let used = clipped.chars().count();
+            room -= used;
+            n += used;
+            s.push_str(sgr);
+            s.push_str(&clipped);
         }
-        None => (format!("{RULE_SGR}\u{2500}"), 1),
+        (s, n + 1)
     };
     // Right tip: one-dash trail-out, dropped when the row is tight.
     if let Some(t) = tip {
@@ -190,7 +218,10 @@ pub fn pad_row(text: &str, cols: usize, sgr: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Size, TEXT_SGR, chrome_row, lane_dots, pad_row_with_note, rule_row};
+    use super::{
+        IDLE_CHIP_SGR, SUGGEST_SGR, Size, TEXT_SGR, chrome_row, lane_dots, pad_row_with_note,
+        rule_row,
+    };
 
     fn width(row: &str) -> usize {
         // Strip escape sequences; what's left is the printed cells.
@@ -214,7 +245,7 @@ mod tests {
 
     #[test]
     fn tip_rides_the_right_edge() {
-        let row = rule_row(None, None, Some(" tip "), 40);
+        let row = rule_row(&[], Some(" tip "), 40);
         assert!(row.contains(" tip "));
         assert_eq!(width(&row), 40);
         // one-dash trail after the tip
@@ -223,16 +254,52 @@ mod tests {
 
     #[test]
     fn tip_yields_when_tight() {
-        let row = rule_row(Some(" a long left chip "), None, Some(" a long tip "), 24);
+        let row = rule_row(&[(" a long left chip ", SUGGEST_SGR)], Some(" a long tip "), 24);
         assert!(!row.contains("tip"));
         assert_eq!(width(&row), 24);
     }
 
     #[test]
     fn left_chip_and_tip_coexist() {
-        let row = rule_row(Some(" notice "), None, Some(" tip "), 40);
+        let row = rule_row(&[(" notice ", TEXT_SGR)], Some(" tip "), 40);
         assert!(row.contains(" notice ") && row.contains(" tip "));
         assert_eq!(width(&row), 40);
+    }
+
+    /// The suggestion chip wears two colours: the label says Down
+    /// reaches this, the command says whether you have taken it. Both
+    /// runs are on the row, and the SGR between them costs no columns —
+    /// a chip measured as text would eat real cells and drag the rule
+    /// off the right edge.
+    #[test]
+    fn a_two_tone_chip_keeps_its_width() {
+        let one = rule_row(&[(" \u{2193} suggestion: du -sh * ", SUGGEST_SGR)], None, 60);
+        let two = rule_row(
+            &[
+                (" \u{2193} suggestion: ", SUGGEST_SGR),
+                ("du -sh * ", IDLE_CHIP_SGR),
+            ],
+            None,
+            60,
+        );
+        assert_eq!(width(&one), 60);
+        assert_eq!(width(&two), 60, "the second SGR must not count as text");
+        assert!(two.contains(IDLE_CHIP_SGR) && two.contains(SUGGEST_SGR));
+    }
+
+    /// Clipping is a budget over PRINTED characters, spent across the
+    /// segments in order — so a long command loses its tail and the
+    /// label it was hanging off of survives.
+    #[test]
+    fn a_long_command_clips_without_eating_the_label() {
+        let long = "x".repeat(200);
+        let row = rule_row(
+            &[(" \u{2193} suggestion: ", SUGGEST_SGR), (&long, IDLE_CHIP_SGR)],
+            None,
+            40,
+        );
+        assert_eq!(width(&row), 40);
+        assert!(row.contains("suggestion: "));
     }
 
     /// Dim when nothing is working — the row is always on screen, so an

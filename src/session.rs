@@ -776,8 +776,7 @@ fn compose_rows(
         let mut rows = Vec::new();
         let tip = " \u{23ce} send \u{b7} \u{2193} command \u{b7} ## or esc back ";
         rows.push(status::rule_row(
-            Some(" ## chat "),
-            Some(status::SUGGEST_SGR),
+            &[(" ## chat ", status::SUGGEST_SGR)],
             Some(tip),
             cols,
         ));
@@ -873,8 +872,7 @@ fn compose_rows(
             let top = v.top.min(n.saturating_sub(1));
             let mut rows = Vec::new();
             rows.push(status::rule_row(
-                Some(&format!(" {} ", v.title)),
-                Some(status::SUGGEST_SGR),
+                &[(&format!(" {} ", v.title), status::SUGGEST_SGR)],
                 Some(&format!(
                     " \u{2191}\u{2193} scroll \u{b7} esc back \u{b7} {}/{} ",
                     (top + 1).min(n),
@@ -950,8 +948,7 @@ fn compose_rows(
         };
         let mut rows = Vec::new();
         rows.push(status::rule_row(
-            Some(&chip),
-            Some(status::SUGGEST_SGR),
+            &[(&chip, status::SUGGEST_SGR)],
             Some(&tip),
             cols,
         ));
@@ -1036,16 +1033,17 @@ fn compose_rows(
     let browsed = here.and_then(|(i, alt)| sug_hist.get(i).map(|t| (i, t, alt)));
     // The chip always shows FAST's command; the finding has its own row
     // below. Which of the two is orange says which one Enter pulls.
-    let sug_chip = match browsed {
-        Some((_, t, _)) => Some(format!(" \u{2193} suggestion: {} ", t.cmd)),
-        None => suggestions
-            .first()
-            .map(|s| format!(" \u{2193} suggestion: {} ", s.1)),
+    let sug_cmd = match browsed {
+        Some((_, t, _)) => Some(format!("{} ", t.cmd)),
+        None => suggestions.first().map(|s| format!("{} ", s.1)),
     };
     let alt_selected = browsed.map(|(_, _, is_alt)| is_alt).unwrap_or(false);
-    let rule_text = sug_chip
-        .clone()
-        .or_else(|| notice.clone().map(|n| format!(" {n} ")));
+    // Pulled onto the prompt line, and still the thing sitting there.
+    // `browse` is exactly that: it is set when the command is written to
+    // the shell, and the next Down/Up clears it the moment the buffer no
+    // longer matches the slot it points at.
+    let taken = browsed.is_some() && !alt_selected;
+    let notice_text = notice.clone().map(|n| format!(" {n} "));
     let reserved = cfg.reserved_rows();
     let inner_rows = layout.real.rows.saturating_sub(reserved).max(1);
     let label = sense::label(st, hook);
@@ -1076,23 +1074,34 @@ fn compose_rows(
             flat.len(),
             if p + 1 < flat.len() { " \u{2193}" } else { "" }
         )),
-        None if sug_chip.is_none() => {
+        None if sug_cmd.is_none() => {
             Some(" # message to chat \u{b7} #/help for help ".to_string())
         }
         None => None,
     };
-    rows.push(status::rule_row(
-        rule_text.as_deref(),
-        sug_chip.as_ref().map(|_| {
-            if alt_selected {
-                status::IDLE_CHIP_SGR
-            } else {
-                status::SUGGEST_SGR
-            }
-        }),
-        tip.as_deref(),
-        cols,
-    ));
+    // Two things on one chip, and they are not the same kind of thing.
+    // The label is an affordance — orange means Down reaches this — and
+    // it says so whether or not you have taken it. The command is
+    // content: grey while it is merely on offer, orange once it is the
+    // text sitting on your prompt line. Painting both orange all the
+    // time left nothing for the colour to distinguish.
+    const SUG_LABEL: &str = " \u{2193} suggestion: ";
+    let chip: Vec<status::Seg> = match (&sug_cmd, &notice_text) {
+        (Some(cmd), _) => vec![
+            (SUG_LABEL, status::SUGGEST_SGR),
+            (
+                cmd.as_str(),
+                if taken {
+                    status::SUGGEST_SGR
+                } else {
+                    status::IDLE_CHIP_SGR
+                },
+            ),
+        ],
+        (None, Some(n)) => vec![(n.as_str(), status::TEXT_SGR)],
+        (None, None) => vec![],
+    };
+    rows.push(status::rule_row(&chip, tip.as_deref(), cols));
     // The question row doubles as the slot for a researched finding.
     // When one exists for the browsed turn it overlays here, indented
     // and in its own colour — the question was not doing much work on
