@@ -76,12 +76,38 @@ def spawn(argv, rows=ROWS, cols=COLS, home=None):
     return proc, mfd
 
 
+CSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b.")
+
+
+def visible(b):
+    """What a reader sees: escape sequences removed, text kept.
+
+    The band is styled per RUN, not per row — the suggestion chip alone
+    is an orange label and a separately-coloured command — so an SGR
+    lands in the middle of text that reads as continuous on screen.
+    Asserting on raw bytes therefore tests the colour scheme, not the
+    words, and breaks the moment a row gains a second colour. Tests that
+    care about colour still have `out`; tests that care about words use
+    this.
+    """
+    return CSI.sub(b"", b)
+
+
+def saw(out, needle):
+    """Did this text appear on screen, whatever it was wearing?"""
+    return needle in out or needle in visible(out)
+
+
 def read_until(mfd, pattern, timeout=8.0, acc=b""):
-    """Read from the pty until regex `pattern` matches or timeout."""
+    """Read from the pty until regex `pattern` matches or timeout.
+
+    Matched against both the raw stream and the visible text, so a
+    pattern spanning a style change still fires.
+    """
     deadline = time.time() + timeout
     rx = re.compile(pattern, re.DOTALL)
     while time.time() < deadline:
-        if rx.search(acc):
+        if rx.search(acc) or rx.search(visible(acc)):
             return acc
         r, _, _ = select.select([mfd], [], [], 0.2)
         if mfd in r:
@@ -296,7 +322,7 @@ def test_suggestions():
     read_until(mfd, rb"\$")
     os.write(mfd, b"lls\r")  # typo'd ls -> command not found -> rules vendor
     out = read_until(mfd, "suggestion: ls".encode())  # bar redraw with the suggestion arrow
-    check("suggestion shown in bar", "suggestion: ls".encode() in out, out[-200:])
+    check("suggestion shown in bar", saw(out, "suggestion: ls".encode()), out[-200:])
 
     if sys.platform.startswith("linux"):  # bracketed paste needs readline >= 8.1
         os.write(mfd, b"\x1b[1;3B")  # Alt-Down: pull suggestion into the line
@@ -327,7 +353,7 @@ def test_zsh_auto_integration():
     time.sleep(1.5)
     os.write(mfd, b"lls\r")
     out = read_until(mfd, "suggestion: ls".encode())
-    check("suggestion vended under zsh", "suggestion: ls".encode() in out, out[-300:])
+    check("suggestion vended under zsh", saw(out, "suggestion: ls".encode()), out[-300:])
     os.write(mfd, b"\x1b[B")  # plain Down, past end of history
     time.sleep(0.6)
     os.write(mfd, b"\r")
@@ -973,60 +999,90 @@ def test_engine_ollama():
     out = read_until(mfd, rb"ANS-bigmodel-CTX", 8.0)
     check("#/model switch took effect", b"ANS-bigmodel" in out, out[-300:])
     check("follow-up ask carries chat history", b"ANS-bigmodel-CTX" in out, out[-300:])
-    # #/settings is a tree: groups first, values inside them.
+    # #/settings is a tree: a few root rows, then groups you descend into.
+    # Root is  commentary . fast lane > . slow lane > . context > .
+    # memory > . expert  -- `band` was dissolved and its two rows promoted,
+    # because a group holding exactly `commentary` and `stats` was a
+    # folder around two things.
     os.write(mfd, b"#/settings\r")
-    out = read_until(mfd, "band \u25b8".encode(), 5.0)
-    check("#/settings lists groups", "band \u25b8".encode() in out, out[-300:])
-    # The note rides the SELECTED row, and the cursor opens on the first
-    # group — so this is fast lane's line, not an arbitrary one.
-    out = read_until(mfd, b"the lane that answers", 4.0, out)
-    check("the selected group says what it is for",
-          b"the lane that answers" in out, out[-300:])
-    # Down to `band`, then Right to enter it. Right and Enter and Esc and
-    # Left all have to work; the test drives the arrow because that is
-    # the one a hand finds without being told.
-    for _ in range(3):
-        os.write(mfd, b"\x1b[B")
-        time.sleep(0.15)
-    os.write(mfd, b"\x1b[C")        # Right: descend
-    out = read_until(mfd, rb"commentary: on", 5.0)
-    check("Right descends into a group", b"commentary: on" in out, out[-300:])
-    check("the breadcrumb says where you are", b"band" in out, out[-300:])
-    check("a `..` row offers the way back", b".." in out, out[-300:])
-    os.write(mfd, b"\x1b[B")        # off `..` onto commentary
-    time.sleep(0.2)
-    os.write(mfd, b"\r")            # cycle commentary on -> off
+    out = read_until(mfd, "fast lane \u25b8".encode(), 5.0)
+    check("#/settings lists groups", saw(out, "fast lane \u25b8".encode()),
+          out[-300:])
+    # The cursor opens on row 0, which is a root row, not a group.
+    check("a root row sits above the groups", saw(out, b"commentary: on"),
+          out[-300:])
+    # Root rows have to cycle IN PLACE. They live beside the groups rather
+    # than inside one, so a group-keyed value lookup never found them and
+    # `commentary` and `stats` rendered but would not move.
+    os.write(mfd, b"\r")
     out = read_until(mfd, rb"commentary: off", 4.0)
-    check("Enter cycles a setting", b"commentary: off" in out, out[-300:])
+    check("Enter cycles a root setting", saw(out, b"commentary: off"), out[-300:])
     os.write(mfd, b"\r")            # ... and back on, so later checks stand
     out = read_until(mfd, rb"commentary: on", 4.0)
-    check("cycling wraps around", b"commentary: on" in out, out[-300:])
+    check("cycling wraps around", saw(out, b"commentary: on"), out[-300:])
+    # Down to `fast lane`, then Right to enter it. Right and Enter and Esc
+    # and Left all have to work; the test drives the arrow because that is
+    # the one a hand finds without being told.
+    os.write(mfd, b"\x1b[B")
+    time.sleep(0.25)
+    out = read_until(mfd, b"the lane that answers", 4.0)
+    check("the selected group says what it is for",
+          saw(out, b"the lane that answers"), out[-300:])
+    os.write(mfd, b"\x1b[C")        # Right: descend
+    out = read_until(mfd, rb"thinking: ", 5.0)
+    check("Right descends into a group", saw(out, b"thinking: "), out[-300:])
+    check("the breadcrumb says where you are", saw(out, b"fast lane"), out[-300:])
+    check("a `..` row offers the way back", saw(out, b".."), out[-300:])
+    os.write(mfd, b"\x1b[D")        # Left: back out before the expert walk
+    read_until(mfd, "fast lane \u25b8".encode(), 4.0)
+    # The expert toggle must not move under the cursor. `terminal` is a
+    # debug-gated GROUP, so it used to be emitted up among the others:
+    # flipping the switch inserted a row ABOVE the selection and the
+    # cursor slid onto whatever took its place -- a switch you cannot
+    # turn back off. Typing filters the list, so no rows are counted.
+    os.write(mfd, b"expert")
+    time.sleep(0.35)
+    os.write(mfd, b"\r")
+    out = read_until(mfd, rb"expert: on", 4.0)
+    check("expert turns on", saw(out, b"expert: on"), out[-300:])
+    os.write(mfd, b"\r")
+    out = read_until(mfd, rb"expert: off", 4.0)
+    check("...and the cursor is still on it, so it turns back off",
+          saw(out, b"expert: off"), out[-300:])
+    os.write(mfd, b"\r")            # leave expert ON: command_first needs it
+    read_until(mfd, rb"expert: on", 4.0)
+    for _ in range(len("expert")):
+        os.write(mfd, b"\x7f")      # clear the filter
+        time.sleep(0.05)
+    time.sleep(0.3)
     # Field bug: command_first was the one setting with no session-side
     # variable, so Enter told the engine and rewrote the config while the
     # row itself was hardcoded to "on" and the session's own mid-stream
     # vending never changed. It looked exactly like a dead key.
-    # command_first lives in the fast-lane group now. Left backs out,
-    # then walk to it — exercising the OTHER way up a level.
-    os.write(mfd, b"\x1b[D")        # Left: ascend
-    out = read_until(mfd, "fast lane \u25b8".encode(), 4.0)
-    check("Left ascends to the group list", "fast lane \u25b8".encode() in out,
-          out[-300:])
-    os.write(mfd, b"\x1b[A")
-    time.sleep(0.2)
+    #
+    # It is expert-gated now (sharp, and settled by measurement), which is
+    # why the walk above left expert ON. Filter to `fast lane` and Enter
+    # to descend -- Enter descends as well as Right.
+    os.write(mfd, b"fast")
+    time.sleep(0.3)
     os.write(mfd, b"\r")            # Enter also descends
-    time.sleep(0.4)
-    for _ in range(3):
-        os.write(mfd, b"\x1b[B")
-        time.sleep(0.15)
-    out = read_until(mfd, rb"command_first: on", 4.0)
-    check("command_first reachable in the list", b"command_first: on" in out,
-          out[-300:])
+    out = read_until(mfd, rb"command_first: on", 5.0)
+    check("command_first reachable in the list",
+          saw(out, b"command_first: on"), out[-300:])
+    # Filter to the row itself, so the toggle does not depend on where
+    # the cursor happened to land after descending.
+    os.write(mfd, b"command_first")
+    time.sleep(0.3)
     os.write(mfd, b"\r")
     out = read_until(mfd, rb"command_first: off", 4.0)
     check("command_first ROW toggles, not just the notice",
-          out.count(b"command_first: off") >= 2, out[-400:])
+          visible(out).count(b"command_first: off") >= 2, out[-400:])
     os.write(mfd, b"\r")            # back on, so later checks stand
     read_until(mfd, rb"command_first: on", 4.0)
+    for _ in range(len("command_first")):
+        os.write(mfd, b"\x7f")
+        time.sleep(0.04)
+    time.sleep(0.3)
     # Two Escs to leave: one out of the group, one out of the menu. That
     # is the point of the tree — Esc means "back", not "abandon". Assert
     # it actually closed, or the next command is typed into the filter
@@ -1034,42 +1090,42 @@ def test_engine_ollama():
     os.write(mfd, b"\x1b")
     out = read_until(mfd, "fast lane \u25b8".encode(), 4.0)
     check("esc leaves the group, not the menu",
-          "fast lane \u25b8".encode() in out, out[-200:])
+          saw(out, "fast lane \u25b8".encode()), out[-200:])
     os.write(mfd, b"\x1b")
     out = read_until(mfd, rb"# message to chat", 4.0)
-    check("a second esc closes the menu", b"# message to chat" in out, out[-200:])
+    check("a second esc closes the menu", saw(out, b"# message to chat"), out[-200:])
     # #/debug: the terminal-hackery drawer, same cycle mechanic.
     # #/debug is a shortcut straight into the `terminal` group of the
     # same tree — so it leads with `..`, and the knob is one Down away.
     os.write(mfd, b"#/debug\r")
     out = read_until(mfd, rb"cursor_save: decsc", 5.0)
     check("#/debug lists the esoteric knobs",
-          b"cursor_save: decsc" in out and b"idle_repaint: on" in out, out[-400:])
+          saw(out, b"cursor_save: decsc") and saw(out, b"idle_repaint: off"), out[-400:])
     os.write(mfd, b"\x1b[B")        # off `..` onto cursor_save
     time.sleep(0.2)
     os.write(mfd, b"\r")            # decsc -> absolute
     out = read_until(mfd, rb"cursor_save: absolute", 4.0)
-    check("Enter cycles a debug knob", b"cursor_save: absolute" in out, out[-300:])
+    check("Enter cycles a debug knob", saw(out, b"cursor_save: absolute"), out[-300:])
     time.sleep(0.3)
     os.write(mfd, b"\r")            # ... and back, so the fix stays on
     out = read_until(mfd, rb"cursor_save: decsc", 4.0)
-    check("debug knob wraps back", b"cursor_save: decsc" in out, out[-300:])
+    check("debug knob wraps back", saw(out, b"cursor_save: decsc"), out[-300:])
     os.write(mfd, b"\x1b")
     time.sleep(0.3)
     os.write(mfd, b"\x1b")
     time.sleep(0.4)
     os.write(mfd, b"#/help\r")
     out = read_until(mfd, rb"#@/path", 4.0)
-    check("#/help lists current commands", b"#@/path" in out, out[-300:])
+    check("#/help lists current commands", saw(out, b"#@/path"), out[-300:])
     # The reference outgrew one screen, so it filters like any menu.
     os.write(mfd, b"settings")
     out = read_until(mfd, rb"#/settings", 4.0)
-    check("#/help filters to a command", b"#/settings" in out, out[-300:])
+    check("#/help filters to a command", saw(out, b"#/settings"), out[-300:])
     os.write(mfd, b"\x1b")
     time.sleep(0.4)
     os.write(mfd, b"#/status\r")
     out = read_until(mfd, rb"blocks this session", 5.0)
-    check("#/status shows engine", b"bigmodel" in out, out[-300:])
+    check("#/status shows engine", saw(out, b"bigmodel"), out[-300:])
     # Proactive commentary: a plain command turn should produce an
     # unprompted engine answer (fake always replies, never PASS).
     os.write(mfd, b"echo ctest-$((3*4))\r")
@@ -1475,7 +1531,7 @@ def test_slow_lane():
     with open(os.path.join(home, "config.toml"), "w") as f:
         f.write("[engine]\nprovider = \"ollama\"\n"
                 f"host = \"http://127.0.0.1:{port}\"\nstream = false\n"
-                "commentary = false\nslow = \"ingest\"\n")
+                "commentary = false\nslow = \"manual\"\n")
     proc, mfd = spawn(["zsh"], home=home)
     time.sleep(1.5)
 
@@ -1501,9 +1557,12 @@ def test_slow_lane():
           b"\x1b[0;97;48;5;238m" in out, out[-400:])
     check("the question stub stays on terminal background",
           b"\x1b[0;2m ? how do i clear" in out, out[-500:])
+    # Anchored at the stub, not at the first grey anywhere in the stream:
+    # the suggestion chip's own body is grey too and appears far earlier,
+    # so a bare find() was comparing the wrong two things.
+    stub = out.rfind(b"\x1b[0;2m ? how do i clear")
     check("...and the block starts after it, not at column one",
-          out.find(b"\x1b[0;97;48;5;238m") > out.find(b"\x1b[0;2m ? how do i clear"),
-          out[-500:])
+          stub >= 0 and out.find(b"\x1b[0;97;48;5;238m", stub) > stub, out[-500:])
     # Down again walks INTO the alternative -- depth-first, one axis.
     os.write(mfd, b"\x1b[B")
     out = read_until(mfd, rb"2/2", 5.0)
@@ -1513,8 +1572,12 @@ def test_slow_lane():
     check("...and orange moves to it",
           out.rfind(b"\x1b[0;30;48;5;208m\xe2\x86\xb3") >
           out.rfind(b"\x1b[0;97;48;5;238m\xe2\x86\xb3"), out[-600:])
-    check("...while fast's chip goes grey",
-          b"\x1b[0;97;48;5;238m \xe2\x86\x93 suggestion" in out, out[-600:])
+    # The chip is two runs now: the label is an affordance and stays
+    # orange, the COMMAND is what carries selection. So "goes grey" means
+    # the body goes grey behind an orange label, not the whole chip.
+    check("...while fast's chip body goes grey",
+          b"\x1b[0;30;48;5;208m \xe2\x86\x93 suggestion: \x1b[0;97;48;5;238m" in out,
+          out[-600:])
     os.write(mfd, b"\x15")            # ^U: drop the line, end browsing
     time.sleep(0.5)
 
@@ -1528,28 +1591,56 @@ def test_slow_lane():
     check("the amendment is by reference, not a rewrite",
           asked and "amends the suggestion above" in asked[-1], "")
 
-    # Turning slow off answers via fast and says so, rather than refusing.
+    # The engagement ladder says when the slow lane speaks up UNASKED:
+    # manual (default) / query / waldorf. There is no `off` rung, and
+    # that is deliberate -- `#?` IS the request for this lane, so a
+    # setting able to refuse it would make the key silently dead. What
+    # the ladder must never do is swallow an explicit `#?`.
     os.write(mfd, b"#/settings\r")
-    read_until(mfd, rb"slow: ingest", 5.0)
-    os.write(mfd, b"\x1b[B")
-    time.sleep(0.3)
-    for _ in range(3):                # ingest -> volunteer -> manual -> off
+    read_until(mfd, "slow lane \u25b8".encode(), 5.0)
+    os.write(mfd, b"slow")
+    time.sleep(0.35)
+    os.write(mfd, b"\r")                # descend into the slow lane
+    out = read_until(mfd, rb"mode: manual", 5.0)
+    check("the slow lane opens on its engagement ladder",
+          saw(out, b"mode: manual"), out[-300:])
+    for _ in range(len("slow")):
+        os.write(mfd, b"\x7f")
+        time.sleep(0.04)
+    os.write(mfd, b"mode")
+    time.sleep(0.35)
+    # Step to each rung in turn and wait for THAT one, so the check is
+    # the order as well as the set. Reading "whatever appeared" after
+    # each Enter just samples whichever repaint landed first.
+    seen = []
+    for rung in (b"query", b"waldorf", b"manual"):
         os.write(mfd, b"\r")
-        time.sleep(0.4)
-    out = read_until(mfd, rb"slow: off", 4.0)
-    check("the engagement ladder cycles to off", b"slow: off" in out, out[-300:])
-    os.write(mfd, b"\x1b")
-    time.sleep(0.4)
+        out = read_until(mfd, b"mode: " + rung, 4.0)
+        if saw(out, b"mode: " + rung):
+            seen.append(rung)
+    check("the ladder cycles through every rung, in order",
+          seen == [b"query", b"waldorf", b"manual"], str(seen))
+    check("...and never offers an `off` rung", not saw(out, b"mode: off"),
+          out[-300:])
+    # Two levels deep, so two Escs -- and Esc clears the filter on its
+    # way up, which is why nothing backspaces it here: a backspace on an
+    # already-empty filter is a different key entirely, and one dropped
+    # keystroke would leave the menu open with `exit` typed into it.
+    os.write(mfd, b"\x1b")             # out of the group
+    read_until(mfd, "slow lane \u25b8".encode(), 4.0)
+    time.sleep(0.3)
+    os.write(mfd, b"\x1b")             # out of the menu
+    time.sleep(0.3)
+    os.write(mfd, b"\r")               # settle ZLE's meta prefix
+    time.sleep(0.3)
     before = len(prompts)
     os.write(mfd, b"#? anything\r")
     out = read_until(mfd, rb"OFF-ANSWERED", 8.0)
-    check("#? with slow off still answers", b"OFF-ANSWERED" in out, out[-300:])
-    check("...and says why it behaved like a #",
-          b"answered by fast" in out, out[-400:])
-    time.sleep(0.5)
-    check("...and does not dispatch research",
-          not any("Take your time" in p for p in prompts[before:]), "")
-
+    check("#? is answered by fast first, whatever the ladder says",
+          saw(out, b"OFF-ANSWERED"), out[-300:])
+    time.sleep(0.6)
+    check("...and it DOES dispatch research, because the user asked",
+          any("Take your time" in p for p in prompts[before:]), "")
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
     srv.shutdown()
@@ -2269,6 +2360,10 @@ def test_non_tty():
 
 
 def main():
+    # `python3 tests/e2e.py test_slow_lane [...]` runs a subset. The full
+    # suite drives twenty-odd PTYs and takes minutes, which is too slow a
+    # loop to debug one failing check against.
+    picked = set(sys.argv[1:])
     for t in (
         test_basic,
         test_exit_code,
@@ -2297,6 +2392,8 @@ def main():
         test_startup_preserves_the_screen,
         test_non_tty,
     ):
+        if picked and t.__name__ not in picked:
+            continue
         try:
             t()
         except Exception as e:  # noqa: BLE001

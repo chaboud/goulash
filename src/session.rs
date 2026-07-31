@@ -297,8 +297,12 @@ struct Group {
 /// column shows what is bound now.
 const OPENS_MENU: &[&str] = &["model", "research model"];
 
-/// Rows that take a typed value. Enter opens a little field on the row,
-/// pre-filled with what is set now; Enter again commits, Esc cancels.
+/// Rows that take a typed value. Enter opens an empty field on the row;
+/// Enter again commits, an empty field means unchanged, Esc cancels.
+///
+/// Empty rather than pre-filled: the first digit typed would otherwise
+/// land beside the current value and turn 25 into 251. The row
+/// underneath still shows what it is now.
 const TEXT_ENTRY: &[&str] = &["limit"];
 
 /// Rows hidden until `expert` is on.
