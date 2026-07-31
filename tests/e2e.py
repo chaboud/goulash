@@ -1092,8 +1092,17 @@ def test_engine_ollama():
     check("esc leaves the group, not the menu",
           saw(out, "fast lane \u25b8".encode()), out[-200:])
     os.write(mfd, b"\x1b")
-    out = read_until(mfd, rb"# message to chat", 4.0)
-    check("a second esc closes the menu", saw(out, b"# message to chat"), out[-200:])
+    time.sleep(0.3)
+    os.write(mfd, b"\r")            # settle ZLE's meta prefix (dismiss_and_exit)
+    time.sleep(0.3)
+    # "Closed" means keys reach the SHELL again. The old check waited for
+    # the ingress tip, which the rule row only shows while there is no
+    # suggestion to show instead -- so once anything had been vended it
+    # could never pass, and every command after it was typed into the
+    # filter instead of the shell.
+    os.write(mfd, b"echo MENU-CLOSED\r")
+    out = read_until(mfd, rb"MENU-CLOSED", 4.0)
+    check("a second esc closes the menu", saw(out, b"MENU-CLOSED"), out[-200:])
     # #/debug: the terminal-hackery drawer, same cycle mechanic.
     # #/debug is a shortcut straight into the `terminal` group of the
     # same tree — so it leads with `..`, and the knob is one Down away.
