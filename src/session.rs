@@ -278,27 +278,92 @@ enum MenuKind {
 /// Live-tunable settings and the values Enter cycles through. Everything
 /// here applies immediately and persists; anything that would need a
 /// restart stays in the TOML where it cannot mislead.
-const SETTINGS: &[(&str, &[&str])] = &[
-    ("commentary", &["on", "off"]),
-    ("slow", &["ingest", "volunteer", "manual", "off"]),
+/// Settings, grouped. One flat list of thirteen names made you know
+/// which of them mattered before you could look; a group tells you where
+/// to go and shows you nothing else on the way.
+///
+/// A group is entered with Enter or Right and left with Esc **or** a
+/// `..` row **or** Left. Three ways out costs nothing and assumes
+/// nothing: not every terminal sends Esc usefully, not everyone reaches
+/// for it, and a visible `..` is the only one that is discoverable
+/// without being told.
+struct Group {
+    name: &'static str,
+    what: &'static str,
+    rows: &'static [(&'static str, &'static [&'static str])],
+}
+
+/// Rows that open another menu rather than cycling a value. The value
+/// column shows what is bound now.
+const OPENS_MENU: &[&str] = &["model", "research model"];
+
+const FAST_ROWS: &[(&str, &[&str])] = &[
+    ("model", &[]),
     ("thinking", &["off", "low", "medium", "high"]),
-    ("memory", &["off", "on"]),
-    ("max_tokens", &["2048", "4096", "8192", "16384"]),
     ("command_first", &["on", "off"]),
-    ("platform", &["on", "off"]),
-    ("stats", &["off", "on"]),
+    ("max_tokens", &["2048", "4096", "8192", "16384"]),
 ];
 
-/// `#/debug`: the drawer for behaviours that change how goulash drives
-/// the terminal. Anything here can be turned live so a field problem can
-/// be bisected in place instead of by rebuilding.
-const DEBUG_SETTINGS: &[(&str, &[&str])] = &[
-    ("cursor_save", &["decsc", "absolute"]),
-    ("idle_repaint", &["on", "off"]),
-    ("wrap_guard", &["off", "on"]),
+const SLOW_ROWS: &[(&str, &[&str])] = &[
+    ("research model", &[]),
+    ("slow", &["ingest", "volunteer", "manual", "off"]),
+];
+
+const CONTEXT_ROWS: &[(&str, &[&str])] = &[
+    ("platform", &["on", "off"]),
+    ("memory", &["off", "on"]),
     ("divulge_tools", &["off", "on"]),
     ("divulge_path", &["off", "on"]),
 ];
+
+const BAND_ROWS: &[(&str, &[&str])] = &[
+    ("commentary", &["on", "off"]),
+    ("stats", &["off", "on"]),
+];
+
+const TERMINAL_ROWS: &[(&str, &[&str])] = &[
+    ("cursor_save", &["decsc", "absolute"]),
+    ("idle_repaint", &["on", "off"]),
+    ("wrap_guard", &["off", "on"]),
+];
+
+const GROUPS: &[Group] = &[
+    Group {
+        name: "fast lane",
+        what: "the lane that answers; always on",
+        rows: FAST_ROWS,
+    },
+    Group {
+        name: "slow lane",
+        what: "the lane that researches and amends",
+        rows: SLOW_ROWS,
+    },
+    Group {
+        name: "context",
+        what: "what the model is told about your machine",
+        rows: CONTEXT_ROWS,
+    },
+    Group {
+        name: "band",
+        what: "what goulash shows unprompted",
+        rows: BAND_ROWS,
+    },
+    Group {
+        name: "terminal",
+        what: "how goulash drives the emulator",
+        rows: TERMINAL_ROWS,
+    },
+];
+
+/// Every row, whichever group it lives in — for applying a value
+/// without caring where the user found it.
+fn row_values(name: &str) -> Option<&'static [&'static str]> {
+    GROUPS
+        .iter()
+        .flat_map(|g| g.rows)
+        .find(|(n, _)| *n == name)
+        .map(|(_, v)| *v)
+}
 
 const HELP_ITEMS: &[&str] = &[
     "#<question>            ask; the answer lands in the band",
@@ -347,6 +412,8 @@ struct Menu {
     /// Reading one item full-height. Modal within the menu: Esc backs
     /// out to the list, not out of the menu.
     viewing: Option<Viewer>,
+    /// Which settings group is open. `None` is the root list.
+    group: Option<String>,
 }
 
 impl Menu {
@@ -361,6 +428,7 @@ impl Menu {
             armed: None,
             composing: None,
             viewing: None,
+            group: None,
         }
     }
 
@@ -408,6 +476,10 @@ enum Key {
     KillLine,
     Up,
     Down,
+    /// Horizontal arrows. Only the menus read them — the shell line owns
+    /// them everywhere else, and they are forwarded untouched there.
+    Right,
+    Left,
     Esc,
     CtrlC,
 }
@@ -434,6 +506,8 @@ fn parse_keys(chunk: &[u8]) -> Vec<Key> {
                             match chunk[j] {
                                 b'A' if plain => keys.push(Key::Up),
                                 b'B' if plain => keys.push(Key::Down),
+                                b'C' if plain => keys.push(Key::Right),
+                                b'D' if plain => keys.push(Key::Left),
                                 b'~' if &chunk[i + 2..j] == b"3" => keys.push(Key::Delete),
                                 _ => {}
                             }
@@ -450,6 +524,8 @@ fn parse_keys(chunk: &[u8]) -> Vec<Key> {
                             match f {
                                 b'A' => keys.push(Key::Up),
                                 b'B' => keys.push(Key::Down),
+                                b'C' => keys.push(Key::Right),
+                                b'D' => keys.push(Key::Left),
                                 _ => {}
                             }
                             i += 3;
@@ -788,9 +864,16 @@ fn compose_rows(
             return rows;
         }
         let filtered = m.filtered();
+        // The rule row is the breadcrumb: where you are, not just what
+        // is open. Without it a group's rows are a list of names with no
+        // hint what they belong to or how you got there.
+        let path = match &m.group {
+            Some(g) => format!("{} \u{25b8} {}", m.title, g),
+            None => m.title.clone(),
+        };
         let chip = match &m.composing {
-            Some(text) => format!(" {} \u{25b8} + {}\u{258f} ", m.title, text),
-            None => format!(" {} \u{25b8} {}\u{258f} ", m.title, m.filter),
+            Some(text) => format!(" {path} \u{25b8} + {text}\u{258f} "),
+            None => format!(" {path} \u{25b8} {}\u{258f} ", m.filter),
         };
         // Feedback for in-menu actions has nowhere else to go: the rule
         // row belongs to the menu while it is open, so a notice takes
@@ -859,7 +942,19 @@ fn compose_rows(
             let help = match (m.kind, idx == m.cursor) {
                 (MenuKind::Settings | MenuKind::Debug, true) => filtered
                     .get(idx)
-                    .map(|n| setting_help(n.split(':').next().unwrap_or(n).trim()))
+                    .map(|n| {
+                        if let Some(g) = n.strip_suffix('\u{25b8}') {
+                            return group_help(g.trim());
+                        }
+                        let mut it = n.splitn(2, ':');
+                        let k = it.next().unwrap_or("").trim();
+                        // The thinking row carries a parenthetical about
+                        // what the model will actually do; the value is
+                        // the first word.
+                        let v = it.next().unwrap_or("").trim();
+                        let v = v.split_whitespace().next().unwrap_or(v);
+                        setting_help(k, v)
+                    })
                     .unwrap_or(""),
                 _ => "",
             };
@@ -1163,6 +1258,10 @@ fn slash_command(
     dbg: &crate::config::DebugConfig,
     slow: &str,
     platform: bool,
+    tools: bool,
+    full_path: bool,
+    fast_model: Option<&str>,
+    slow_model: Option<&str>,
 ) -> Option<String> {
     let mut it = cmdline.splitn(2, char::is_whitespace);
     let cmd = it.next().unwrap_or("");
@@ -1263,6 +1362,7 @@ fn slash_command(
         ("settings", _) | ("config", _) => {
             let mut m = Menu::open("settings", MenuKind::Settings);
             m.items = settings_items(&Live {
+                group: None,
                 platform,
                 commentary: *commentary,
                 slow,
@@ -1272,13 +1372,37 @@ fn slash_command(
                 stats,
                 memory,
                 caps,
+                tools,
+                full_path,
+                fast_model,
+                slow_model,
+                dbg,
             });
             *menu = Some(m);
             None
         }
+        // `#/debug` is the terminal group, reached directly. Same tree,
+        // same rows — a shortcut into it, not a second menu.
         ("debug", _) => {
-            let mut m = Menu::open("debug", MenuKind::Debug);
-            m.items = debug_items(dbg);
+            let mut m = Menu::open("settings", MenuKind::Settings);
+            m.group = Some("terminal".to_string());
+            m.items = settings_items(&Live {
+                group: Some("terminal"),
+                platform,
+                commentary: *commentary,
+                slow,
+                thinking,
+                max_tokens,
+                command_first,
+                stats,
+                memory,
+                caps,
+                tools,
+                full_path,
+                fast_model,
+                slow_model,
+                dbg,
+            });
             m.loaded = true;
             *menu = Some(m);
             None
@@ -1336,8 +1460,15 @@ fn slash_command(
 /// struct makes adding a setting a compile error at every site that has
 /// to know about it.
 struct Live<'a> {
+    /// Which group is open. `None` is the root list of groups.
+    group: Option<&'a str>,
     commentary: bool,
     platform: bool,
+    tools: bool,
+    full_path: bool,
+    fast_model: Option<&'a str>,
+    slow_model: Option<&'a str>,
+    dbg: &'a crate::config::DebugConfig,
     slow: &'a str,
     thinking: &'a str,
     max_tokens: usize,
@@ -1357,23 +1488,50 @@ struct Live<'a> {
 ///
 /// Kept to one clause. This shares a row with the setting, and a
 /// sentence that wraps would take rows from the shell.
-fn setting_help(name: &str) -> &'static str {
-    match name {
-        "commentary" => "unprompted tips after a command",
-        "slow" => "when the research lane joins: ask only, on pins, or on everything",
-        "thinking" => "reasoning effort; models that cannot will ignore it",
-        "memory" => "let the model keep notes across sessions",
-        "max_tokens" => "ceiling on one answer, reasoning included",
-        "command_first" => "put CMD: before the prose, so truncation eats the words",
-        "platform" => "tell the model your OS and shell, so it stops suggesting Linux flags",
-        "stats" => "counters in the bar, for spotting something climbing",
-        "cursor_save" => "how the cursor is parked while goulash paints",
-        "idle_repaint" => "redraw the bar unprompted after output settles",
-        "wrap_guard" => "skip a paint while the cursor sits in the last column",
-        "divulge_tools" => "list which common tools are installed (debug)",
-        "divulge_path" => "list every executable on PATH — ~3900 tokens (debug)",
+fn setting_help(name: &str, value: &str) -> &'static str {
+    // Where the values are the thing that needs explaining, explain the
+    // one you are standing on. `ingest` and `volunteer` are not English;
+    // they mean nothing until you are told, and being told after you
+    // picked wrong is not help.
+    match (name, value) {
+        ("slow", "off") => "the research lane never runs",
+        ("slow", "manual") => "only when you ask with #?",
+        ("slow", "ingest") => "on #? and when you pin a file with #@",
+        ("slow", "volunteer") => "on every # ask too — it will amend a lot",
+
+        ("thinking", "off") => "ask for no reasoning; some models do anyway",
+        ("thinking", "low") => "brief reasoning where the model supports levels",
+        ("thinking", "medium") => "the model's own default effort",
+        ("thinking", "high") => "long reasoning: slower, not always better",
+
+        ("cursor_save", "decsc") => "the terminal's own save/restore; keeps deferred wrap",
+        ("cursor_save", "absolute") => "re-home from our mirror; loses the wrap flag",
+
+        ("model", _) => "which model answers; \u{23ce} opens the picker",
+        ("research model", _) => "the slow lane can use a different model, or machine",
+
+        ("commentary", _) => "unprompted tips after a command",
+        ("memory", _) => "let the model keep notes across sessions",
+        ("max_tokens", _) => "ceiling on one answer, reasoning included",
+        ("command_first", _) => "put CMD: first, so truncation eats the words",
+        ("platform", _) => "name your OS and shell, so it stops suggesting Linux flags",
+        ("stats", _) => "counters in the bar, for spotting something climbing",
+        ("idle_repaint", _) => "redraw the bar unprompted after output settles",
+        ("wrap_guard", _) => "skip a paint while the cursor sits in the last column",
+        ("divulge_tools", _) => "list which common tools are installed (debug)",
+        ("divulge_path", _) => "every executable on PATH — ~3900 tokens (debug)",
+        ("..", _) => "back",
         _ => "",
     }
+}
+
+/// What a group is for, shown against it in the root list.
+fn group_help(name: &str) -> &'static str {
+    GROUPS
+        .iter()
+        .find(|g| g.name == name)
+        .map(|g| g.what)
+        .unwrap_or("")
 }
 
 fn settings_items(v: &Live) -> Vec<String> {
@@ -1388,10 +1546,28 @@ fn settings_items(v: &Live) -> Vec<String> {
         v.memory,
         v.caps,
     );
-    SETTINGS
-        .iter()
-        .map(|(name, _)| {
+    // Root: the groups themselves, with an arrow saying they open.
+    let Some(group) = v.group else {
+        return GROUPS
+            .iter()
+            .map(|g| format!("{} \u{25b8}", g.name))
+            .collect();
+    };
+    let Some(g) = GROUPS.iter().find(|g| g.name == group) else {
+        return Vec::new();
+    };
+    // `..` first, so leaving is the thing your hand finds without being
+    // told it exists.
+    std::iter::once("..".to_string())
+        .chain(g.rows.iter().map(|(name, _)| {
             let v = match *name {
+                "model" => v.fast_model.unwrap_or("(auto)").to_string(),
+                "research model" => v.slow_model.unwrap_or("(same as fast)").to_string(),
+                "cursor_save" => v.dbg.cursor_save.clone(),
+                "idle_repaint" => if v.dbg.idle_repaint { "on" } else { "off" }.to_string(),
+                "wrap_guard" => if v.dbg.wrap_guard { "on" } else { "off" }.to_string(),
+                "divulge_tools" => if v.tools { "on" } else { "off" }.to_string(),
+                "divulge_path" => if v.full_path { "on" } else { "off" }.to_string(),
                 "commentary" => if commentary { "on" } else { "off" }.to_string(),
                 "slow" => slow.to_string(),
                 "thinking" => format!("{thinking}{}", thinking_note(caps)),
@@ -1403,7 +1579,7 @@ fn settings_items(v: &Live) -> Vec<String> {
                 _ => String::new(),
             };
             format!("{name}: {v}")
-        })
+        }))
         .collect()
 }
 
@@ -1701,22 +1877,6 @@ fn pin_items(work: &crate::context::WorkContext) -> Vec<String> {
         .collect()
 }
 
-/// `name: value` rows for the debug menu, from the live knobs.
-fn debug_items(dbg: &crate::config::DebugConfig) -> Vec<String> {
-    DEBUG_SETTINGS
-        .iter()
-        .map(|(name, _)| {
-            let v = match *name {
-                "cursor_save" => dbg.cursor_save.clone(),
-                "idle_repaint" => if dbg.idle_repaint { "on" } else { "off" }.to_string(),
-                "wrap_guard" => if dbg.wrap_guard { "on" } else { "off" }.to_string(),
-                _ => String::new(),
-            };
-            format!("{name}: {v}")
-        })
-        .collect()
-}
-
 /// The parenthetical after the thinking value: silent when the model
 /// honours the dial, loud when it cannot or when goulash is guessing.
 fn thinking_note(caps: Option<&crate::models::Caps>) -> String {
@@ -1928,6 +2088,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut opt_max_tokens = cfg.engine.max_tokens;
     let mut opt_command_first = cfg.engine.command_first;
     let mut opt_platform = cfg.engine.divulge.platform;
+    let mut opt_tools = cfg.engine.divulge.tools;
+    let mut opt_full_path = cfg.engine.divulge.full_path;
+    // What the research lane is bound to, when it differs from fast.
+    let mut opt_slow_model: Option<String> = cfg.engine.slow_lane.model.clone();
     let mut opt_stats = cfg.status.stats;
     let mut stats = crate::stats::Stats::new();
     // Findings that arrived while the user was browsing. The lineage
@@ -2421,6 +2585,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             &dbg,
                                             &opt_slow,
                                             opt_platform,
+                                            cfg.engine.divulge.tools,
+                                            cfg.engine.divulge.full_path,
+                                            engine_model.as_deref(),
+                                            opt_slow_model.as_deref(),
                                         );
                                     } else if let Some(eng) = engine.as_ref() {
                                         eng.ask(
@@ -2591,6 +2759,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     // Enter commits AND persists; Esc/Ctrl-C always out.
                     let mut committed: Option<String> = None;
                     let mut close = false;
+                    // Settings-tree navigation, applied after the key
+                    // match so every route in and out lands in one place.
+                    let mut nav_into: Option<String> = None;
+                    let mut nav_up = false;
+                    let mut open_picker: Option<String> = None;
                     let mut kind = MenuKind::Model;
                     let mut new_memory: Option<String> = None;
                     let mut view: Option<String> = None;
@@ -2636,9 +2809,36 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 // Esc disarms first, then closes.
                                 Key::Esc | Key::CtrlC => {
                                     if m.armed.take().is_none() {
-                                        close = true;
+                                        // Inside a group, Esc goes up a
+                                        // level rather than throwing the
+                                        // whole menu away — one step
+                                        // back is what the key means
+                                        // everywhere else it appears.
+                                        if m.group.is_some() {
+                                            nav_up = true;
+                                        } else {
+                                            close = true;
+                                        }
                                     }
                                 }
+                                // Arrows do the same, for hands that
+                                // reach for them and terminals that
+                                // swallow Esc.
+                                Key::Right if m.kind == MenuKind::Settings => {
+                                    if let Some(t) = m.filtered().get(m.cursor)
+                                        && t.ends_with('\u{25b8}')
+                                    {
+                                        nav_into =
+                                            Some(t.trim_end_matches('\u{25b8}').trim().to_string());
+                                    }
+                                }
+                                Key::Left if m.kind == MenuKind::Settings && m.group.is_some() => {
+                                    nav_up = true;
+                                }
+                                // A horizontal arrow anywhere else in a
+                                // menu means nothing; swallow it rather
+                                // than leak it to the shell line.
+                                Key::Right | Key::Left => {}
                                 Key::Enter => {
                                     let sel = m.filtered().get(m.cursor).map(|s| s.to_string());
                                     match m.kind {
@@ -2647,7 +2847,19 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             close = true;
                                         }
                                         MenuKind::Help => {}
-                                        MenuKind::Settings | MenuKind::Debug => committed = sel,
+                                        MenuKind::Settings | MenuKind::Debug => {
+                                            // A group row opens; `..`
+                                            // closes; anything else is a
+                                            // value to cycle.
+                                            match sel.as_deref() {
+                                                Some("..") => nav_up = true,
+                                                Some(t) if t.ends_with('\u{25b8}') => {
+                                                    nav_into =
+                                                        Some(t.trim_end_matches('\u{25b8}').trim().to_string());
+                                                }
+                                                _ => committed = sel,
+                                            }
+                                        }
                                         MenuKind::Pins if sel.as_deref() == Some(NEW_PIN) => {
                                             m.composing = Some(String::new());
                                             m.armed = None;
@@ -2797,7 +3009,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         let mut parts = item.splitn(2, ':');
                         let name = parts.next().unwrap_or("").trim().to_string();
                         let cur = parts.next().unwrap_or("").trim().to_string();
-                        if let Some((_, vals)) = SETTINGS.iter().find(|(n, _)| *n == name) {
+                        // Rows with no value list are doors, not dials.
+                        if OPENS_MENU.contains(&name.as_str()) {
+                            open_picker = Some(name.clone());
+                        } else if let Some(vals) = row_values(&name) {
                             let idx = vals.iter().position(|v| *v == cur).unwrap_or(0);
                             let next = vals[(idx + 1) % vals.len()];
                             notice = Some(format!("{name}: {next}"));
@@ -2851,6 +3066,24 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         &(next == "on").to_string(),
                                     );
                                 }
+                                "divulge_tools" | "divulge_path" => {
+                                    let on = next == "on";
+                                    if name == "divulge_tools" {
+                                        opt_tools = on;
+                                    } else {
+                                        opt_full_path = on;
+                                    }
+                                    if let Some(eng) = engine.as_ref() {
+                                        eng.set_option(&name, next);
+                                    }
+                                    let key = if name == "divulge_tools" {
+                                        "tools"
+                                    } else {
+                                        "full_path"
+                                    };
+                                    let _ =
+                                        Config::persist_key("engine.divulge", key, &on.to_string());
+                                }
                                 "command_first" => {
                                     // The session vends mid-stream off its
                                     // OWN copy, so telling only the engine
@@ -2869,7 +3102,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             }
                             if let Some(m) = menu.as_mut() {
                                 m.items = settings_items(&Live {
-                platform: opt_platform,
+                                    group: m.group.as_deref(),
+                                    platform: opt_platform,
+                                    tools: opt_tools,
+                                    full_path: opt_full_path,
+                                    fast_model: engine_model.as_deref(),
+                                    slow_model: opt_slow_model.as_deref(),
+                                    dbg: &dbg,
                                     commentary,
                                     slow: &opt_slow,
                                     thinking: &opt_thinking,
@@ -2892,7 +3131,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         let mut parts = item.splitn(2, ':');
                         let name = parts.next().unwrap_or("").trim().to_string();
                         let cur = parts.next().unwrap_or("").trim().to_string();
-                        if let Some((_, vals)) = DEBUG_SETTINGS.iter().find(|(n, _)| *n == name) {
+                        if let Some(vals) = row_values(&name) {
                             let idx = vals.iter().position(|v| *v == cur).unwrap_or(0);
                             let next = vals[(idx + 1) % vals.len()];
                             notice = Some(format!("{name}: {next}"));
@@ -2917,7 +3156,23 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 },
                             );
                             if let Some(m) = menu.as_mut() {
-                                m.items = debug_items(&dbg);
+                                m.items = settings_items(&Live {
+                                    group: m.group.as_deref(),
+                                    platform: opt_platform,
+                                    tools: opt_tools,
+                                    full_path: opt_full_path,
+                                    fast_model: engine_model.as_deref(),
+                                    slow_model: opt_slow_model.as_deref(),
+                                    dbg: &dbg,
+                                    commentary,
+                                    slow: &opt_slow,
+                                    thinking: &opt_thinking,
+                                    max_tokens: opt_max_tokens,
+                                    command_first: opt_command_first,
+                                    stats: opt_stats,
+                                    memory: &memory,
+                                    caps: model_caps.as_ref(),
+                                });
                             }
                         }
                     }
@@ -2941,6 +3196,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         && let Some(name) = committed.take()
                         && let Some(eng) = engine.as_ref()
                     {
+                        // Mirror it so the settings row reads back what
+                        // was actually bound, rather than the file's
+                        // stale idea of it.
+                        opt_slow_model = Some(name.clone());
                         // Not persisted: the research lane lives in
                         // `[engine.slow_lane]`, which is a table rather
                         // than the single scalar `persist_model` knows
@@ -2976,6 +3235,55 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 Err(e) => format!("config write failed: {e}"),
                             }
                         });
+                    }
+                    // A `model` row hands off to the existing picker,
+                    // which already knows how to list, filter and bind —
+                    // the settings tree points at it rather than growing
+                    // a second, worse copy.
+                    if let Some(which) = open_picker.take()
+                        && let Some(eng) = engine.as_ref()
+                    {
+                        let slow = which == "research model";
+                        if slow {
+                            eng.list_slow_models();
+                        } else {
+                            eng.list_models();
+                        }
+                        let mut m = Menu::open(
+                            if slow { "research model" } else { "model" },
+                            if slow {
+                                MenuKind::SlowModel
+                            } else {
+                                MenuKind::Model
+                            },
+                        );
+                        m.loaded = false;
+                        menu = Some(m);
+                    }
+                    // Enter or leave a group, then rebuild the list.
+                    if nav_into.is_some() || nav_up {
+                        if let Some(m) = menu.as_mut() {
+                            m.group = if nav_up { None } else { nav_into.clone() };
+                            m.filter.clear();
+                            m.cursor = 0;
+                            m.items = settings_items(&Live {
+                                group: m.group.as_deref(),
+                                platform: opt_platform,
+                                tools: opt_tools,
+                                full_path: opt_full_path,
+                                fast_model: engine_model.as_deref(),
+                                slow_model: opt_slow_model.as_deref(),
+                                dbg: &dbg,
+                                commentary,
+                                slow: &opt_slow,
+                                thinking: &opt_thinking,
+                                max_tokens: opt_max_tokens,
+                                command_first: opt_command_first,
+                                stats: opt_stats,
+                                memory: &memory,
+                                caps: model_caps.as_ref(),
+                            });
+                        }
                     }
                     if close {
                         menu = None;
@@ -3097,6 +3405,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 &dbg,
                                 &opt_slow,
                                 opt_platform,
+                                cfg.engine.divulge.tools,
+                                cfg.engine.divulge.full_path,
+                                engine_model.as_deref(),
+                                opt_slow_model.as_deref(),
                             );
                             if let (Some(c), Some(msg)) = (chat.as_mut(), out) {
                                 c.lines.push(format!("goulash: {msg}"));
@@ -3196,7 +3508,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             && m.kind == MenuKind::Settings
                         {
                             m.items = settings_items(&Live {
-                platform: opt_platform,
+                                    group: m.group.as_deref(),
+                                    platform: opt_platform,
+                                    tools: opt_tools,
+                                    full_path: opt_full_path,
+                                    fast_model: engine_model.as_deref(),
+                                    slow_model: opt_slow_model.as_deref(),
+                                    dbg: &dbg,
                                 commentary,
                                 slow: &opt_slow,
                                 thinking: &opt_thinking,

@@ -973,10 +973,28 @@ def test_engine_ollama():
     out = read_until(mfd, rb"ANS-bigmodel-CTX", 8.0)
     check("#/model switch took effect", b"ANS-bigmodel" in out, out[-300:])
     check("follow-up ask carries chat history", b"ANS-bigmodel-CTX" in out, out[-300:])
-    # #/settings: Enter cycles a value live and persists it.
+    # #/settings is a tree: groups first, values inside them.
     os.write(mfd, b"#/settings\r")
+    out = read_until(mfd, "band \u25b8".encode(), 5.0)
+    check("#/settings lists groups", "band \u25b8".encode() in out, out[-300:])
+    # The note rides the SELECTED row, and the cursor opens on the first
+    # group — so this is fast lane's line, not an arbitrary one.
+    out = read_until(mfd, b"the lane that answers", 4.0, out)
+    check("the selected group says what it is for",
+          b"the lane that answers" in out, out[-300:])
+    # Down to `band`, then Right to enter it. Right and Enter and Esc and
+    # Left all have to work; the test drives the arrow because that is
+    # the one a hand finds without being told.
+    for _ in range(3):
+        os.write(mfd, b"\x1b[B")
+        time.sleep(0.15)
+    os.write(mfd, b"\x1b[C")        # Right: descend
     out = read_until(mfd, rb"commentary: on", 5.0)
-    check("#/settings lists live values", b"commentary: on" in out, out[-300:])
+    check("Right descends into a group", b"commentary: on" in out, out[-300:])
+    check("the breadcrumb says where you are", b"band" in out, out[-300:])
+    check("a `..` row offers the way back", b".." in out, out[-300:])
+    os.write(mfd, b"\x1b[B")        # off `..` onto commentary
+    time.sleep(0.2)
     os.write(mfd, b"\r")            # cycle commentary on -> off
     out = read_until(mfd, rb"commentary: off", 4.0)
     check("Enter cycles a setting", b"commentary: off" in out, out[-300:])
@@ -987,7 +1005,17 @@ def test_engine_ollama():
     # variable, so Enter told the engine and rewrote the config while the
     # row itself was hardcoded to "on" and the session's own mid-stream
     # vending never changed. It looked exactly like a dead key.
-    for _ in range(5):
+    # command_first lives in the fast-lane group now. Left backs out,
+    # then walk to it — exercising the OTHER way up a level.
+    os.write(mfd, b"\x1b[D")        # Left: ascend
+    out = read_until(mfd, "fast lane \u25b8".encode(), 4.0)
+    check("Left ascends to the group list", "fast lane \u25b8".encode() in out,
+          out[-300:])
+    os.write(mfd, b"\x1b[A")
+    time.sleep(0.2)
+    os.write(mfd, b"\r")            # Enter also descends
+    time.sleep(0.4)
+    for _ in range(3):
         os.write(mfd, b"\x1b[B")
         time.sleep(0.15)
     out = read_until(mfd, rb"command_first: on", 4.0)
@@ -999,19 +1027,35 @@ def test_engine_ollama():
           out.count(b"command_first: off") >= 2, out[-400:])
     os.write(mfd, b"\r")            # back on, so later checks stand
     read_until(mfd, rb"command_first: on", 4.0)
+    # Two Escs to leave: one out of the group, one out of the menu. That
+    # is the point of the tree — Esc means "back", not "abandon". Assert
+    # it actually closed, or the next command is typed into the filter
+    # and the failure lands somewhere unrelated.
     os.write(mfd, b"\x1b")
-    time.sleep(0.4)
+    out = read_until(mfd, "fast lane \u25b8".encode(), 4.0)
+    check("esc leaves the group, not the menu",
+          "fast lane \u25b8".encode() in out, out[-200:])
+    os.write(mfd, b"\x1b")
+    out = read_until(mfd, rb"# message to chat", 4.0)
+    check("a second esc closes the menu", b"# message to chat" in out, out[-200:])
     # #/debug: the terminal-hackery drawer, same cycle mechanic.
+    # #/debug is a shortcut straight into the `terminal` group of the
+    # same tree — so it leads with `..`, and the knob is one Down away.
     os.write(mfd, b"#/debug\r")
     out = read_until(mfd, rb"cursor_save: decsc", 5.0)
     check("#/debug lists the esoteric knobs",
           b"cursor_save: decsc" in out and b"idle_repaint: on" in out, out[-400:])
+    os.write(mfd, b"\x1b[B")        # off `..` onto cursor_save
+    time.sleep(0.2)
     os.write(mfd, b"\r")            # decsc -> absolute
     out = read_until(mfd, rb"cursor_save: absolute", 4.0)
     check("Enter cycles a debug knob", b"cursor_save: absolute" in out, out[-300:])
+    time.sleep(0.3)
     os.write(mfd, b"\r")            # ... and back, so the fix stays on
     out = read_until(mfd, rb"cursor_save: decsc", 4.0)
     check("debug knob wraps back", b"cursor_save: decsc" in out, out[-300:])
+    os.write(mfd, b"\x1b")
+    time.sleep(0.3)
     os.write(mfd, b"\x1b")
     time.sleep(0.4)
     os.write(mfd, b"#/help\r")
@@ -1211,9 +1255,15 @@ def test_model_capabilities():
     read_until(mfd, rb"PASS", 8.0)
     check("boolean reasoner gets think:true",
           seen and seen[-1].get("think") is True, seen[-1:])
-    # high = twice the family's 1024, not the configured 400.
-    check("allowance sized from the model, not the config",
-          seen and seen[-1]["options"]["num_predict"] == 256 + 2048,
+    # The budget is ONE ceiling now, sent as configured. There is no
+    # separate thinking allowance to size: reasoning is not ours to
+    # ration — a chat template reasons whatever we send, and some models
+    # reason through think:false — so splitting the meter only ever
+    # produced empty answers. What still has to be true is that the
+    # model's own dialect decides the SHAPE of the request, which the
+    # think:true check above asserts.
+    check("the budget is sent as configured, undivided",
+          seen and seen[-1]["options"]["num_predict"] == 256,
           seen[-1:])
 
     os.write(mfd, b"#/status\r")
