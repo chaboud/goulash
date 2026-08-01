@@ -437,6 +437,7 @@ const TERMINAL_ROWS: &[(&str, &[&str])] = &[
     ("idle_repaint", &["off", "on"]),
     ("wrap_guard", &["off", "on"]),
     ("slow_via_fast", &["off", "on"]),
+    ("quote_fast_to_slow", &["on", "off"]),
     ("working_bar", &["on", "off"]),
     // Rate and duration. Listed rather than typed because the useful
     // range is narrow and the difference between neighbours is visible
@@ -1837,6 +1838,7 @@ fn setting_help(slow: bool, name: &str, value: &str) -> &'static str {
         ("idle_repaint", _) => "redraw the bar unprompted after output settles",
         ("wrap_guard", _) => "skip a paint while the cursor sits in the last column",
         ("slow_via_fast", _) => "have fast re-voice slow's findings instead of showing them raw",
+        ("quote_fast_to_slow", _) => "show slow what fast answered, instead of leaving it in the log",
         ("working_bar", _) => "the sweep that says the slot holds the PREVIOUS answer",
         ("bar_rate_ms", _) => "how fast the sweep moves; lower is smoother and writes more",
         ("bar_slide_ms", _) => "how long it takes to slide in — the part the eye reads",
@@ -1948,6 +1950,9 @@ fn settings_items(v: &Live) -> Vec<String> {
                 "max_tokens" => max_tokens.to_string(),
                 "cursor_save" => v.dbg.cursor_save.clone(),
                 "slow_via_fast" => if v.dbg.slow_via_fast { "on" } else { "off" }.to_string(),
+                "quote_fast_to_slow" => {
+                    if v.dbg.quote_fast_to_slow { "on" } else { "off" }.to_string()
+                }
                 "working_bar" => if v.dbg.working_bar { "on" } else { "off" }.to_string(),
                 "bar_rate_ms" => v.dbg.working_bar_step_ms.to_string(),
                 "bar_slide_ms" => v.dbg.working_bar_grow_ms.to_string(),
@@ -2155,6 +2160,8 @@ fn ask_slow(
         // `#?` is a direct ask of this lane.
         true,
         true,
+        // Nothing to quote: fast was never asked.
+        String::new(),
         body.to_string(),
         ctx_log.to_string(),
         memories,
@@ -2209,6 +2216,11 @@ fn apply_finding(
         // feature.
         rec.suggest(turn, &cmd, "from #? research", "slow");
         ctx_log.push_str(&format!("CMD: {cmd}\n"));
+        // The same receipt the amend path leaves. Fast is the one who
+        // gets asked "why that one?", and for a `#?` it never saw the
+        // question at all — without this it has the command and no idea
+        // where it came from.
+        push_reasoning(ctx_log, &finding.reasoning);
         return;
     }
     let Some(slot) = hist.iter_mut().find(|t| t.id == turn) else {
@@ -2233,20 +2245,30 @@ fn apply_finding(
     // fast can read it*, because fast is the one who will be asked
     // "why?" and it is the only voice. Bounded: this is a receipt, not a
     // second transcript competing for the prompt.
-    if !finding.reasoning.is_empty() {
-        let brief: String = finding
-            .reasoning
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(400)
-            .collect();
-        ctx_log.push_str(&format!("[researched: {brief}]\n"));
-    }
+    push_reasoning(ctx_log, &finding.reasoning);
     if !agreed {
         slot.alt = Some(finding);
     }
+}
+
+/// Slow's justification, into the log fast reads.
+///
+/// Retained rather than shown — but retained *where fast can read it*,
+/// because fast is the one who will be asked "why?" and it is the only
+/// voice. Bounded: this is a receipt, not a second transcript competing
+/// for the prompt.
+fn push_reasoning(ctx_log: &mut String, reasoning: &str) {
+    if reasoning.is_empty() {
+        return;
+    }
+    let brief: String = reasoning
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(400)
+        .collect();
+    ctx_log.push_str(&format!("[researched: {brief}]\n"));
 }
 
 /// Ask the engine to compress any pin that no longer fits its share.
@@ -2634,6 +2656,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // lane you asked, gold for research.
     let mut work_from: Option<(Instant, bool)> = None;
     let mut work_ended: Option<Instant> = None;
+    // When the bar changed lanes, if it has. A `#` under `query` is one
+    // piece of work in two lanes, and the bar says so by changing
+    // colour in place rather than retracting and regrowing.
+    let mut work_handover: Option<Instant> = None;
     let mut work_bar: Option<Vec<status::Seg<'static>>> = None;
 
     macro_rules! redraw {
@@ -3858,11 +3884,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         None => Config::remove_key("engine.slow_lane", &name),
                                     };
                                 }
-                                // The terminal knobs. They used to live
-                                // in a separate `#/debug` menu with its
-                                // own apply block; `terminal` is a group
-                                // of the settings tree now, so they cycle
-                                // through here or they do not cycle at
+                                // The nerd-stuff knobs. They used to
+                                // live in a separate `#/debug` menu with
+                                // its own apply block; it is a group of
+                                // the settings tree now, so they apply
+                                // through here or they do not apply at
                                 // all — they were rendering and changing
                                 // nothing.
                                 "slow_via_fast" => {
@@ -3870,6 +3896,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     let _ = Config::persist_key(
                                         "debug",
                                         "slow_via_fast",
+                                        &(next == "on").to_string(),
+                                    );
+                                }
+                                "quote_fast_to_slow" => {
+                                    dbg.quote_fast_to_slow = next == "on";
+                                    let _ = Config::persist_key(
+                                        "debug",
+                                        "quote_fast_to_slow",
                                         &(next == "on").to_string(),
                                     );
                                 }
@@ -4597,6 +4631,18 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         if browse.is_some() || chat.as_ref().is_some_and(|c| c.sel.is_some()) {
                             held_findings.push((turn, finding));
                         } else {
+                            // The band is still showing the `…` it was
+                            // given when the question went out. Slow's
+                            // answer IS the answer to that question, so
+                            // it says so — a chip that filled in while
+                            // the text below kept waiting was the band
+                            // telling the user two different things.
+                            if let Some(b) = band.as_mut()
+                                && b.text.trim() == "\u{2026}"
+                                && !finding.text.trim().is_empty()
+                            {
+                                b.text = finding.text.clone();
+                            }
                             apply_finding(
                                 &mut sug_hist,
                                 &mut rec,
@@ -4723,6 +4769,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             }
                         }
                         let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        // Kept before the band takes ownership of the
+                        // text below, and only when a lane is actually
+                        // waiting for it.
+                        let said = slow_after_fast.is_some().then(|| one_line.clone());
                         // Command-first vended the slot from the CMD:
                         // line, before a word of prose existed — and
                         // this answer carries no command precisely
@@ -4821,10 +4871,27 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 t
                             });
                             slow_asks.insert(turn, q.clone());
+                            // What fast actually said, in fast's own
+                            // grammar, so slow is told what to beat
+                            // rather than that there is something to
+                            // beat. Off leaves it to the session log,
+                            // where the same lines already are.
+                            let prior = match dbg.quote_fast_to_slow {
+                                false => String::new(),
+                                true => {
+                                    let cmd = sug_hist
+                                        .iter()
+                                        .find(|t| t.id == turn)
+                                        .map(|t| format!("CMD: {}\n", t.cmd))
+                                        .unwrap_or_default();
+                                    format!("{cmd}{}", said.unwrap_or_default())
+                                }
+                            };
                             eng.research(
                                 turn,
                                 false,
                                 !unprompted,
+                                prior,
                                 q,
                                 ctx_log.clone(),
                                 memory.context_block(),
@@ -4850,6 +4917,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 turn,
                                 false,
                                 true,
+                                // Fast errored: there is no answer to quote.
+                                String::new(),
                                 q,
                                 ctx_log.clone(),
                                 memory.context_block(),
@@ -4906,6 +4975,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             if !fast_busy && wanted {
                                 work_from = Some((Instant::now(), true));
                                 work_ended = None;
+                                work_handover = None;
                             }
                             fast_busy = true;
                         }
@@ -4916,9 +4986,27 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         // with nobody waiting on it — the wave is for
                         // the user's own question, not for goulash
                         // thinking out loud after a command.
-                        if kind == engine::Work::Research && work_from.is_none() {
-                            work_from = Some((Instant::now(), false));
-                            work_ended = None;
+                        if kind == engine::Work::Research {
+                            match work_from {
+                                // Fast's bar is still on screen — this
+                                // is the same ask, still unanswered, so
+                                // the bar changes hands where it stands.
+                                // The guard here used to be
+                                // `work_from.is_none()`, which meant a
+                                // `query` turn (research queued
+                                // milliseconds after fast's answer)
+                                // silently got no bar at all.
+                                Some((t, _)) => {
+                                    work_from = Some((t, false));
+                                    work_ended = None;
+                                    work_handover = Some(Instant::now());
+                                }
+                                None => {
+                                    work_from = Some((Instant::now(), false));
+                                    work_ended = None;
+                                    work_handover = None;
+                                }
+                            }
                         }
                         if warm {
                             // A model load can take a long minute on a
@@ -5003,12 +5091,22 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 if !dbg.working_bar {
                     return None;
                 }
+                // The fade rides the slide dial: the same duration the
+                // eye already reads as "the bar is changing".
+                let handover = match work_handover {
+                    Some(at) => {
+                        let d = dbg.working_bar_grow_ms.max(1) as f32;
+                        (at.elapsed().as_millis() as f32 / d).min(1.0)
+                    }
+                    None => 1.0,
+                };
                 status::working_bar(
                     ms,
                     running,
                     is_fast,
                     dbg.working_bar_step_ms,
                     dbg.working_bar_grow_ms,
+                    handover,
                 )
             });
             match next {
@@ -5016,6 +5114,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 Some(None) => {
                     work_from = None;
                     work_ended = None;
+                    work_handover = None;
                     if work_bar.take().is_some() {
                         dirty = true;
                     }

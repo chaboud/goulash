@@ -164,7 +164,26 @@ impl MemoryStore {
     /// the notes are for every turn.
     pub fn context_block(&self) -> String {
         if !self.enabled {
-            return String::new();
+            // Not silence. Told nothing about memory, a model asked to
+            // remember something invents a way to do it: the observed
+            // answer was `echo "User likes cats" > ~/.goulash_memory.txt`
+            // with "I saved your preference to a file for reference"
+            // underneath — a claim to have done something goulash does
+            // not do, about a file nothing will ever read. One line of
+            // stable prefix buys a true answer and names the control.
+            // Worded to be FOLLOWED, not quoted. An earlier draft said
+            // "answer with NO CMD: line" and the model put the phrase
+            // "NO CMD:" in the band, verbatim — an instruction that
+            // names its own tag invites the model to echo the tag.
+            return "goulash has a memory store and it is currently OFF, so \
+                    you cannot save anything. If the user asks you to \
+                    remember or forget something: say plainly that memory \
+                    is off, and that '#/memory on' turns it on. Suggest no \
+                    command for it. Writing a note into a file is not \
+                    remembering \u{2014} nothing would ever read that file, \
+                    and goulash does not run commands anyway. Never claim \
+                    you have saved anything.\n\n"
+                .to_string();
         }
         let mut s = String::from(
             "Remembered about this user and this machine \u{2014} prefer these \
@@ -180,7 +199,12 @@ impl MemoryStore {
             "These are yours to manage ({}/{} slots, \u{2264}{} chars each). Save \
              one by outputting a line 'REMEMBER: <note>'. Delete one with \
              'FORGET: <id>'. To revise one, output both: 'FORGET: <id>' plus a \
-             'REMEMBER:' line with the new text.\n\n",
+             'REMEMBER:' line with the new text. That line IS the save: \
+             asked to remember something, write it and suggest no command \
+             for it. A note echoed into a file is not remembered \
+             \u{2014} goulash does not run commands, and nothing would read \
+             that file back \u{2014} and never say you have saved something \
+             unless you wrote the line.\n\n",
             self.slots.len(),
             self.limit,
             self.max_chars
@@ -340,7 +364,15 @@ mod tests {
         let b = m.context_block();
         assert!(b.contains("REMEMBER:"));
         assert!(b.contains("[1] a note"));
+        // Off is not silent. Saying nothing about memory at all left a
+        // model asked to remember something inventing a file to write
+        // it to, and claiming it had — so the off state says so, and
+        // names the control that changes it.
         m.enabled = false;
-        assert!(m.context_block().is_empty());
+        let off = m.context_block();
+        assert!(off.contains("OFF"), "{off}");
+        assert!(off.contains("#/memory on"), "{off}");
+        assert!(!off.contains("[1] a note"), "off means the slots are not sent");
+        assert!(!off.contains("REMEMBER:"), "and the verb is not offered");
     }
 }

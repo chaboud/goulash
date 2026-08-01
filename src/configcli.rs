@@ -10,10 +10,34 @@ use std::path::PathBuf;
 
 const USAGE: &str = "usage: goulash --config [print|path|set KEY VALUE|reset [KEY]]
 
-  print          effective values, and whether each is a default or yours
-  path           where config.toml lives
-  set KEY VALUE  surgical write, preserving comments  (e.g. engine.thinking auto)
-  reset [KEY]    remove KEY (or the whole file) so defaults apply again";
+Reads and edits ~/.goulash/config.toml without opening it. Runs before
+the tty check, so it works over ssh, in a script, and in a Dockerfile.
+
+  print            every effective setting, marked (default) or (yours).
+                   With no subcommand at all, this is what you get.
+  path             absolute path to config.toml, whether or not it
+                   exists \u{2014} for `$EDITOR $(goulash --config path)`.
+  set KEY VALUE    write one dotted key, preserving the rest of the file
+                   and its comments. Sections are created as needed.
+  reset [KEY]      remove KEY so its default applies again. With NO key,
+                   removes the whole file \u{2014} every setting goes back
+                   to its default. That one keeps a copy at
+                   config.toml.bak.
+
+Keys are dotted paths into the file, exactly as `print` shows them:
+
+  goulash --config set engine.model gemma4:e4b
+  goulash --config set engine.slow query
+  goulash --config set engine.slow_lane.thinking high
+  goulash --config set debug.working_bar off
+  goulash --config reset engine.model      # back to auto-pick
+  goulash --config reset                   # back to a clean install
+
+Removing a key is not the same as writing today's default into it: a
+reset key follows the default as it improves, a written one does not.
+Everything here is optional \u{2014} goulash runs with no config file at
+all, and the same settings are live-tunable from `#/settings` in a
+session.";
 
 fn path() -> Option<PathBuf> {
     Config::dir().map(|d| d.join("config.toml"))
@@ -46,22 +70,15 @@ fn set_keys(text: &str) -> Vec<String> {
     out
 }
 
-fn print_effective() -> i32 {
-    let p = match path() {
-        Some(p) => p,
-        None => {
-            eprintln!("goulash: no home directory");
-            return 1;
-        }
-    };
-    let text = std::fs::read_to_string(&p).unwrap_or_default();
-    let mine = set_keys(&text);
-    let c = Config::load();
+/// Every settable key and its effective value.
+///
+/// One list, used by `print` to show them and by `set` to know a key
+/// exists at all: serde ignores fields it does not recognise, so
+/// without this a typo (`engine.mdoel`) wrote happily to the file and
+/// then did nothing forever.
+fn rows(c: &Config) -> Vec<(String, String)> {
     let e = &c.engine;
-    let mark = |k: &str| if mine.iter().any(|m| m == k) { "you" } else { "default" };
-
-    println!("# {}\n", p.display());
-    let rows: Vec<(String, String)> = vec![
+    vec![
         ("engine.provider".into(), e.provider.clone()),
         ("engine.host".into(), e.host.clone()),
         ("engine.openai_host".into(), e.openai_host.clone()),
@@ -92,6 +109,7 @@ fn print_effective() -> i32 {
         ),
         ("engine.num_keep".into(), e.num_keep.to_string()),
         ("engine.keep_alive".into(), e.keep_alive.clone()),
+        ("engine.favorites".into(), e.favorites.join(", ")),
         ("engine.commentary".into(), e.commentary.to_string()),
         ("engine.prewarm".into(), e.prewarm.to_string()),
         (
@@ -122,7 +140,110 @@ fn print_effective() -> i32 {
         ("debug.idle_repaint".into(), c.debug.idle_repaint.to_string()),
         ("debug.cursor_save".into(), c.debug.cursor_save.clone()),
         ("record.enabled".into(), c.record.enabled.to_string()),
-    ];
+        ("engine.stream".into(), e.stream.to_string()),
+        ("engine.seed".into(), e.seed.to_string()),
+        ("engine.backfill_abandoned".into(), e.backfill_abandoned.to_string()),
+        ("engine.context_max_chars".into(), e.context_max_chars.to_string()),
+        ("engine.tail_chars".into(), e.tail_chars.to_string()),
+        (
+            "engine.context_files_max_chars".into(),
+            e.context_files_max_chars.to_string(),
+        ),
+        (
+            "engine.context_tree_max_files".into(),
+            e.context_tree_max_files.to_string(),
+        ),
+        (
+            "engine.context_tree_max_depth".into(),
+            e.context_tree_max_depth.to_string(),
+        ),
+        (
+            "engine.slow_lane.provider".into(),
+            e.slow_lane
+                .provider
+                .clone()
+                .unwrap_or_else(|| "(same as fast)".into()),
+        ),
+        (
+            "engine.slow_lane.openai_host".into(),
+            e.slow_lane
+                .openai_host
+                .clone()
+                .unwrap_or_else(|| "(same as fast)".into()),
+        ),
+        (
+            "engine.slow_lane.api_key_env".into(),
+            e.slow_lane
+                .api_key_env
+                .clone()
+                .unwrap_or_else(|| "(same as fast)".into()),
+        ),
+        (
+            "engine.slow_lane.trusted".into(),
+            e.slow_lane
+                .trusted
+                .clone()
+                .unwrap_or_else(|| "(same as fast)".into()),
+        ),
+        (
+            "engine.slow_lane.thinking".into(),
+            e.slow_lane
+                .thinking
+                .clone()
+                .unwrap_or_else(|| "(same as fast)".into()),
+        ),
+        (
+            "engine.slow_lane.max_tokens".into(),
+            e.slow_lane
+                .max_tokens
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "(same as fast)".into()),
+        ),
+        ("status.enabled".into(), c.status.enabled.to_string()),
+        ("status.rows".into(), c.status.rows.to_string()),
+        ("status.band".into(), c.status.band.to_string()),
+        ("status.menu_rows".into(), c.status.menu_rows.to_string()),
+        ("shell.auto_integrate".into(), c.shell.auto_integrate.to_string()),
+        ("record.output".into(), c.record.output.to_string()),
+        ("debug.show_advanced".into(), c.debug.show_advanced.to_string()),
+        ("debug.wrap_guard".into(), c.debug.wrap_guard.to_string()),
+        ("debug.working_bar".into(), c.debug.working_bar.to_string()),
+        (
+            "debug.working_bar_on_watch".into(),
+            c.debug.working_bar_on_watch.to_string(),
+        ),
+        (
+            "debug.working_bar_step_ms".into(),
+            c.debug.working_bar_step_ms.to_string(),
+        ),
+        (
+            "debug.working_bar_grow_ms".into(),
+            c.debug.working_bar_grow_ms.to_string(),
+        ),
+        ("debug.slow_via_fast".into(), c.debug.slow_via_fast.to_string()),
+        (
+            "debug.quote_fast_to_slow".into(),
+            c.debug.quote_fast_to_slow.to_string(),
+        ),
+    ]
+}
+
+fn print_effective() -> i32 {
+    let p = match path() {
+        Some(p) => p,
+        None => {
+            eprintln!("goulash: no home directory");
+            return 1;
+        }
+    };
+    let text = std::fs::read_to_string(&p).unwrap_or_default();
+    let mine = set_keys(&text);
+    let c = Config::load();
+    let mark = |k: &str| if mine.iter().any(|m| m == k) { "you" } else { "default" };
+
+    println!("# {}\n", p.display());
+    let rows = rows(&c);
+
     let w = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(24);
     for (k, v) in &rows {
         println!("{k:<w$}  {v:<10}  [{}]", mark(k), w = w);
@@ -130,8 +251,16 @@ fn print_effective() -> i32 {
     0
 }
 
-/// Set one dotted key. Values are parsed as TOML, so `true`, `512` and
-/// `"auto"` all land with the right type; a bare word becomes a string.
+/// Set one dotted key, and REFUSE to write a file that will not load.
+///
+/// The old version parsed the value as TOML and, failing that, wrote it
+/// as a string — so `set debug.working_bar off` printed
+/// `debug.working_bar = off`, exited 0, and wrote `working_bar = "off"`
+/// into a bool field. serde then rejected the whole document at the
+/// next launch and fell back to defaults, silently, taking every other
+/// setting in the file with it. A control that does not take must say
+/// so: every candidate is now round-tripped through the real `Config`
+/// before anything reaches the disk.
 fn set(key: &str, value: &str) -> i32 {
     let Some(p) = path() else {
         eprintln!("goulash: no home directory");
@@ -150,25 +279,77 @@ fn set(key: &str, value: &str) -> i32 {
         eprintln!("goulash: key must be dotted, e.g. engine.thinking");
         return 2;
     }
-    let parsed: toml_edit::Value = value
-        .parse()
-        .unwrap_or_else(|_| toml_edit::Value::from(value));
-
-    // Walk/create intermediate tables.
-    let mut node = doc.as_table_mut();
-    for seg in &parts[..parts.len() - 1] {
-        if node.get(seg).is_none() {
-            node[seg] = toml_edit::table();
+    // A key serde has never heard of writes fine and does nothing, so
+    // the typo is caught here rather than at the next launch.
+    if !rows(&Config::load()).iter().any(|(k, _)| k == key) {
+        eprintln!("goulash: no such setting {key:?}");
+        let near: Vec<String> = rows(&Config::load())
+            .into_iter()
+            .map(|(k, _)| k)
+            .filter(|k| {
+                k.split('.').next_back() == key.split('.').next_back()
+                    || k.starts_with(parts[0])
+            })
+            .take(6)
+            .collect();
+        if !near.is_empty() {
+            eprintln!("  did you mean: {}", near.join(", "));
         }
-        match node[seg].as_table_mut() {
-            Some(t) => node = t,
-            None => {
-                eprintln!("goulash: {seg} is not a table");
+        eprintln!("  `goulash --config print` lists every key");
+        return 2;
+    }
+    // Candidates, most specific first. `on`/`off` are what the menus
+    // say and what a person types; TOML has never heard of them.
+    let mut cands: Vec<toml_edit::Value> = Vec::new();
+    if let Ok(v) = value.parse::<toml_edit::Value>() {
+        cands.push(v);
+    }
+    match value.to_ascii_lowercase().as_str() {
+        "on" | "yes" => cands.push(true.into()),
+        "off" | "no" => cands.push(false.into()),
+        _ => {}
+    }
+    cands.push(toml_edit::Value::from(value));
+
+    let write_at = |doc: &mut toml_edit::DocumentMut, v: toml_edit::Value| -> Result<String, String> {
+        let mut node = doc.as_table_mut();
+        for seg in &parts[..parts.len() - 1] {
+            if node.get(seg).is_none() {
+                node[seg] = toml_edit::table();
+            }
+            node = node[seg]
+                .as_table_mut()
+                .ok_or_else(|| format!("{seg} is not a table"))?;
+        }
+        node[parts[parts.len() - 1]] = toml_edit::value(v);
+        Ok(doc.to_string())
+    };
+
+    let mut last_err = String::new();
+    let mut good: Option<String> = None;
+    for c in cands {
+        let mut trial = doc.clone();
+        match write_at(&mut trial, c) {
+            Err(e) => {
+                eprintln!("goulash: {e}");
                 return 1;
             }
+            Ok(text) => match toml::from_str::<Config>(&text) {
+                Ok(_) => {
+                    good = Some(text);
+                    break;
+                }
+                Err(e) => last_err = e.to_string(),
+            },
         }
     }
-    node[parts[parts.len() - 1]] = toml_edit::value(parsed);
+    let Some(out) = good else {
+        eprintln!("goulash: {key} does not accept {value:?}");
+        eprintln!("  {last_err}");
+        eprintln!("  nothing was written");
+        return 1;
+    };
+    doc = out.parse().unwrap_or(doc);
 
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -268,6 +449,13 @@ pub fn run(args: &[String]) -> i32 {
             }
         },
         Some("reset") => reset(args.get(1).map(String::as_str)),
+        // `--config --help` is reached before main's own --help arm,
+        // since --config is handled first so it works without a tty.
+        // Asking for help is not an error and does not exit 2.
+        Some("--help") | Some("-h") | Some("help") => {
+            println!("{USAGE}");
+            0
+        }
         Some(other) => {
             eprintln!("goulash: unknown --config command {other:?}\n{USAGE}");
             2

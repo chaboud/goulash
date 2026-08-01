@@ -199,12 +199,21 @@ const SHRINK_RATIO: f32 = 0.7;
 /// SHADE rather than position: the leading edge fades in through
 /// `░▒▓█` as it grows and back out as it shrinks, giving each cell four
 /// intermediate states instead of popping between present and absent.
+/// `handover` is how far a lane CHANGE has come, 0.0 to 1.0, with 1.0
+/// meaning none is in progress. A `#` that also runs research is one
+/// piece of work in two lanes, so the bar must not retract and regrow
+/// between them — that reads as "done, and now something else", which
+/// is the opposite of what is true. The width holds and the colour
+/// changes hands: out through the palette's own dim end, in on the
+/// other side, so a fade costs no new constants and there is never a
+/// frame where two lanes are on screen at once.
 pub fn working_bar(
     ms: u64,
     running: bool,
     fast: bool,
     step_ms: u64,
     grow_ms: u64,
+    handover: f32,
 ) -> Option<Vec<Seg<'static>>> {
     let grow_ms = grow_ms.max(1);
     let shrink_ms = ((grow_ms as f32 * SHRINK_RATIO) as u64).max(1);
@@ -232,7 +241,20 @@ pub fn working_bar(
     if width == 0 {
         return None;
     }
-    let trail = if fast { &TRAIL_FAST } else { &TRAIL_SLOW };
+    // Mid-handover the bar still wears the lane it is LEAVING, and
+    // `bias` walks both halves through the dim end of the palette: full
+    // brightness at either end of the fade, indistinguishable from the
+    // background at the crossover.
+    let leaving = handover < 0.5;
+    let arrived = handover >= 1.0;
+    let lane_fast = if arrived || !leaving { fast } else { !fast };
+    let trail = if lane_fast { &TRAIL_FAST } else { &TRAIL_SLOW };
+    let bias = if arrived {
+        0
+    } else {
+        let t = (handover * 2.0 - 1.0).abs();
+        ((1.0 - t) * (TRAIL_GLYPH.len() - 1) as f32).round() as usize
+    };
     // A FLOAT position, ping-ponging. Integer steps were the chunk: at
     // 150ms a cell the head sat still for nine frames and then jumped,
     // so every frame in between rendered identically and the wave read
@@ -267,9 +289,10 @@ pub fn working_bar(
                 // of it has actually arrived, so growth and shrink read
                 // as a fade rather than a jump.
                 if i == full {
-                    let arrived = (frac * LAST as f32) as usize;
-                    d = d.max(LAST.saturating_sub(arrived));
+                    let filled = (frac * LAST as f32) as usize;
+                    d = d.max(LAST.saturating_sub(filled));
                 }
+                let d = (d + bias).min(LAST);
                 (TRAIL_GLYPH[d], trail[d])
             })
             .collect(),
@@ -379,8 +402,8 @@ pub fn pad_row(text: &str, cols: usize, sgr: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        IDLE_CHIP_SGR, SUGGEST_SGR, Size, TEXT_SGR, chrome_row, lane_dots, pad_row_with_note,
-        rule_row, working_bar,
+        IDLE_CHIP_SGR, SUGGEST_SGR, Seg, Size, TEXT_SGR, TRAIL_FAST, TRAIL_SLOW, chrome_row,
+        lane_dots, pad_row_with_note, rule_row, working_bar,
     };
 
     fn width(row: &str) -> usize {
@@ -431,6 +454,40 @@ mod tests {
     /// runs are on the row, and the SGR between them costs no columns —
     /// a chip measured as text would eat real cells and drag the rule
     /// off the right edge.
+    /// The lane handover: a `#` that also researches is ONE piece of
+    /// work, so the bar changes colour without changing width. A
+    /// retract-and-regrow would say "finished, and now something else",
+    /// which is the opposite of what is happening.
+    #[test]
+    fn the_bar_changes_lanes_without_changing_width() {
+        const STEP: u64 = 60;
+        const GROW: u64 = 340;
+        let at = |h: f32| working_bar(GROW + 500, true, false, STEP, GROW, h).unwrap();
+        let full = at(1.0);
+        assert_eq!(at(0.0).len(), full.len(), "width holds at the start");
+        assert_eq!(at(0.5).len(), full.len(), "...through the crossover");
+        assert_eq!(at(0.99).len(), full.len(), "...and at the end");
+
+        // Leaving the fast lane, arriving in the slow one.
+        let sgrs = |b: Vec<Seg<'static>>| b.iter().map(|(_, c)| *c).collect::<Vec<_>>();
+        assert!(
+            sgrs(at(0.05)).iter().any(|c| TRAIL_FAST.contains(c)),
+            "the first half still wears the lane it is leaving"
+        );
+        assert!(
+            sgrs(at(0.95)).iter().any(|c| TRAIL_SLOW.contains(c)),
+            "the second half wears the one it arrived in"
+        );
+        // Crossover is the dim end of the palette: no frame shows two
+        // lanes at once, which is what makes it read as one bar.
+        let mid = sgrs(at(0.5));
+        assert!(
+            mid.iter().all(|c| *c == TRAIL_FAST[TRAIL_FAST.len() - 1]
+                || *c == TRAIL_SLOW[TRAIL_SLOW.len() - 1]),
+            "the fade passes through the background: {mid:?}"
+        );
+    }
+
     /// Grow, sweep, snap back — and above all, END. The bar is the only
     /// thing in the band that writes without the user or the shell
     /// having done something, so a shrink that never returns None is an
@@ -439,7 +496,7 @@ mod tests {
     fn the_working_bar_grows_sweeps_and_finishes() {
         const STEP: u64 = 60;
         const GROW: u64 = 340;
-        let bar = |ms, run| working_bar(ms, run, true, STEP, GROW);
+        let bar = |ms, run| working_bar(ms, run, true, STEP, GROW, 1.0);
         let width = |ms, run| bar(ms, run).map_or(0, |b| b.len());
 
         assert_eq!(width(0, true), 1, "starts small");
@@ -468,7 +525,7 @@ mod tests {
         // The dials are honoured, not decorative.
         assert_eq!(width(100, true), 2, "grow tracks grow_ms");
         assert_eq!(
-            working_bar(100, true, true, STEP, 1_000).map_or(0, |b| b.len()),
+            working_bar(100, true, true, STEP, 1_000, 1.0).map_or(0, |b| b.len()),
             1,
             "a slower grow is narrower at the same instant"
         );

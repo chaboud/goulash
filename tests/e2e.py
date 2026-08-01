@@ -1131,26 +1131,42 @@ def test_engine_ollama():
     os.write(mfd, b"echo MENU-CLOSED\r")
     out = read_until(mfd, rb"MENU-CLOSED", 4.0)
     check("a second esc closes the menu", saw(out, b"MENU-CLOSED"), out[-200:])
-    # #/debug: the nerd-stuff drawer, same cycle mechanic.
-    # #/debug is a shortcut straight into the `nerd stuff` group of the
-    # same tree — so it leads with `..`, and the knob is one Down away.
+    # #/debug: the nerd-stuff drawer. It is a shortcut straight into the
+    # `nerd stuff` group of the same tree — so it leads with `..`, and
+    # the knob is one Down away.
     os.write(mfd, b"#/debug\r")
     out = read_until(mfd, rb"cursor_save: decsc", 5.0)
     check("#/debug lists the esoteric knobs",
           saw(out, b"cursor_save: decsc") and saw(out, b"idle_repaint: off"), out[-400:])
     os.write(mfd, b"\x1b[B")        # off `..` onto cursor_save
     time.sleep(0.2)
-    os.write(mfd, b"\r")            # decsc -> absolute
+    # Enter opens a drop-down of the row's values rather than stepping
+    # one press at a time: cycling meant five presses to see five
+    # options, and it could only ever go one way round.
+    os.write(mfd, b"\r")
+    out = read_until(mfd, rb"absolute", 4.0)
+    check("Enter opens the row's values",
+          saw(out, b"decsc") and saw(out, b"absolute"), out[-400:])
+    os.write(mfd, b"\x1b[B")        # onto `absolute`
+    time.sleep(0.25)
+    os.write(mfd, b"\r")            # choose it
     out = read_until(mfd, rb"cursor_save: absolute", 4.0)
-    check("Enter cycles a debug knob", saw(out, b"cursor_save: absolute"), out[-300:])
+    check("choosing commits and returns to the group",
+          saw(out, b"cursor_save: absolute"), out[-300:])
     time.sleep(0.3)
-    os.write(mfd, b"\r")            # ... and back, so the fix stays on
+    # ... and back, so the fix stays on for the rest of the session.
+    os.write(mfd, b"\r")
+    read_until(mfd, rb"decsc", 4.0)
+    os.write(mfd, b"\x1b[A")
+    time.sleep(0.25)
+    os.write(mfd, b"\r")
     out = read_until(mfd, rb"cursor_save: decsc", 4.0)
-    check("debug knob wraps back", saw(out, b"cursor_save: decsc"), out[-300:])
-    os.write(mfd, b"\x1b")
-    time.sleep(0.3)
-    os.write(mfd, b"\x1b")
-    time.sleep(0.4)
+    check("the drop-down walks both ways", saw(out, b"cursor_save: decsc"), out[-300:])
+    for _ in range(6):
+        os.write(mfd, b"\x1b")
+        time.sleep(0.3)
+        if saw(read_until(mfd, rb"80x20\+4", 0.6), b"80x20+4"):
+            break
     os.write(mfd, b"#/help\r")
     out = read_until(mfd, rb"#@/path", 4.0)
     check("#/help lists current commands", saw(out, b"#@/path"), out[-300:])
@@ -1572,49 +1588,23 @@ def test_slow_lane():
     proc, mfd = spawn(["zsh"], home=home)
     time.sleep(1.5)
 
-    # #? asks BOTH: fast answers now and keeps the band; slow researches
-    # the same turn and amends it later.
+    # `#?` goes STRAIGHT to slow. It used to dispatch fast as well --
+    # "fast answers first and keeps the microphone" -- but that answers a
+    # question nobody asked: the user picked this lane on purpose, and a
+    # quick reply arriving first is a different answer competing for the
+    # one slot.
     os.write(mfd, b"#? how do i clear old logs\r")
-    out = read_until(mfd, rb"the quick way", 8.0)
-    check("fast answers a #? immediately", b"the quick way" in out, out[-300:])
-    check("fast's command is the one vended", b"rm \\*.log" in out or b"rm *.log" in out,
-          out[-300:])
-    check("both lanes got the question",
-          len([p for p in prompts if "clear old logs" in p]) == 2,
-          f"{len(prompts)} prompts")
-
-    # The finding lands on the turn it came from, not at the top.
-    time.sleep(2.0)
-    os.write(mfd, b"\x1b[B")          # Down: fast's command first
-    out = read_until(mfd, rb"1/2", 5.0)
-    check("the alternative is a step of its own", b"1/2" in out, out[-400:])
-    check("the researched finding insets under the turn",
-          b"\\xe2\\x86\\xb3" in out or "↳".encode() in out, out[-400:])
-    check("an unselected finding is grey",
-          b"\x1b[0;97;48;5;238m" in out, out[-400:])
-    check("the question stub stays on terminal background",
-          b"\x1b[0;2m ? how do i clear" in out, out[-500:])
-    # Anchored at the stub, not at the first grey anywhere in the stream:
-    # the suggestion chip's own body is grey too and appears far earlier,
-    # so a bare find() was comparing the wrong two things.
-    stub = out.rfind(b"\x1b[0;2m ? how do i clear")
-    check("...and the block starts after it, not at column one",
-          stub >= 0 and out.find(b"\x1b[0;97;48;5;238m", stub) > stub, out[-500:])
-    # Down again walks INTO the alternative -- depth-first, one axis.
-    os.write(mfd, b"\x1b[B")
-    out = read_until(mfd, rb"2/2", 5.0)
-    check("Down steps into the researched command", b"2/2" in out, out[-400:])
-    # Orange is the SELECTION indicator, not a category: it moves down to
-    # the finding, and fast's chip goes grey behind it.
-    check("...and orange moves to it",
-          out.rfind(b"\x1b[0;30;48;5;208m\xe2\x86\xb3") >
-          out.rfind(b"\x1b[0;97;48;5;238m\xe2\x86\xb3"), out[-600:])
-    # The chip is two runs now: the label is an affordance and stays
-    # orange, the COMMAND is what carries selection. So "goes grey" means
-    # the body goes grey behind an orange label, not the whole chip.
-    check("...while fast's chip body goes grey",
-          b"\x1b[0;30;48;5;208m \xe2\x86\x93 suggestion: \x1b[0;97;48;5;238m" in out,
-          out[-600:])
+    out = read_until(mfd, rb"researched way", 12.0)
+    check("#? is answered by the slow lane", b"the researched way" in out, out[-400:])
+    check("...with slow's command in the slot",
+          b"find . -name" in out, out[-400:])
+    check("...and fast was never asked",
+          len([p for p in prompts if "clear old logs" in p]) == 1,
+          f"{len([p for p in prompts if 'clear old logs' in p])} prompts")
+    # A turn the slow lane owns outright is GOLD on the chip itself --
+    # there is no fast answer above it for a gold row to sit under.
+    check("a slow-only turn is gold on the band",
+          b"\x1b[0;30;48;5;220m \xe2\x86\x93 suggestion:" in out, out[-500:])
     os.write(mfd, b"\x15")            # ^U: drop the line, end browsing
     time.sleep(0.5)
 
@@ -1624,60 +1614,113 @@ def test_slow_lane():
     read_until(mfd, rb"WHY-ANSWERED", 8.0)
     asked = [p for p in prompts if "why that one" in p]
     check("the reasoning reaches fast's context",
-          asked and "BECAUSE-KEPT" in asked[-1], "")
+          bool(asked) and "BECAUSE-KEPT" in asked[-1], "")
+    os.write(mfd, b"exit\r")
+    drain_exit(proc, mfd)
+
+    # `query`: the rung where slow joins a plain `#`. Fast answers, then
+    # slow researches the SAME turn and amends it underneath -- which is
+    # the only configuration where an alternative exists to walk into.
+    home2 = tempfile.mkdtemp(prefix="goulash-test-")
+    with open(os.path.join(home2, "config.toml"), "w") as f:
+        f.write("[engine]\nprovider = \"ollama\"\n"
+                f"host = \"http://127.0.0.1:{port}\"\nstream = false\n"
+                "commentary = false\nslow = \"query\"\n")
+    proc, mfd = spawn(["zsh"], home=home2)
+    time.sleep(1.5)
+    before = len(prompts)
+    os.write(mfd, b"# how do i clear old logs\r")
+    out = read_until(mfd, rb"the quick way", 10.0)
+    check("query answers on the fast lane first", b"the quick way" in out, out[-300:])
+    time.sleep(3.0)
+    check("...and dispatches slow behind it",
+          any("Take your time" in p for p in prompts[before:]),
+          f"{len(prompts) - before} prompts")
+
+    os.write(mfd, b"\x1b[B")          # Down: fast's command first
+    out = read_until(mfd, rb"1/2", 6.0)
+    check("the alternative is a step of its own", b"1/2" in out, out[-400:])
+    check("the researched finding insets under the turn",
+          "↳".encode() in out, out[-400:])
+    check("an unselected finding is grey",
+          b"\x1b[0;97;48;5;238m" in out, out[-400:])
+    check("the question stub stays on terminal background",
+          b"\x1b[0;2m # how do i clear" in out, out[-500:])
+    # Anchored at the stub, not at the first grey anywhere in the stream:
+    # the suggestion chip's own body is grey too and appears far earlier,
+    # so a bare find() was comparing the wrong two things.
+    stub = out.rfind(b"\x1b[0;2m # how do i clear")
+    check("...and the block starts after it, not at column one",
+          stub >= 0 and out.find(b"\x1b[0;97;48;5;238m", stub) > stub, out[-500:])
+    # Down again walks INTO the alternative -- depth-first, one axis.
+    os.write(mfd, b"\x1b[B")
+    out = read_until(mfd, rb"2/2", 6.0)
+    check("Down steps into the researched command", b"2/2" in out, out[-400:])
+    # Gold is the slow lane's colour and selection is what turns it on:
+    # the researched row goes gold, and the chip above stays fast's.
+    check("...and the finding goes gold",
+          out.rfind(b"\x1b[0;30;48;5;220m\xe2\x86\xb3") >
+          out.rfind(b"\x1b[0;97;48;5;238m\xe2\x86\xb3"), out[-600:])
+    check("...while fast's chip body goes grey",
+          b"\x1b[0;30;48;5;208m \xe2\x86\x93 suggestion:\x1b[0;97;48;5;238m" in out,
+          out[-600:])
+    # The row below follows the CURSOR: standing on the alternative you
+    # read its REASON, which is shown nowhere else.
+    check("...and the row below shows slow's REASON",
+          b"BECAUSE-KEPT" in out, out[-600:])
+    os.write(mfd, b"\x15")
+    time.sleep(0.5)
+    os.write(mfd, b"#why that one\r")
+    read_until(mfd, rb"WHY-ANSWERED", 8.0)
+    asked = [p for p in prompts if "why that one" in p]
     check("the amendment is by reference, not a rewrite",
-          asked and "amends the suggestion above" in asked[-1], "")
+          bool(asked) and "amends the suggestion above" in asked[-1], "")
 
     # The engagement ladder says when the slow lane speaks up UNASKED:
     # manual (default) / query / waldorf. There is no `off` rung, and
     # that is deliberate -- `#?` IS the request for this lane, so a
-    # setting able to refuse it would make the key silently dead. What
-    # the ladder must never do is swallow an explicit `#?`.
+    # setting able to refuse it would make the key silently dead.
     os.write(mfd, b"#/settings\r")
-    read_until(mfd, "slow lane \u25b8".encode(), 5.0)
+    read_until(mfd, "slow lane ▸".encode(), 5.0)
     os.write(mfd, b"slow")
     time.sleep(0.35)
     os.write(mfd, b"\r")                # descend into the slow lane
-    out = read_until(mfd, rb"mode: manual", 5.0)
+    out = read_until(mfd, rb"mode: query", 5.0)
     check("the slow lane opens on its engagement ladder",
-          saw(out, b"mode: manual"), out[-300:])
+          saw(out, b"mode: query"), out[-300:])
     for _ in range(len("slow")):
         os.write(mfd, b"\x7f")
         time.sleep(0.04)
     os.write(mfd, b"mode")
     time.sleep(0.35)
-    # Step to each rung in turn and wait for THAT one, so the check is
-    # the order as well as the set. Reading "whatever appeared" after
-    # each Enter just samples whichever repaint landed first.
-    seen = []
-    for rung in (b"query", b"waldorf", b"manual"):
-        os.write(mfd, b"\r")
-        out = read_until(mfd, b"mode: " + rung, 4.0)
-        if saw(out, b"mode: " + rung):
-            seen.append(rung)
-    check("the ladder cycles through every rung, in order",
-          seen == [b"query", b"waldorf", b"manual"], str(seen))
+    # Enter opens a drop-down of the rungs -- it used to step the value
+    # one press at a time, which meant seeing five options cost five
+    # presses and there was nowhere for a typed value to live.
+    os.write(mfd, b"\r")
+    out = read_until(mfd, rb"waldorf", 5.0)
+    rungs = [r for r in (b"manual", b"query", b"waldorf") if saw(out, r)]
+    check("the drop-down lists every rung",
+          rungs == [b"manual", b"query", b"waldorf"], str(rungs))
     check("...and never offers an `off` rung", not saw(out, b"mode: off"),
           out[-300:])
-    # Two levels deep, so two Escs -- and Esc clears the filter on its
-    # way up, which is why nothing backspaces it here: a backspace on an
-    # already-empty filter is a different key entirely, and one dropped
-    # keystroke would leave the menu open with `exit` typed into it.
-    os.write(mfd, b"\x1b")             # out of the group
-    read_until(mfd, "slow lane \u25b8".encode(), 4.0)
-    time.sleep(0.3)
-    os.write(mfd, b"\x1b")             # out of the menu
-    time.sleep(0.3)
-    os.write(mfd, b"\r")               # settle ZLE's meta prefix
-    time.sleep(0.3)
-    before = len(prompts)
-    os.write(mfd, b"#? anything\r")
-    out = read_until(mfd, rb"OFF-ANSWERED", 8.0)
-    check("#? is answered by fast first, whatever the ladder says",
-          saw(out, b"OFF-ANSWERED"), out[-300:])
-    time.sleep(0.6)
-    check("...and it DOES dispatch research, because the user asked",
-          any("Take your time" in p for p in prompts[before:]), "")
+    # The values are not self-explanatory, so the drop-down carries the
+    # row's help beside the one the cursor is on.
+    check("...with help beside the selected value",
+          b"only when you ask" in out or b"on # as well as" in out
+          or b"always in the party" in out, out[-400:])
+    # Out of the drop-down, out of the group, out of the menu -- `exit`
+    # typed into an open menu is a filter, not a command, and the shell
+    # never sees it.
+    # Out of the drop-down, out of the group, out of the menu. Esc also
+    # clears a typed filter on its way up, so each level can cost two --
+    # and `exit` typed into a menu that is still open is a filter, not a
+    # command, which the shell never sees. Escape until the chrome says
+    # the rows are back.
+    for _ in range(8):
+        os.write(mfd, b"\x1b")
+        time.sleep(0.3)
+        if saw(read_until(mfd, rb"80x20\+4", 0.6), b"80x20+4"):
+            break
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
     srv.shutdown()

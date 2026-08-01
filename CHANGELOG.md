@@ -40,6 +40,30 @@ where that is possible.
 - **A new question supersedes the old one.** Typing `#` while a `#?` was
   still thinking used to wait out the research — job coalescing only
   ever superseded a QUEUED ask, never the one already streaming.
+  Measured: 37s to 2.8s for the new answer.
+- **The bar changes lanes instead of blinking.** A `#` that also
+  researches is one piece of work, so the wave holds its width and fades
+  cyan to gold rather than retracting and regrowing. The old guard
+  (`work_from.is_none()`) meant a `query` turn — research queued
+  milliseconds after fast's answer — showed no wave for the slow half at
+  all.
+- **Slow is told what fast said** (`debug.quote_fast_to_slow`, on).
+  Slow's prompt has always claimed "another model already gave a quick
+  answer"; now that the lanes run in order it can say what the answer
+  was, which is the difference between beating something and beating
+  this.
+- **Auto-pick has a floor and a list.** It was "smallest installed",
+  which hands a new user whatever tiny model they once pulled to try
+  ollama — and below ~2B the one-line-plus-`CMD:` contract does not
+  hold. Now: configured model, then the first installed
+  `engine.favorites` entry, then the smallest at or above 2B, then the
+  smallest. On a 22-model machine that moves the default from
+  `qwen3.5:0.8b` to `gemma4:e4b`.
+- **`--config print` lists 57 keys, up from 29.** The missing ones were
+  not cosmetic: `set` now validates against that list, so a setting
+  absent from it is a setting nobody can write.
+- **`--help` and `--config --help` say what the commands do**, with
+  worked examples, and `--config --help` exits 0 instead of 2.
 
 ### Fixed
 - **The slow lane's `PASS` was vended as a command.** The amending prompt
@@ -59,6 +83,27 @@ where that is possible.
 - **An alternative identical to the command above it is no longer
   offered.** Slow agreeing with fast was rendered as a choice between a
   command and itself.
+- **`--config set` wrote configs that would not load.** `set
+  debug.working_bar off` printed `debug.working_bar = off`, exited 0,
+  and wrote the string `"off"` into a bool field; serde then rejected
+  the whole document at the next launch and fell back to defaults,
+  silently, taking every other setting in the file with it. Values are
+  now round-tripped through the real `Config` before anything reaches
+  the disk, `on`/`off`/`yes`/`no` land as booleans, and a key serde has
+  never heard of is refused with a suggestion instead of written.
+- **Asked to remember something with memory off, the model invented a
+  file** — `echo "user likes cats" > ~/.goulash_memory.txt`, with "I
+  saved your preference" underneath, which is a claim to have done
+  something goulash does not do. The off state now says memory exists,
+  is off, and that `#/memory on` turns it on. With memory ON the
+  `REMEMBER:` verb was being lost to the command-first directive; the
+  block now says the line IS the save. Verified: "remember that I always
+  use ripgrep" writes a slot.
+- **`#?` left the band showing `…` after slow answered.** The chip
+  filled in and the text below kept waiting.
+- **Slow's reasoning never reached fast's context on a `#?` turn** —
+  only on amendments. Fast had the command and no idea where it came
+  from, which is exactly what it gets asked about.
 
 ## [0.4.0] — unreleased
 

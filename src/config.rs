@@ -59,6 +59,49 @@ impl Default for DivulgeConfig {
     }
 }
 
+/// Models known to behave in this job, best-first.
+///
+/// "Behaves" is a narrow claim: answers in one line, puts the command on
+/// a `CMD:` line and nothing else on it, and does it fast enough that a
+/// status bar is the right place for the answer. It is NOT a ranking of
+/// the models in general.
+///
+/// Ordered by quality-per-second rather than by size. The answer lands
+/// in a status bar while someone is mid-thought, so a 12B that is twice
+/// as slow has to be more than twice as good to be worth picking over a
+/// 4B, and mostly is not. Heavyweights stay opt-in.
+///
+/// Both spellings of the same weights appear, because the same list
+/// serves an ollama listing (`gemma4:e4b`) and an OpenAI-compatible one
+/// (`google/gemma-4-e4b`), and only one of them will ever match.
+///
+/// A name matches exactly, or up to the `:tag` — so `gemma4` alone
+/// would match every gemma4 tag. Entries here are explicit on purpose:
+/// a family name would happily select a variant nobody has measured.
+pub const DEFAULT_FAVORITES: &[&str] = &[
+    "gemma4:e4b",
+    "google/gemma-4-e4b",
+    "qwen3.5:4b",
+    "qwen/qwen3-4b",
+    "gemma3:4b",
+    "llama3.1:8b",
+    "qwen3.5:9b",
+    "qwen/qwen3-8b",
+    "gemma4:12b",
+    "google/gemma-4-12b-qat",
+];
+
+/// The floor for auto-pick, in billions of parameters.
+///
+/// Below this the one-line-plus-`CMD:` contract stops holding: the
+/// sub-1B models here answer in paragraphs, fence their commands, or
+/// return nothing at all, and "smallest installed" would hand a new
+/// user exactly that on the strength of having downloaded it once.
+/// Nothing stops a small model being CHOSEN — `#/model` and
+/// `engine.model` both bypass this entirely. It only decides what
+/// goulash reaches for unasked.
+pub const MIN_AUTO_PARAMS_B: f32 = 2.0;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct EngineConfig {
@@ -90,7 +133,9 @@ pub struct EngineConfig {
     /// Model name; overrides favorites and auto-pick.
     pub model: Option<String>,
     /// Preference-ordered favorites: the first one installed wins during
-    /// auto-pick (before falling back to smallest-installed).
+    /// auto-pick (before falling back to a size ladder). Defaults to
+    /// `DEFAULT_FAVORITES`; setting it REPLACES that list rather than
+    /// extending it, so `--config print` always shows what is in play.
     pub favorites: Vec<String>,
     /// Keep the model resident between asks (ollama keep_alive; "" to
     /// let the server unload on its own schedule).
@@ -318,7 +363,7 @@ impl Default for EngineConfig {
             trusted: "auto".to_string(),
             slow_lane: LaneOverride::default(),
             model: None,
-            favorites: Vec::new(),
+            favorites: DEFAULT_FAVORITES.iter().map(|s| s.to_string()).collect(),
             keep_alive: "30m".to_string(),
             stream: true,
             context_max_chars: 12_000,
@@ -408,6 +453,19 @@ pub struct DebugConfig {
     /// reformat of something already formatted. Off by default for that
     /// reason; on to get the documented behaviour back, and to compare.
     pub slow_via_fast: bool,
+    /// Quote fast's answer to slow, rather than leaving slow to find it
+    /// in the session log.
+    ///
+    /// Slow's prompt has always said "another model already gave a quick
+    /// answer" — and until the lanes ran in order it could not say WHAT,
+    /// because fast had not answered yet. Now that research is queued
+    /// when fast's answer lands, the answer is a fact we hold, and
+    /// naming it is the difference between "be better than something"
+    /// and "be better than this". A toggle because it is worth
+    /// measuring: the log carries the same lines a few hundred tokens
+    /// further up, so the honest question is whether restating them
+    /// where the model attends actually changes the finding.
+    pub quote_fast_to_slow: bool,
     /// Show the wave for goulash's own unprompted commentary too.
     ///
     /// Off: an observation you did not ask for is not worth moving
@@ -433,6 +491,7 @@ impl Default for DebugConfig {
             idle_repaint: false,
             wrap_guard: false,
             slow_via_fast: false,
+            quote_fast_to_slow: true,
             working_bar: true,
             working_bar_on_watch: false,
             // Both of these MUST appear in the menu's value lists

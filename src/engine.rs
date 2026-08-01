@@ -182,6 +182,10 @@ pub enum Job {
         /// Is anyone waiting on this? A `waldorf` turn volunteers, and
         /// an unasked lane does not get to animate at you.
         asked: bool,
+        /// What the fast lane already answered, quoted for slow. Empty
+        /// leaves slow to find it in the session log, which is where it
+        /// also is — a few hundred tokens further up.
+        prior: String,
         question: String,
         context: String,
         memories: String,
@@ -385,6 +389,7 @@ impl Engine {
         turn: u64,
         direct: bool,
         asked: bool,
+        prior: String,
         question: String,
         context: String,
         memories: String,
@@ -394,6 +399,7 @@ impl Engine {
             turn,
             direct,
             asked,
+            prior,
             question,
             context,
             memories,
@@ -916,6 +922,7 @@ fn run_research(
         turn,
         direct,
         asked,
+        prior,
         question,
         context,
         memories,
@@ -938,7 +945,7 @@ fn run_research(
     });
     notify(wr);
     let out = research_once(
-        cl, cfg, caps, model, &question, &context, &memories, &pinned, direct, preempt,
+        cl, cfg, caps, model, &question, &context, &memories, &pinned, direct, &prior, preempt,
     );
     let _ = ev.send(Event::Idle { kind });
     let _ = ev.send(Event::Researching(None));
@@ -972,6 +979,7 @@ fn research_once(
     memories: &str,
     pinned: &str,
     direct: bool,
+    prior: &str,
     preempt: &AtomicBool,
 ) -> Result<(String, Option<String>, String), String> {
     // The slow lane's own ceiling, not an inflated one. This used to be
@@ -988,14 +996,26 @@ fn research_once(
     let (framing, bail) = if direct {
         (
             "The user asked YOU directly rather than the quick model. \
-             Take your time and get this RIGHT.",
+             Take your time and get this RIGHT."
+                .to_string(),
             "",
         )
     } else {
+        // Naming the answer beats alluding to it. "Another model already
+        // gave a quick answer" tells the model to beat SOMETHING; the
+        // answer itself tells it to beat THIS, and lets it agree — which
+        // is the only way PASS means anything.
+        let quoted = if prior.is_empty() {
+            String::new()
+        } else {
+            format!("\nThe quick model answered:\n{prior}\n")
+        };
         (
-            "Take your time and get this RIGHT rather than fast \u{2014} another \
-             model already gave a quick answer, and yours only earns its keep \
-             by being better.",
+            format!(
+                "{quoted}Take your time and get this RIGHT rather than fast \u{2014} another \
+                 model already gave a quick answer, and yours only earns its keep \
+                 by being better."
+            ),
             "If you have nothing better than an obvious answer, reply exactly: PASS",
         )
     };
@@ -1490,10 +1510,21 @@ fn probe_models(cl: &Client, lane: &LaneConfig) -> Option<(String, Vec<String>)>
     Some((model, installed))
 }
 
-/// Selection order: configured model, then the first favorite that is
-/// installed (a favorite matches exactly or up to the ':tag'), then the
-/// SMALLEST installed model — one-line status-bar answers want the
-/// watcher-tier default; heavyweights are opt-in.
+/// How goulash chooses a model when nobody told it to use one.
+///
+/// 1. the configured model, if there is one — nothing overrules that
+/// 2. the first installed favorite, in the list's own order
+/// 3. the smallest installed model AT OR ABOVE `MIN_AUTO_PARAMS_B`
+/// 4. the smallest installed model
+///
+/// Step 3 is the one that had to be added. "Smallest installed" alone
+/// hands a new user whatever tiny model they once pulled to try ollama
+/// out, and below ~2B the one-line-plus-`CMD:` contract simply does not
+/// hold — the answer arrives as a paragraph, or fenced, or empty, and
+/// the product looks broken on a machine where it would have worked.
+/// Step 4 still exists because a floor that finds nothing must not
+/// leave goulash with no model at all; it is better to run on a 0.8B
+/// than to sit there dark.
 fn pick_model(
     wire: Wire,
     listing: &serde_json::Value,
@@ -1512,23 +1543,48 @@ fn pick_model(
             return Some(hit.clone());
         }
     }
-    // Smallest-installed needs a size, and only ollama reports one. An
+    // The size ladder needs sizes, and only ollama reports them. An
     // OpenAI-compatible listing is names and nothing else, so the
     // fallback there is simply the first — the server's own order, which
     // for LM Studio is the model you last loaded.
     if wire == Wire::OpenAi {
         return names.first().cloned();
     }
-    listing["models"]
+    let sized: Vec<(u64, Option<f32>, &str)> = listing["models"]
         .as_array()?
         .iter()
         .filter_map(|m| {
             let name = m["name"].as_str()?;
-            let size = m["size"].as_u64().unwrap_or(u64::MAX);
-            Some((size, name))
+            let bytes = m["size"].as_u64().unwrap_or(u64::MAX);
+            Some((bytes, params_b(m), name))
         })
-        .min()
-        .map(|(_, name)| name.to_string())
+        .collect();
+    // Smallest that clears the floor. Ordered by BYTES within that set,
+    // not by parameters: what costs the user is what has to be resident
+    // and re-evaluated, and a 9B at Q4 is cheaper than a 5B at Q8.
+    sized
+        .iter()
+        .filter(|(_, p, _)| p.is_some_and(|p| p >= crate::config::MIN_AUTO_PARAMS_B))
+        .min_by_key(|(bytes, _, _)| *bytes)
+        .or_else(|| sized.iter().min_by_key(|(bytes, _, _)| *bytes))
+        .map(|(_, _, name)| name.to_string())
+}
+
+/// Parameter count in billions, from an ollama listing entry.
+///
+/// `details.parameter_size` is a human string — "873.44M", "3.2B", or
+/// absent entirely (the MLX builds report neither). Absent is NOT zero:
+/// a model that does not say how big it is cannot be shown to clear the
+/// floor, so it does not, and it falls through to the last resort with
+/// everything else.
+fn params_b(m: &serde_json::Value) -> Option<f32> {
+    let raw = m["details"]["parameter_size"].as_str()?.trim();
+    let (num, scale) = match raw.chars().last()? {
+        'B' | 'b' => (&raw[..raw.len() - 1], 1.0),
+        'M' | 'm' => (&raw[..raw.len() - 1], 0.001),
+        _ => (raw, 1.0),
+    };
+    num.trim().parse::<f32>().ok().map(|n| n * scale)
 }
 
 /// Byte-stable preamble: identical across asks so the provider's KV
@@ -2045,6 +2101,7 @@ mod backfill_tests {
             turn: n,
             direct: false,
             asked: true,
+            prior: String::new(),
             question: String::new(),
             context: String::new(),
             memories: String::new(),
@@ -2215,14 +2272,79 @@ mod pick_tests {
 
     #[test]
     fn picks_smallest_model_by_default() {
+        // Smallest, but not below the floor: `llama3.2:1b` is the
+        // smallest thing here and answering from a status bar is not a
+        // job it can do, so the 7B wins.
         let tags = json!({"models": [
-            {"name": "gemma3:12b", "size": 8_100_000_000u64},
-            {"name": "llama3.2:1b", "size": 1_300_000_000u64},
-            {"name": "qwen2.5:7b", "size": 4_700_000_000u64},
+            {"name": "gemma3:12b", "size": 8_100_000_000u64,
+             "details": {"parameter_size": "11.9B"}},
+            {"name": "llama3.2:1b", "size": 1_300_000_000u64,
+             "details": {"parameter_size": "1.2B"}},
+            {"name": "qwen2.5:7b", "size": 4_700_000_000u64,
+             "details": {"parameter_size": "7.6B"}},
         ]});
         assert_eq!(
             pick_model(Wire::Ollama, &tags, &names(&tags), None, &no_favs()).as_deref(),
-            Some("llama3.2:1b")
+            Some("qwen2.5:7b")
+        );
+    }
+
+    #[test]
+    fn the_floor_yields_rather_than_leaving_no_model() {
+        // Nothing clears 2B. Running on a model that will struggle beats
+        // sitting there with no engine at all.
+        let tags = json!({"models": [
+            {"name": "qwen3.5:0.8b", "size": 1_040_000_000u64,
+             "details": {"parameter_size": "873.44M"}},
+            {"name": "llama3.2:1b", "size": 1_300_000_000u64,
+             "details": {"parameter_size": "1.2B"}},
+        ]});
+        assert_eq!(
+            pick_model(Wire::Ollama, &tags, &names(&tags), None, &no_favs()).as_deref(),
+            Some("qwen3.5:0.8b")
+        );
+    }
+
+    #[test]
+    fn a_model_that_will_not_say_its_size_cannot_clear_the_floor() {
+        // The MLX builds report no parameter_size. Absent is not zero
+        // and it is not "big enough" either — it is unknown, and unknown
+        // does not get to satisfy a floor. It stays eligible as a last
+        // resort, which is why it is chosen here: nothing else clears.
+        let tags = json!({"models": [
+            {"name": "gemma4:12b-mlx", "size": 7_650_000_000u64, "details": {}},
+            {"name": "llama3.2:1b", "size": 1_300_000_000u64,
+             "details": {"parameter_size": "1.2B"}},
+        ]});
+        assert_eq!(
+            pick_model(Wire::Ollama, &tags, &names(&tags), None, &no_favs()).as_deref(),
+            Some("llama3.2:1b"),
+            "the smallest by bytes, since neither clears the floor"
+        );
+    }
+
+    #[test]
+    fn the_built_in_favorites_are_reachable_and_ordered() {
+        // The shipped list is only useful if a real listing hits it, and
+        // if the ORDER decides — a 12B and an e4b installed together
+        // must resolve to the e4b, or the default is "biggest wins" with
+        // extra steps.
+        let tags = json!({"models": [
+            {"name": "gemma4:12b", "size": 7_560_000_000u64,
+             "details": {"parameter_size": "11.9B"}},
+            {"name": "gemma4:e4b", "size": 9_600_000_000u64,
+             "details": {"parameter_size": "7.5B"}},
+            {"name": "qwen3.5:0.8b", "size": 1_040_000_000u64,
+             "details": {"parameter_size": "873.44M"}},
+        ]});
+        let favs: Vec<String> = crate::config::DEFAULT_FAVORITES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            pick_model(Wire::Ollama, &tags, &names(&tags), None, &favs).as_deref(),
+            Some("gemma4:e4b"),
+            "quality-per-second, not size"
         );
     }
 
