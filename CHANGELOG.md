@@ -21,6 +21,44 @@ where that is possible.
   settings row does — including `custom…`, and including `provider`,
   where `auto` means *go find a local server* on the fast lane and
   *follow the fast lane* on the slow one.
+- **`query` and `waldorf` actually run the slow lane.** Both rungs were
+  settings with nothing behind them: only `#?` ever reached research, so
+  the ladder read like a choice and behaved like one value. `query` now
+  puts slow on every `#`, and `waldorf` adds the unprompted turn. Slow
+  is dispatched when fast's answer LANDS, not when the key is pressed —
+  the log then holds the answer slow is being asked to improve on, and
+  the slot to amend exists.
+- **The band shows what Down would select.** The chip read one list and
+  the keyboard walked another; a command exiting 0 emptied the first and
+  not the second, so the band went blank while seven slots were still
+  one keypress away. There is one list now.
+- **A researched alternative is gold, and the row below follows the
+  cursor.** Standing on fast you read fast's line; standing on the
+  alternative you read its REASON, which until now was kept and never
+  shown. A turn the slow lane owns outright (`#?`) is gold on the chip
+  itself.
+- **A new question supersedes the old one.** Typing `#` while a `#?` was
+  still thinking used to wait out the research — job coalescing only
+  ever superseded a QUEUED ask, never the one already streaming.
+
+### Fixed
+- **The slow lane's `PASS` was vended as a command.** The amending prompt
+  offers PASS as the way to decline and nothing consumed it, so a
+  `waldorf` turn could put `CMD: PASS` in the suggestion slot, one Down
+  and one Enter from running it.
+- **Up and Down walked different numbering.** Down stepped through the
+  flattened stack and stored a flat index; Up stepped through the turns
+  and stored a turn index in the same variable. One researched
+  alternative makes them disagree by one for every turn below it — so a
+  finding was reachable going up and never going down, and a single Up
+  left Down walking someone else's positions.
+- **Command-first turns showed the question where the answer belongs.**
+  The slot is vended from the `CMD:` line before any prose exists, and
+  the answer that followed carried no command (it had already been handed
+  over), so nothing ever filled it in.
+- **An alternative identical to the command above it is no longer
+  offered.** Slow agreeing with fast was rendered as a choice between a
+  command and itself.
 
 ## [0.4.0] — unreleased
 

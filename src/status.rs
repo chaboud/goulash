@@ -4,6 +4,12 @@ use crate::term::Size;
 /// chrome chip is white-on-grey; the suggestion chip is orange.
 pub const CHROME_SGR: &str = "\x1b[0;97;100m"; // white on grey chip
 pub const SUGGEST_SGR: &str = "\x1b[0;30;48;5;208m"; // black on orange chip
+/// The slow lane's own colour, and the one place a second command
+/// can appear. Gold rather than the orange of a fast suggestion,
+/// because the two sit one above the other and the colour is the
+/// only thing saying which lane wrote which — and which one Enter
+/// is about to pull.
+pub const FINDING_SGR: &str = "\x1b[0;30;48;5;220m"; // black on gold chip
 /// An unselected chip: present, pullable, not the one you are on.
 ///
 /// **Orange means selected, not "suggestion".** That is the whole colour
@@ -338,7 +344,7 @@ pub fn inset_row(stub: &str, body: &str, cols: usize, selected: bool) -> String 
     let room = cols.saturating_sub(stub.chars().count());
     let mut text: String = body.chars().take(room).collect();
     text.push_str(&" ".repeat(room.saturating_sub(text.chars().count())));
-    let sgr = if selected { SUGGEST_SGR } else { IDLE_CHIP_SGR };
+    let sgr = if selected { FINDING_SGR } else { IDLE_CHIP_SGR };
     format!("{QUERY_SGR}{stub}\x1b[0m{sgr}{text}\x1b[0m")
 }
 

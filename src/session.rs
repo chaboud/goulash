@@ -183,6 +183,16 @@ struct SugTurn {
     /// instead of a bait-and-switch.
     /// (wiki: architecture/two-lane-engagement.md)
     alt: Option<Finding>,
+    /// This turn's own command came from the slow lane, because fast
+    /// never produced one (`#?`, or a `waldorf` turn fast passed on).
+    /// The band is coloured by WHICH LANE the selected command came
+    /// from, so a slow-only turn is gold on the chip itself rather than
+    /// gold on a row underneath a fast answer that does not exist.
+    from_slow: bool,
+    /// Slow's justification, kept against the turn so the row under the
+    /// band can show it the moment the cursor lands on slow's command.
+    /// Empty for a fast turn, which has nothing of the kind.
+    reason: String,
 }
 
 /// What the slow lane came back with, hung off the turn it answers.
@@ -216,6 +226,62 @@ fn flat_slots(hist: &[SugTurn]) -> Vec<(usize, bool)> {
         }
     }
     out
+}
+
+/// Where one Up/Down keypress lands in the flattened stack.
+enum Step {
+    /// Stand on this flattened position and paste its command.
+    To(usize),
+    /// Off the top: back to the empty prompt line, where the shell's own
+    /// history resumes.
+    Neutral,
+    /// The line no longer holds any slot's command — the user has typed
+    /// something of their own, and it is not ours to clobber.
+    Lost,
+}
+
+/// One step through the flattened slot stack, in either direction.
+///
+/// Both directions have to agree on what `browse` MEANS, and they did
+/// not: Down walked the flattened stack and stored a flat index, while
+/// Up walked `sug_hist` and stored a TURN index into the same variable.
+/// With one researched alternative in the stack the two coordinate
+/// systems drift apart by one for every turn below it, which is why a
+/// finding could be reached going up (by landing on whatever the flat
+/// list happened to have at that number) and never going down, and why
+/// a single Up left Down walking someone else's numbering.
+///
+/// Locating by BUFFER rather than by remembered position is deliberate:
+/// the shell line is the truth about what the user is holding, and a
+/// remembered index that disagrees with it would paste over an edit.
+fn step_browse(
+    hist: &[SugTurn],
+    flat: &[(usize, bool)],
+    browse: Option<usize>,
+    buffer: &str,
+    down: bool,
+) -> Step {
+    if flat.is_empty() {
+        return Step::Lost;
+    }
+    let cmd_at = |p: usize| flat.get(p).and_then(|&s| slot_cmd(hist, s));
+    if buffer.is_empty() {
+        // Entering from a clean line: Down takes the newest, Up has
+        // nowhere above to go.
+        return if down { Step::To(0) } else { Step::Neutral };
+    }
+    let pos = browse
+        .filter(|&p| cmd_at(p).as_deref() == Some(buffer))
+        .or_else(|| (0..flat.len()).find(|&p| cmd_at(p).as_deref() == Some(buffer)));
+    match pos {
+        None => Step::Lost,
+        // Down stops at the oldest rather than wrapping: a stack that
+        // loops has no end, and the user cannot tell they have seen it
+        // all.
+        Some(p) if down => Step::To((p + 1).min(flat.len() - 1)),
+        Some(0) => Step::Neutral,
+        Some(p) => Step::To(p - 1),
+    }
 }
 
 /// The command a flattened slot pastes.
@@ -718,6 +784,17 @@ fn hist_push(hist: &mut Vec<SugTurn>, turn: SugTurn) {
         // so an explicit `#?` on a repeated question silently produced
         // nothing at all.
         top.id = turn.id;
+        // And the prose, when the later push has some. Command-first
+        // vends the slot from the CMD: line, before a word of the
+        // answer has arrived; the answer event then pushes the same
+        // command with the real line and used to be dropped whole, so
+        // browsing that turn showed the question back at you forever.
+        if !turn.text.is_empty() {
+            top.text = turn.text;
+        }
+        if !turn.question.is_empty() {
+            top.question = turn.question;
+        }
         return;
     }
     hist.insert(0, turn);
@@ -786,7 +863,6 @@ fn compose_rows(
     shell_name: &str,
     st: &State,
     hook: Option<HookPhase>,
-    suggestions: &[(u64, String, String)],
     notice: &Option<String>,
     band: &Option<Band>,
     browse: Option<usize>,
@@ -1107,21 +1183,36 @@ fn compose_rows(
     let flat = flat_slots(sug_hist);
     let here = browse.and_then(|p| flat.get(p).copied());
     let browsed = here.and_then(|(i, alt)| sug_hist.get(i).map(|t| (i, t, alt)));
-    // The chip always shows FAST's command; the finding has its own row
-    // below. Which of the two is orange says which one Enter pulls.
-    let sug_cmd = match browsed {
-        // Leading space: the gap between label and command belongs to
-        // the COMMAND's run, so the orange stops at the colon instead of
-        // one cell past it. Purely where the boundary falls — the text
-        // on screen is unchanged.
-        Some((_, t, _)) => Some(format!(" {} ", t.cmd)),
-        None => suggestions.first().map(|s| format!(" {} ", s.1)),
-    };
+    // The chip shows WHAT DOWN WILL SELECT: the browsed entry, or the
+    // head of the same flattened stack Down walks. It used to read a
+    // second list kept alongside for this one purpose, and the two
+    // disagreed — `CmdEnd(0)` emptied that list and not the stack, so a
+    // successful command blanked the chip while Down still had seven
+    // slots to walk. One list, or the band lies about the keyboard.
+    //
+    // Leading space: the gap between label and command belongs to the
+    // COMMAND's run, so the highlight stops at the colon instead of one
+    // cell past it.
+    //
+    // The chip carries the TURN's own command — fast's, when fast
+    // answered — and a researched alternative keeps its own row below
+    // rather than swapping the chip out under the cursor. Down moves
+    // the highlight between the two; the layout does not move.
+    let head = here.map(|(i, _)| i).or_else(|| flat.first().map(|&(i, _)| i));
+    let head_turn = head.and_then(|i| sug_hist.get(i));
+    let sug_cmd = head_turn.map(|t| format!(" {} ", t.cmd));
     let alt_selected = browsed.map(|(_, _, is_alt)| is_alt).unwrap_or(false);
+    // Which LANE wrote the command ON THE CHIP. Only a turn slow owns
+    // outright — `#?`, or a `waldorf` turn fast passed on — is gold up
+    // here; an alternative under a fast answer is gold on its own row.
+    let chip_is_slow = head_turn.is_some_and(|t| t.from_slow);
     // Pulled onto the prompt line, and still the thing sitting there.
     // `browse` is exactly that: it is set when the command is written to
     // the shell, and the next Down/Up clears it the moment the buffer no
     // longer matches the slot it points at.
+    // "The text on your prompt line right now" — true for any browsed
+    // entry whose command IS the chip's. The alternative is the one that
+    // is not: it lives on its own row below.
     let taken = browsed.is_some() && !alt_selected;
     let notice_text = notice.clone().map(|n| format!(" {n} "));
     let reserved = cfg.reserved_rows();
@@ -1176,9 +1267,14 @@ fn compose_rows(
         chip.extend(bar.iter().copied());
     }
 
+    let label_sgr = if chip_is_slow {
+        status::FINDING_SGR
+    } else {
+        status::SUGGEST_SGR
+    };
     match (&sug_cmd, &notice_text) {
         (Some(cmd), _) => {
-            chip.push((SUG_LABEL, status::SUGGEST_SGR));
+            chip.push((SUG_LABEL, label_sgr));
             chip.push((
                 cmd.as_str(),
                 // Orange even while the wave runs. Down still pulls this
@@ -1187,11 +1283,7 @@ fn compose_rows(
                 // is coming". The moment it lands the chip changes under
                 // you and the wave recedes; miss that and Down still
                 // reaches it.
-                if taken {
-                    status::SUGGEST_SGR
-                } else {
-                    status::IDLE_CHIP_SGR
-                },
+                if taken { label_sgr } else { status::IDLE_CHIP_SGR },
             ));
         }
         (None, Some(n)) => chip.push((n.as_str(), status::TEXT_SGR)),
@@ -1237,12 +1329,31 @@ fn compose_rows(
     let mut lines = match browsed {
         // A finding's one line explains the inset above it; the turn's
         // own text is what the question row already stubbed.
-        Some((_, t, _)) if t.alt.is_some() => wrap_chars(
-            &t.alt.as_ref().unwrap().text,
-            cols.saturating_sub(2),
-            n_text as usize,
-        ),
-        Some((_, t, _)) => wrap_chars(&t.text, cols.saturating_sub(2), n_text as usize),
+        // The space below follows the CURSOR, not the turn: whatever
+        // the colour above says you are standing on is what you read
+        // here. On fast, fast's line. On slow, slow's REASON — which is
+        // written for exactly this moment ("why is it better than the
+        // one above") and is shown nowhere else.
+        Some((_, t, is_alt)) => {
+            let body = match (is_alt, t.from_slow) {
+                (true, _) => t
+                    .alt
+                    .as_ref()
+                    .map(|a| {
+                        if a.reasoning.is_empty() {
+                            a.text.as_str()
+                        } else {
+                            a.reasoning.as_str()
+                        }
+                    })
+                    .unwrap_or(""),
+                // A slow-only turn: its command IS slow's, so the same
+                // rule puts its reasoning here.
+                (false, true) if !t.reason.is_empty() => t.reason.as_str(),
+                (false, _) => t.text.as_str(),
+            };
+            wrap_chars(body, cols.saturating_sub(2), n_text as usize)
+        }
         None => band
             .as_ref()
             .map(|b| wrap_chars(&b.text, cols.saturating_sub(2), n_text as usize))
@@ -2043,6 +2154,7 @@ fn ask_slow(
         turn,
         // `#?` is a direct ask of this lane.
         true,
+        true,
         body.to_string(),
         ctx_log.to_string(),
         memories,
@@ -2061,7 +2173,6 @@ fn ask_slow(
 /// overwrite would be, and survivable, which divergence is not.
 fn apply_finding(
     hist: &mut Vec<SugTurn>,
-    suggestions: &mut Vec<(u64, String, String)>,
     rec: &mut Recorder,
     turn: u64,
     question: Option<String>,
@@ -2088,6 +2199,8 @@ fn apply_finding(
                 text: finding.text.clone(),
                 question: q,
                 alt: None,
+                from_slow: true,
+                reason: finding.reasoning.clone(),
             },
         );
         // Recorded like any other vend. A suggestion that reached the
@@ -2095,15 +2208,25 @@ fn apply_finding(
         // asks "did this land?" — which cost hours of chasing a working
         // feature.
         rec.suggest(turn, &cmd, "from #? research", "slow");
-        suggestions.insert(0, (turn, cmd.clone(), "from #? research".to_string()));
-        suggestions.truncate(8);
         ctx_log.push_str(&format!("CMD: {cmd}\n"));
         return;
     }
     let Some(slot) = hist.iter_mut().find(|t| t.id == turn) else {
         return;
     };
-    if let Some(cmd) = &finding.cmd {
+    // Slow agreed with fast. An alternative identical to the thing it
+    // sits under is a choice between a command and itself: the ↳ row
+    // would appear, the Down key would gain a stop, and pulling either
+    // would type the same characters. The reasoning is still worth
+    // keeping — it is the answer to the "why?" that follows — so it
+    // goes to the log below, and only the OFFER is dropped.
+    let agreed = finding
+        .cmd
+        .as_deref()
+        .is_some_and(|c| c.trim() == slot.cmd.trim());
+    if let Some(cmd) = &finding.cmd
+        && !agreed
+    {
         ctx_log.push_str(&format!("CMD: {cmd} [amends the suggestion above]\n"));
     }
     // The reasoning is retained rather than shown — but retained *where
@@ -2121,7 +2244,9 @@ fn apply_finding(
             .collect();
         ctx_log.push_str(&format!("[researched: {brief}]\n"));
     }
-    slot.alt = Some(finding);
+    if !agreed {
+        slot.alt = Some(finding);
+    }
 }
 
 /// Ask the engine to compress any pin that no longer fits its share.
@@ -2352,13 +2477,26 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut oscf = OscFilter::new();
     let mut hook: Option<HookPhase> = None;
     let mut rules = RulesVendor::new();
-    let mut suggestions: Vec<(u64, String, String)> = Vec::new();
     let mut sug_hist: Vec<SugTurn> = Vec::new();
     // What each `#?` asked, kept until its research lands. Straight to
     // the slow lane means there is no fast answer carrying the question,
     // and the finding needs it to build a slot of its own.
     let mut slow_asks: std::collections::HashMap<u64, String> =
         std::collections::HashMap::new();
+    // `query` and `waldorf` run BOTH lanes on one turn, and the order is
+    // the point: fast answers, then slow researches with fast's answer
+    // already in the log and amends the slot fast just filled. Firing
+    // both at dispatch would send slow a context that does not contain
+    // the answer its own prompt says to improve on, and would leave it
+    // guessing which slot id fast was about to take. So the question
+    // waits here until fast lands. `bool` is "was this the unprompted
+    // turn" — a fast error is worth telling slow about, an unprompted
+    // one is not.
+    let mut slow_after_fast: Option<(String, bool)> = None;
+    // The slot fast's current answer vended, whichever event created it:
+    // command-first vends mid-stream from `Command`, everything else at
+    // `Answer`. Slow amends THAT slot, so it has to be the same id.
+    let mut vend_id: Option<u64> = None;
     let mut browse: Option<usize> = None;
     let mut next_sid: u64 = 1;
     let mut cur_cmd: Option<String> = None;
@@ -2521,7 +2659,6 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     &shell_name,
                     &cur_state,
                     hook,
-                    &suggestions,
                     &notice,
                     &band,
                     browse,
@@ -2769,17 +2906,25 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         {
                                             eng.cancel_research();
                                         }
+                                        // Same rule for a shot that has
+                                        // not been fired yet: a slow lane
+                                        // still waiting on fast's answer
+                                        // is answering the question the
+                                        // user just walked away from.
+                                        slow_after_fast = None;
                                     }
                                     cur_cmd = Some(cmd);
                                     block_tail.clear();
                                 }
                                 Mark::CmdEnd(code) => {
                                     rec.cmd_end(code);
-                                    if code == 0 {
-                                        // Whatever was broken got fixed (or
-                                        // moved past): drop stale fixes.
-                                        suggestions.clear();
-                                    }
+                                    // A successful command used to empty
+                                    // the chip's list ("the fix landed,
+                                    // drop it"). It did not empty the slot
+                                    // stack, so Down still reached every
+                                    // one of them and the band said there
+                                    // was nothing there. The stack is a
+                                    // transcript; it keeps what happened.
                                     if let Some(cmd) = cur_cmd.take() {
                                         let block = vendor::CmdBlock {
                                             cmd,
@@ -2831,11 +2976,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                         .and_then(|b| b.question.clone())
                                                         .unwrap_or_default(),
                                                     alt: None,
+                                                    from_slow: false,
+                                                    reason: String::new(),
                                                 },
                                             );
-                                            suggestions.insert(0, (id, v.command, v.why));
                                         }
-                                        suggestions.truncate(8);
                                         if commentary
                                             && engine_model.is_some()
                                             && let Some(eng) = engine.as_ref()
@@ -2849,14 +2994,37 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 // as the thing to be relevant to.
                                                 near_question(&memory, &work, &block.cmd),
                                             );
+                                            // `waldorf` is the rung where
+                                            // slow joins the unprompted
+                                            // turn too: fast heckles
+                                            // first, slow gets its own
+                                            // shot at the same command.
+                                            // Both may PASS -- an unasked
+                                            // lane that always finds
+                                            // something to say is noise,
+                                            // not company.
+                                            vend_id = None;
+                                            slow_after_fast = (opt_slow == "waldorf").then(|| {
+                                                (
+                                                    format!(
+                                                        "Without being asked, review the command \
+                                                         just run and its result: {}",
+                                                        block.cmd
+                                                    ),
+                                                    true,
+                                                )
+                                            });
                                         }
                                     }
                                 }
                                 Mark::Cwd(p) => {
                                     if !last_cwd.is_empty() && p != last_cwd {
-                                        // cwd changed: context moved, old
-                                        // suggestions are stale.
-                                        suggestions.clear();
+                                        // The model is told the context
+                                        // moved. The slot stack is not
+                                        // pruned: it is history, and Down
+                                        // still reaches it, so hiding it
+                                        // from the band would be a lie
+                                        // about the keyboard.
                                         ctx_log.push_str(&format!("[cwd: {p}]\n"));
                                     }
                                     rec.cwd(&p);
@@ -2865,7 +3033,24 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 Mark::Ask(q) => {
                                     rec.aside(&q);
                                     browse = None;
+                                    // A new ask is the user moving on: any
+                                    // slow shot still waiting on the last
+                                    // turn's fast answer is stale before it
+                                    // starts. The `#` arm below re-arms it.
+                                    slow_after_fast = None;
                                     let body = q.trim_start_matches('#').trim();
+                                    // And so is anything already generating.
+                                    // `#/` and `#@` are controls, not
+                                    // questions — the settings menu has no
+                                    // business ending a research it did not
+                                    // start. A QUESTION does: this is the
+                                    // same rule as running a command.
+                                    if !body.starts_with('/')
+                                        && !body.starts_with('@')
+                                        && let Some(eng) = engine.as_ref()
+                                    {
+                                        eng.supersede();
+                                    }
                                     if q.starts_with("##") {
                                         // `##` flips the script: chat has
                                         // focus. A body rides along as the
@@ -3037,6 +3222,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             body,
                                             engine::hms()
                                         ));
+                                        // `query` and `waldorf` put slow
+                                        // on every `#`, not just `#?`.
+                                        // Queued at fast's answer, not
+                                        // here — see `slow_after_fast`.
+                                        vend_id = None;
+                                        slow_after_fast = (opt_slow != "manual")
+                                            .then(|| (body.to_string(), false));
                                         notice = None;
                                         band = Some(Band {
                                             question: Some(q.clone()),
@@ -3048,96 +3240,71 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     }
                                 }
                                 Mark::Pull(buffer) => {
-                                    // Slot history: a single-slot scrollable
-                                    // view over past (suggestion, chat)
-                                    // turns. Empty buffer enters at the
-                                    // newest; a buffer that IS the current
-                                    // slot steps one older (kill line,
-                                    // repaste) and STOPS at the oldest.
-                                    // The user's own text is never
-                                    // clobbered — a mismatch ends browsing.
-                                    // Walk the FLATTENED stack, so a
+                                    // Slot history: a single-slot
+                                    // scrollable view over past
+                                    // (suggestion, finding, chat) turns,
+                                    // walked on the FLATTENED stack so a
                                     // researched alternative is a step of
-                                    // its own rather than being
-                                    // unreachable.
+                                    // its own. Down goes older.
                                     let flat = flat_slots(&sug_hist);
-                                    let cmd_at = |p: usize| {
-                                        flat.get(p).and_then(|&s| slot_cmd(&sug_hist, s))
-                                    };
-                                    let target = if flat.is_empty() {
-                                        browse = None;
-                                        None
-                                    } else if buffer.is_empty() {
-                                        Some(0)
-                                    } else {
-                                        let pos = browse
-                                            .filter(|&p| cmd_at(p).as_deref() == Some(&buffer))
-                                            .or_else(|| {
-                                                (0..flat.len()).find(|&p| {
-                                                    cmd_at(p).as_deref() == Some(&buffer)
-                                                })
-                                            });
-                                        match pos {
-                                            Some(p) => Some((p + 1).min(flat.len() - 1)),
-                                            None => {
-                                                browse = None;
-                                                None
+                                    match step_browse(&sug_hist, &flat, browse, &buffer, true) {
+                                        Step::To(i) => {
+                                            let (ti, _) = flat[i];
+                                            let cmd = slot_cmd(&sug_hist, flat[i])
+                                                .unwrap_or_else(|| sug_hist[ti].cmd.clone());
+                                            if cmd != buffer {
+                                                rec.accept(sug_hist[ti].id);
+                                                let mut bytes = Vec::new();
+                                                if !buffer.is_empty() {
+                                                    bytes.push(0x15); // ^U: kill line
+                                                }
+                                                bytes.extend_from_slice(b"\x1b[200~");
+                                                bytes.extend_from_slice(cmd.as_bytes());
+                                                bytes.extend_from_slice(b"\x1b[201~");
+                                                write_all(master, &bytes)?;
+                                            } else {
+                                                // At the oldest: resolve the
+                                                // shell's paste-expect anyway.
+                                                write_all(master, b"\x1b[200~\x1b[201~")?;
                                             }
+                                            browse = Some(i);
                                         }
-                                    };
-                                    if let Some(i) = target {
-                                        let (ti, _) = flat[i];
-                                        let mut turn = sug_hist[ti].clone();
-                                        if let Some(c) = cmd_at(i) {
-                                            turn.cmd = c;
-                                        }
-                                        if turn.cmd != buffer {
-                                            rec.accept(turn.id);
-                                            let mut bytes = Vec::new();
-                                            if !buffer.is_empty() {
-                                                bytes.push(0x15); // ^U: kill line
-                                            }
-                                            bytes.extend_from_slice(b"\x1b[200~");
-                                            bytes.extend_from_slice(turn.cmd.as_bytes());
-                                            bytes.extend_from_slice(b"\x1b[201~");
-                                            write_all(master, &bytes)?;
-                                        } else {
-                                            // At the oldest: resolve the
-                                            // shell's paste-expect anyway.
+                                        // Down has no neutral — there is
+                                        // nothing below the oldest — but
+                                        // the shell is still waiting on a
+                                        // paste either way.
+                                        Step::Neutral | Step::Lost => {
                                             write_all(master, b"\x1b[200~\x1b[201~")?;
+                                            browse = None;
                                         }
-                                        browse = Some(i);
-                                    } else {
-                                        write_all(master, b"\x1b[200~\x1b[201~")?;
                                     }
                                 }
                                 Mark::PullUp(buffer) => {
-                                    // The same axis, other direction: Up
-                                    // slides toward the neutral empty line
-                                    // (zsh history resumes above it). Empty
-                                    // pastes resolve the shell's tracking
-                                    // on every path.
-                                    let pos = browse
-                                        .filter(|&p| {
-                                            sug_hist.get(p).map(|t| t.cmd == buffer) == Some(true)
-                                        })
-                                        .or_else(|| sug_hist.iter().position(|t| t.cmd == buffer));
-                                    match pos {
-                                        Some(0) => {
+                                    // The same axis and the same
+                                    // numbering, other direction: Up
+                                    // slides toward the neutral empty
+                                    // line (zsh history resumes above
+                                    // it). Empty pastes resolve the
+                                    // shell's tracking on every path.
+                                    let flat = flat_slots(&sug_hist);
+                                    match step_browse(&sug_hist, &flat, browse, &buffer, false) {
+                                        Step::To(i) => {
+                                            let (ti, _) = flat[i];
+                                            let cmd = slot_cmd(&sug_hist, flat[i])
+                                                .unwrap_or_else(|| sug_hist[ti].cmd.clone());
+                                            rec.accept(sug_hist[ti].id);
+                                            let mut bytes = vec![0x15];
+                                            bytes.extend_from_slice(b"\x1b[200~");
+                                            bytes.extend_from_slice(cmd.as_bytes());
+                                            bytes.extend_from_slice(b"\x1b[201~");
+                                            write_all(master, &bytes)?;
+                                            browse = Some(i);
+                                        }
+                                        Step::Neutral => {
                                             write_all(master, b"\x15\x1b[200~\x1b[201~")?;
                                             browse = None;
                                         }
-                                        Some(i) => {
-                                            let turn = sug_hist[i - 1].clone();
-                                            rec.accept(turn.id);
-                                            let mut bytes = vec![0x15];
-                                            bytes.extend_from_slice(b"\x1b[200~");
-                                            bytes.extend_from_slice(turn.cmd.as_bytes());
-                                            bytes.extend_from_slice(b"\x1b[201~");
-                                            write_all(master, &bytes)?;
-                                            browse = Some(i - 1);
-                                        }
-                                        None => {
+                                        Step::Lost => {
                                             write_all(master, b"\x1b[200~\x1b[201~")?;
                                             browse = None;
                                         }
@@ -4148,6 +4315,15 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     }
                     if let Some(text) = submit {
                         rec.aside(&format!("## {text}"));
+                        // Same rule inside chat as at the prompt: a new
+                        // message supersedes the work the last one
+                        // started, in whichever lane it is running.
+                        if !text.starts_with('/')
+                            && !text.starts_with('@')
+                            && let Some(eng) = engine.as_ref()
+                        {
+                            eng.supersede();
+                        }
                         // `@` works in chat too: "pin that file" is
                         // exactly the kind of thing you say mid-
                         // conversation, and having to leave chat to do
@@ -4258,14 +4434,19 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     // suggestion; everything else passes through verbatim.
                     const ALT_DOWN: &[u8] = b"\x1b[1;3B";
                     let chunk = &buf[..len];
-                    let pos = if hook == Some(HookPhase::Prompt) && !suggestions.is_empty() {
+                    // Same head the band draws and Down walks — a shell
+                    // without hooks gets the same suggestion, not a
+                    // second opinion from a second list.
+                    let head = flat_slots(&sug_hist)
+                        .first()
+                        .and_then(|&s| slot_cmd(&sug_hist, s).map(|c| (sug_hist[s.0].id, c)));
+                    let pos = if hook == Some(HookPhase::Prompt) && head.is_some() {
                         chunk.windows(ALT_DOWN.len()).position(|w| w == ALT_DOWN)
                     } else {
                         None
                     };
-                    if let Some(p) = pos {
+                    if let (Some(p), Some((id, cmdtext))) = (pos, head) {
                         write_all(master, &chunk[..p])?;
-                        let (id, cmdtext, _why) = suggestions[0].clone();
                         rec.accept(id);
                         let mut paste = Vec::new();
                         paste.extend_from_slice(b"\x1b[200~");
@@ -4418,7 +4599,6 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         } else {
                             apply_finding(
                                 &mut sug_hist,
-                                &mut suggestions,
                                 &mut rec,
                                 turn,
                                 slow_asks.remove(&turn),
@@ -4466,25 +4646,29 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     engine::Event::Command(cmd) => {
                         let id = next_sid;
                         next_sid += 1;
+                        // Remembered for the slow lane: under `query` it
+                        // amends THIS slot, and command-first means the
+                        // slot exists before the answer event arrives.
+                        vend_id = Some(id);
                         rec.suggest(id, &cmd, "from # ask", "engine");
                         hist_push(
                             &mut sug_hist,
                             SugTurn {
                                 id,
                                 cmd: cmd.clone(),
-                                text: band
-                                    .as_ref()
-                                    .and_then(|b| b.question.clone())
-                                    .unwrap_or_default(),
+                                // Nothing to say yet: the CMD: line
+                                // arrived before the words did. The
+                                // answer event fills this in.
+                                text: String::new(),
                                 question: band
                                     .as_ref()
                                     .and_then(|b| b.question.clone())
                                     .unwrap_or_default(),
                                 alt: None,
+                                from_slow: false,
+                                reason: String::new(),
                             },
                         );
-                        suggestions.insert(0, (id, cmd.clone(), "from # ask".to_string()));
-                        suggestions.truncate(8);
                         ctx_log.push_str(&format!("CMD: {cmd}\n"));
                     }
                     engine::Event::Answer {
@@ -4539,6 +4723,19 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             }
                         }
                         let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        // Command-first vended the slot from the CMD:
+                        // line, before a word of prose existed — and
+                        // this answer carries no command precisely
+                        // because it was already handed over, so nothing
+                        // downstream would ever fill the prose in.
+                        // Browsing that turn showed the question back at
+                        // you instead of the answer.
+                        if command.is_none()
+                            && let Some(id) = vend_id
+                            && let Some(t) = sug_hist.iter_mut().find(|t| t.id == id)
+                        {
+                            t.text = one_line.clone();
+                        }
                         let passed = proactive
                             && one_line
                                 .trim_matches(['.', '!'])
@@ -4564,6 +4761,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             if let Some(cmd) = command {
                                 let id = next_sid;
                                 next_sid += 1;
+                                vend_id = Some(id);
                                 let why = if proactive {
                                     "commentary"
                                 } else {
@@ -4581,10 +4779,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             .and_then(|b| b.question.clone())
                                             .unwrap_or_default(),
                                         alt: None,
+                                        from_slow: false,
+                                        reason: String::new(),
                                     },
                                 );
-                                suggestions.insert(0, (id, cmd.clone(), why.to_string()));
-                                suggestions.truncate(8);
                                 if !opt_command_first {
                                     ctx_log.push_str(&format!("CMD: {cmd}\n"));
                                 }
@@ -4604,9 +4802,60 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 }
                             }
                         }
+                        // Fast has spoken, so the slow lane can start.
+                        // Queued HERE and not at dispatch for two
+                        // reasons: the log now contains the answer slow
+                        // is being asked to improve on, and the slot
+                        // fast vended is the one slow amends -- an id
+                        // that does not exist yet at keystroke time.
+                        if let Some((q, unprompted)) = slow_after_fast.take()
+                            && let Some(eng) = engine.as_ref()
+                        {
+                            let turn = vend_id.take().unwrap_or_else(|| {
+                                // Fast vended no command (or passed), so
+                                // there is no slot to amend. Slow's
+                                // answer builds its own, exactly as it
+                                // does for `#?`.
+                                let t = next_sid;
+                                next_sid += 1;
+                                t
+                            });
+                            slow_asks.insert(turn, q.clone());
+                            eng.research(
+                                turn,
+                                false,
+                                !unprompted,
+                                q,
+                                ctx_log.clone(),
+                                memory.context_block(),
+                                work.context_block(),
+                            );
+                        }
                     }
                     engine::Event::Error(msg) => {
                         rec.aside_answer(&msg, false);
+                        // Fast failed. A question the user actually
+                        // typed still deserves the other lane -- that is
+                        // the whole point of having two. An unprompted
+                        // turn does not: commentary failing is silent,
+                        // and a second lane volunteering after it would
+                        // be noise arriving out of nowhere.
+                        if let Some((q, false)) = slow_after_fast.take()
+                            && let Some(eng) = engine.as_ref()
+                        {
+                            let turn = next_sid;
+                            next_sid += 1;
+                            slow_asks.insert(turn, q.clone());
+                            eng.research(
+                                turn,
+                                false,
+                                true,
+                                q,
+                                ctx_log.clone(),
+                                memory.context_block(),
+                                work.context_block(),
+                            );
+                        }
                         let m = format!("engine error: {msg}");
                         if let Some(c) = chat.as_mut() {
                             c.stream = None;
@@ -4663,6 +4912,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         // `#?` sent this, so it is very much asked for —
                         // and it is the long one, which is exactly when
                         // an indicator earns its place.
+                        // Research only. `Ruminate` is the same work
+                        // with nobody waiting on it — the wave is for
+                        // the user's own question, not for goulash
+                        // thinking out loud after a command.
                         if kind == engine::Work::Research && work_from.is_none() {
                             work_from = Some((Instant::now(), false));
                             work_ended = None;
@@ -4683,7 +4936,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             }
                             fast_busy = false;
                         }
-                        if kind == engine::Work::Research && work_ended.is_none() {
+                        if matches!(kind, engine::Work::Research | engine::Work::Ruminate)
+                            && work_ended.is_none()
+                        {
                             work_ended = Some(Instant::now());
                         }
                         if let Some(m) = warming.take() {
@@ -4833,7 +5088,6 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 for (turn, finding) in held_findings.drain(..) {
                     apply_finding(
                                 &mut sug_hist,
-                                &mut suggestions,
                                 &mut rec,
                                 turn,
                                 slow_asks.remove(&turn),
@@ -4850,7 +5104,6 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     &shell_name,
                     &cur_state,
                     hook,
-                    &suggestions,
                     &notice,
                     &band,
                     browse,
@@ -5188,8 +5441,8 @@ mod view_tests {
 #[cfg(test)]
 mod band_tests {
     use super::{
-        Finding, Layout, SugTurn, apply_finding, at_last_column, fixup_bytes, hist_push,
-        reclaim_rows,
+        Finding, Layout, Step, SugTurn, apply_finding, at_last_column, fixup_bytes, flat_slots,
+        hist_push, reclaim_rows, slot_cmd, step_browse,
     };
     use crate::term::Size;
 
@@ -5304,6 +5557,8 @@ mod band_tests {
             text: String::new(),
             question: String::new(),
             alt: None,
+            from_slow: false,
+            reason: String::new(),
         }
     }
 
@@ -5321,11 +5576,9 @@ mod band_tests {
         assert_eq!(hist[0].id, 2, "but the id must follow the live ask");
 
         let mut log = String::new();
-        let mut sugs = Vec::new();
         let mut rec = crate::record::Recorder::new(&crate::config::Config::default());
         apply_finding(
             &mut hist,
-            &mut sugs,
             &mut rec,
             2,
             None,
@@ -5337,6 +5590,191 @@ mod band_tests {
             &mut log,
         );
         assert!(hist[0].alt.is_some(), "the finding found its home");
+    }
+
+    fn with_alt(id: u64, cmd: &str, alt: &str) -> SugTurn {
+        let mut t = turn(id, cmd);
+        t.alt = Some(Finding {
+            cmd: Some(alt.to_string()),
+            text: String::new(),
+            reasoning: String::new(),
+        });
+        t
+    }
+
+    fn walk(hist: &[SugTurn], from: Option<usize>, buffer: &str, down: bool) -> Option<usize> {
+        let flat = flat_slots(hist);
+        match step_browse(hist, &flat, from, buffer, down) {
+            Step::To(i) => Some(i),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn up_and_down_walk_the_same_numbering() {
+        // The shipped bug: Down walked the FLATTENED stack and stored a
+        // flat index; Up walked `sug_hist` and stored a TURN index into
+        // the same variable. One researched alternative makes the two
+        // disagree by one for every turn below it, so a finding was
+        // reachable going up (by landing on whatever number happened to
+        // be there) and never going down.
+        let hist = vec![
+            with_alt(3, "du -ah *", "du -sh *"),
+            turn(2, "ls -la"),
+            turn(1, "pwd"),
+        ];
+        assert_eq!(flat_slots(&hist).len(), 4, "the alternative is a step");
+
+        // Down, from a clean line, all the way to the oldest.
+        assert_eq!(walk(&hist, None, "", true), Some(0));
+        assert_eq!(walk(&hist, Some(0), "du -ah *", true), Some(1));
+        assert_eq!(
+            slot_cmd(&hist, flat_slots(&hist)[1]).as_deref(),
+            Some("du -sh *"),
+            "the second step IS the researched alternative"
+        );
+        assert_eq!(walk(&hist, Some(1), "du -sh *", true), Some(2));
+        assert_eq!(walk(&hist, Some(2), "ls -la", true), Some(3));
+        assert_eq!(walk(&hist, Some(3), "pwd", true), Some(3), "stops, no wrap");
+
+        // Up retraces the same positions, and lands on the same
+        // commands going back.
+        assert_eq!(walk(&hist, Some(3), "pwd", false), Some(2));
+        assert_eq!(walk(&hist, Some(2), "ls -la", false), Some(1));
+        assert_eq!(walk(&hist, Some(1), "du -sh *", false), Some(0));
+        assert!(
+            matches!(
+                step_browse(&hist, &flat_slots(&hist), Some(0), "du -ah *", false),
+                Step::Neutral
+            ),
+            "up from the newest returns the line to the user"
+        );
+    }
+
+    #[test]
+    fn an_edited_line_is_never_clobbered() {
+        let hist = vec![turn(2, "ls -la"), turn(1, "pwd")];
+        let flat = flat_slots(&hist);
+        assert!(
+            matches!(
+                step_browse(&hist, &flat, Some(0), "ls -la --edited", true),
+                Step::Lost
+            ),
+            "a line the user has typed into is theirs, in both directions"
+        );
+        assert!(matches!(
+            step_browse(&hist, &flat, Some(0), "ls -la --edited", false),
+            Step::Lost
+        ));
+    }
+
+    #[test]
+    fn the_chip_head_is_the_step_down_takes() {
+        // The band draws `flat[0]`; Down from a clean line takes
+        // `flat[0]`. They are the same expression or the band lies.
+        let hist = vec![with_alt(2, "fast", "slow"), turn(1, "older")];
+        assert_eq!(walk(&hist, None, "", true), Some(0));
+        assert_eq!(
+            slot_cmd(&hist, flat_slots(&hist)[0]).as_deref(),
+            Some("fast")
+        );
+    }
+
+    /// The band as the user reads it: SGR stripped, one string per row.
+    fn band_rows(hist: &[SugTurn], browse: Option<usize>) -> Vec<String> {
+        let cfg = crate::config::Config::default();
+        let l = layout(30, 100, cfg.reserved_rows());
+        let rows = super::compose_rows(
+            &cfg,
+            &l,
+            "zsh",
+            &crate::sense::State {
+                fg_shell: true,
+                echo: false,
+                icanon: false,
+                alt_screen: false,
+            },
+            Some(super::HookPhase::Prompt),
+            &None,
+            &None,
+            browse,
+            hist,
+            &None,
+            &Some("m".to_string()),
+            &None,
+            None,
+            None,
+            "",
+            None,
+        );
+        let sgr = regex_lite_strip;
+        rows.iter().map(|r| sgr(r)).collect()
+    }
+
+    fn regex_lite_strip(s: &str) -> String {
+        // No regex crate here: escapes are all CSI ... final-byte.
+        let mut out = String::new();
+        let mut it = s.chars();
+        while let Some(c) = it.next() {
+            if c != '\u{1b}' {
+                out.push(c);
+                continue;
+            }
+            for n in it.by_ref() {
+                if n.is_ascii_alphabetic() || n == 'm' {
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_row_below_the_band_follows_the_cursor() {
+        // Standing on fast you read fast's line; standing on the
+        // researched alternative you read its REASON, which is written
+        // for that moment and shown nowhere else. The band used to show
+        // the finding's line for BOTH, so the colour above and the text
+        // below described different things.
+        let mut t = turn(1, "du -ah *");
+        t.text = "everything, including files".into();
+        t.alt = Some(Finding {
+            cmd: Some("du -sh *".into()),
+            text: "totals only".into(),
+            reasoning: "-s stops it walking every file".into(),
+        });
+        let hist = vec![t];
+
+        let on_fast = band_rows(&hist, Some(0)).join("\n");
+        assert!(on_fast.contains("everything, including files"), "{on_fast}");
+        assert!(!on_fast.contains("stops it walking"), "{on_fast}");
+
+        let on_slow = band_rows(&hist, Some(1)).join("\n");
+        assert!(on_slow.contains("stops it walking every file"), "{on_slow}");
+        assert!(!on_slow.contains("everything, including"), "{on_slow}");
+    }
+
+    #[test]
+    fn the_chip_shows_what_down_would_select() {
+        // Field bug: a command exiting 0 emptied the list the chip read
+        // from, while Down still walked a stack with seven slots in it.
+        // The chip and the keyboard have one source now.
+        let mut t = turn(9, "rg -n todo");
+        t.text = "search".into();
+        let hist = vec![t];
+        let idle = band_rows(&hist, None).join("\n");
+        assert!(idle.contains("rg -n todo"), "not browsing: {idle}");
+
+        // A turn slow owns outright still names its command up top.
+        let mut s = turn(10, "du -sh *");
+        s.from_slow = true;
+        s.reason = "asked the slow lane directly".into();
+        let slow_only = band_rows(&[s], Some(0)).join("\n");
+        assert!(slow_only.contains("du -sh *"), "{slow_only}");
+        assert!(
+            slow_only.contains("asked the slow lane directly"),
+            "a slow-only turn reads its own reasoning: {slow_only}"
+        );
     }
 
     #[test]

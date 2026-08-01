@@ -26,8 +26,12 @@ pub enum Work {
     /// same cost, but nobody is waiting on it: the difference decides
     /// whether goulash is allowed to animate at you.
     Watch,
-    /// The slow lane researching a turn.
+    /// The slow lane researching a turn the user asked for.
     Research,
+    /// The slow lane volunteering on a `waldorf` turn: same lane, same
+    /// cost, nobody waiting. The distinction exists for the same reason
+    /// `Watch` does — an unasked lane does not get to animate at you.
+    Ruminate,
     /// Compressing or carding a `#@` pin.
     Digest,
     /// Loading a model so the first ask does not pay for it.
@@ -175,6 +179,9 @@ pub enum Job {
         /// table: with nothing above to improve on, "nothing better" is
         /// not a considered opinion, it is silence.
         direct: bool,
+        /// Is anyone waiting on this? A `waldorf` turn volunteers, and
+        /// an unasked lane does not get to animate at you.
+        asked: bool,
         question: String,
         context: String,
         memories: String,
@@ -368,10 +375,16 @@ impl Engine {
         let _ = self.job_tx.send(Job::CancelDigests);
     }
 
+    #[allow(clippy::too_many_arguments)]
+    /// `asked` is not `direct`: `direct` picks the prompt framing (a
+    /// fresh answer or an amendment), `asked` says whether a human is
+    /// waiting on it. A `query` turn is an amendment somebody asked
+    /// for; a `waldorf` turn is an amendment nobody did.
     pub fn research(
         &self,
         turn: u64,
         direct: bool,
+        asked: bool,
         question: String,
         context: String,
         memories: String,
@@ -380,11 +393,27 @@ impl Engine {
         let _ = self.job_tx.send(Job::Research {
             turn,
             direct,
+            asked,
             question,
             context,
             memories,
             pinned,
         });
+    }
+
+    /// The user asked something new. Whatever is generating is
+    /// answering a question they have moved on from, so abandon it and
+    /// drop anything queued behind it — the new job takes the worker.
+    ///
+    /// Job coalescing was only ever half of this: it supersedes a
+    /// QUEUED ask, and does nothing about the one already streaming.
+    /// So a `#` typed during a `#?` waited for the research to run to
+    /// completion, and its answer then landed on top of the newer
+    /// question. Running a command has always cancelled; typing the
+    /// next question is the same act of moving on.
+    pub fn supersede(&self) {
+        self.interrupt();
+        let _ = self.job_tx.send(Job::CancelResearch);
     }
 
     /// Abandon research: the queued job AND the one in flight.
@@ -886,6 +915,7 @@ fn run_research(
     let Some(Job::Research {
         turn,
         direct,
+        asked,
         question,
         context,
         memories,
@@ -900,19 +930,21 @@ fn run_research(
         return true;
     };
     let _ = ev.send(Event::Researching(Some(turn)));
+    let kind = if asked { Work::Research } else { Work::Ruminate };
     let _ = ev.send(Event::Busy {
         model: model.clone(),
         warm: false,
-        kind: Work::Research,
+        kind,
     });
     notify(wr);
     let out = research_once(
         cl, cfg, caps, model, &question, &context, &memories, &pinned, direct, preempt,
     );
-    let _ = ev.send(Event::Idle { kind: Work::Research });
+    let _ = ev.send(Event::Idle { kind });
     let _ = ev.send(Event::Researching(None));
     if let Ok((text, command, reasoning)) = out
         && !(text.is_empty() && command.is_none())
+        && !declined(&text, command.as_deref())
     {
         let _ = ev.send(Event::Finding {
             turn,
@@ -1033,6 +1065,30 @@ fn research_once(
 
 /// Pull a finding apart into the line the user sees, the command, and
 /// the reasoning that is kept but not shown.
+/// Did the amender use its escape hatch?
+///
+/// The amending prompt ends "reply exactly: PASS", and until something
+/// consumed that word it was parsed like any other answer: a `waldorf`
+/// turn vended `CMD: PASS` into the suggestion slot, one Down and one
+/// Enter from the user running `PASS` in their shell. The fast lane has
+/// always dropped its own PASS; slow was offered the same escape with
+/// nobody listening for it.
+fn declined(text: &str, command: Option<&str>) -> bool {
+    let word = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim_matches(['.', '!', '"', '\''])
+            .eq_ignore_ascii_case("PASS")
+    };
+    match command {
+        // A command that IS the escape word is a decline however much
+        // prose came with it.
+        Some(c) => word(c),
+        None => word(text),
+    }
+}
+
 fn split_finding(raw: &str) -> (String, Option<String>, String) {
     let mut command = None;
     let mut line = String::new();
@@ -1988,6 +2044,7 @@ mod backfill_tests {
         Job::Research {
             turn: n,
             direct: false,
+            asked: true,
             question: String::new(),
             context: String::new(),
             memories: String::new(),
@@ -2021,7 +2078,7 @@ mod backfill_tests {
 
 #[cfg(test)]
 mod answer_tests {
-    use super::{split_answer, split_finding};
+    use super::{declined, split_answer, split_finding};
     use std::collections::HashSet;
 
     #[test]
@@ -2070,6 +2127,22 @@ mod answer_tests {
         assert_eq!(cmd.as_deref(), Some("rg -n todo"));
         assert_eq!(line, "faster than grep");
         assert!(reason.contains("gitignore"));
+    }
+
+    #[test]
+    fn the_amenders_escape_word_is_consumed_not_vended() {
+        // Field bug: a `waldorf` turn put `CMD: PASS` in the suggestion
+        // slot. The prompt offers PASS as the way to decline, so it is
+        // the ONE answer that must never become a command.
+        assert!(declined("", Some("PASS")));
+        assert!(declined("PASS.", None));
+        assert!(declined("pass", None));
+        assert!(declined("Nothing better here.", Some("PASS")));
+        // And a real answer still is one, including one that merely
+        // mentions the word.
+        assert!(!declined("use ripgrep", Some("rg -n todo")));
+        assert!(!declined("PASS the output to less", None));
+        assert!(!declined("", Some("echo PASS")));
     }
 
     #[test]
