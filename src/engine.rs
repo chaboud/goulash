@@ -20,8 +20,12 @@ use std::time::{Duration, Instant};
 /// moment the indicator exists to distinguish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Work {
-    /// A `#` ask on the fast lane.
+    /// A `#` ask on the fast lane — the user asked for this.
     Ask,
+    /// The fast lane volunteering after a command, unasked. Same lane,
+    /// same cost, but nobody is waiting on it: the difference decides
+    /// whether goulash is allowed to animate at you.
+    Watch,
     /// The slow lane researching a turn.
     Research,
     /// Compressing or carding a `#@` pin.
@@ -722,14 +726,16 @@ fn worker(
             let _ = ev.send(Event::Busy {
                 model: model.clone(),
                 warm: false,
-                kind: Work::Ask,
+                kind: if proactive { Work::Watch } else { Work::Ask },
             });
             notify(&wr);
             let result = generate(
                 &cl, &cfg, &caps, model, &question, &context, &memories, &pinned, &cards, &ev, &wr,
                 proactive, pin_ask, &preempt,
             );
-            let _ = ev.send(Event::Idle { kind: Work::Ask });
+            let _ = ev.send(Event::Idle {
+                kind: if proactive { Work::Watch } else { Work::Ask },
+            });
             // An EMPTY error is the yield above, not a failure. The user
             // asked for something else and got it; reporting "engine
             // error" for their own keystroke would be a lie.

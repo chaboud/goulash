@@ -398,6 +398,13 @@ pub struct DebugConfig {
     /// you did not ask for. Off is for anyone who finds motion in the
     /// periphery worse than that risk, which is a real preference.
     pub working_bar: bool,
+    /// Show the wave for goulash's own unprompted commentary too.
+    ///
+    /// Off: an observation you did not ask for is not worth moving
+    /// something in your peripheral vision. The lane dots already say
+    /// the engine is busy, and that is the right weight for work nobody
+    /// is waiting on.
+    pub working_bar_on_watch: bool,
     /// How long the head takes to move one cell, in ms. Lower is
     /// smoother and writes more.
     pub working_bar_step_ms: u64,
@@ -416,6 +423,7 @@ impl Default for DebugConfig {
             idle_repaint: false,
             wrap_guard: false,
             working_bar: true,
+            working_bar_on_watch: false,
             // Both of these MUST appear in the menu's value lists
             // (session.rs TERMINAL_ROWS) — a default the row cannot
             // find renders fine and then cycles from somewhere else.

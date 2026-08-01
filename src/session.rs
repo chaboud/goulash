@@ -1143,16 +1143,19 @@ fn compose_rows(
     if let Some(bar) = &working {
         chip.extend(bar.iter().copied());
     }
-    let fast_working = working.is_some();
+
     match (&sug_cmd, &notice_text) {
         (Some(cmd), _) => {
             chip.push((SUG_LABEL, status::SUGGEST_SGR));
             chip.push((
                 cmd.as_str(),
-                // Never orange while a newer answer is on its way: orange
-                // means "this is what Down gives you", and during a
-                // generation that is a promise about stale text.
-                if taken && !fast_working {
+                // Orange even while the wave runs. Down still pulls this
+                // command, so dimming it would lie about what the key
+                // does — and the wave is already saying "something newer
+                // is coming". The moment it lands the chip changes under
+                // you and the wave recedes; miss that and Down still
+                // reaches it.
+                if taken {
                     status::SUGGEST_SGR
                 } else {
                     status::IDLE_CHIP_SGR
@@ -1160,13 +1163,11 @@ fn compose_rows(
             ));
         }
         (None, Some(n)) => chip.push((n.as_str(), status::TEXT_SGR)),
-        // Nothing held yet: the marquee is the whole chip, which is the
-        // honest state -- something is coming, nothing is pullable.
-        (None, None) => {
-            if !chip.is_empty() {
-                chip.push((" working\u{2026} ", status::IDLE_CHIP_SGR));
-            }
-        }
+        // Nothing held yet: the wave stands alone. No caption — the
+        // wave IS the message, and a `working…` label there once
+        // replaced the suggestion it was supposed to be arriving
+        // alongside.
+        (None, None) => {}
     }
     rows.push(status::rule_row(&chip, tip.as_deref(), cols));
     // The question row doubles as the slot for a researched finding.
@@ -2398,7 +2399,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // shrink is done, which is also when we stop asking for repaints —
     // the animation is the only thing here that writes without the user
     // or the shell having done something, so it must not outlive itself.
-    let mut work_from: Option<Instant> = None;
+    // `(started, is_fast)` — the lane decides the colour: blue for the
+    // lane you asked, gold for research.
+    let mut work_from: Option<(Instant, bool)> = None;
     let mut work_ended: Option<Instant> = None;
     let mut work_bar: Option<Vec<status::Seg<'static>>> = None;
 
@@ -4371,12 +4374,25 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     engine::Event::Debug(raw) => rec.engine_debug(&raw),
                     engine::Event::Busy { model, warm, kind } => {
                         fuse.busy(&model);
-                        if kind == engine::Work::Ask {
-                            if !fast_busy {
-                                work_from = Some(Instant::now());
+                        // Both animate the DOTS: the lane is busy either
+                        // way. Only an asked-for turn gets the wave —
+                        // goulash volunteering after every command is
+                        // not a reason to move something in your
+                        // peripheral vision.
+                        if matches!(kind, engine::Work::Ask | engine::Work::Watch) {
+                            let wanted = kind == engine::Work::Ask || dbg.working_bar_on_watch;
+                            if !fast_busy && wanted {
+                                work_from = Some((Instant::now(), true));
                                 work_ended = None;
                             }
                             fast_busy = true;
+                        }
+                        // `#?` sent this, so it is very much asked for —
+                        // and it is the long one, which is exactly when
+                        // an indicator earns its place.
+                        if kind == engine::Work::Research && work_from.is_none() {
+                            work_from = Some((Instant::now(), false));
+                            work_ended = None;
                         }
                         if warm {
                             // A model load can take a long minute on a
@@ -4388,11 +4404,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     }
                     engine::Event::Idle { kind } => {
                         fuse.idle();
-                        if kind == engine::Work::Ask {
+                        if matches!(kind, engine::Work::Ask | engine::Work::Watch) {
                             if fast_busy && work_ended.is_none() {
                                 work_ended = Some(Instant::now());
                             }
                             fast_busy = false;
+                        }
+                        if kind == engine::Work::Research && work_ended.is_none() {
+                            work_ended = Some(Instant::now());
                         }
                         if let Some(m) = warming.take() {
                             notice = Some(format!("{m} ready"));
@@ -4442,7 +4461,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         // poll loop -- and when the shrink finishes, both clocks clear
         // and goulash goes back to writing only on events.
         {
-            let next = work_from.map(|start| {
+            let next = work_from.map(|(start, is_fast)| {
                 let running = work_ended.is_none();
                 let ms = match work_ended {
                     Some(end) => end.elapsed().as_millis() as u64,
@@ -4459,7 +4478,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 status::working_bar(
                     ms,
                     running,
-                    true,
+                    is_fast,
                     dbg.working_bar_step_ms,
                     dbg.working_bar_grow_ms,
                 )
