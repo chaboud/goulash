@@ -101,7 +101,7 @@ edited.
 - [architecture/block-history.md](architecture/block-history.md) — the block-oriented transcript model
 - [architecture/memory-hierarchy.md](architecture/memory-hierarchy.md) — raw leaves, LLM-set region markers, logarithmic ramp-off retrieval
 - [architecture/llm-engine.md](architecture/llm-engine.md) — provider probe chain, local-first caching, watcher/thinker tiers
-- [architecture/two-lane-engagement.md](architecture/two-lane-engagement.md) — fast keeps the microphone, slow researches and amends
+- [architecture/two-lane-engagement.md](architecture/two-lane-engagement.md) — `#` answers fast and slow amends underneath it; `#?` goes straight to slow
 - [architecture/model-capabilities.md](architecture/model-capabilities.md) — thinking is not one dial: each model's own dialect
 - [architecture/ambient-research.md](architecture/ambient-research.md) — the hierarchy as throttle
 - [architecture/levers.md](architecture/levers.md) — **every engine setting, with the measurement that chose its default**

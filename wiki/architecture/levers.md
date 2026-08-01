@@ -200,13 +200,28 @@ so the cache is unaffected, and it costs ~4 ms in the worker.
 
 ## B. Performance levers
 
-### B1. `num_ctx_min` / `num_ctx` — **SETTLED: two settings, not one**
+### B1. `num_ctx` — **SETTLED: goulash sends nothing**
 
 ```toml
 [engine]
-num_ctx_min = 8192      # auto: adopt what is loaded, but at least this
-# num_ctx  = 8192       # forced: pin exactly (reproducibility, memory bound)
+# num_ctx = 8192        # pin one exactly. Unset sends no window at all.
 ```
+
+Every engine already has a place to configure this, and the person who
+configured it meant it. goulash names a model and takes what it is
+given.
+
+The measurements below stand: a window IS part of a load identity, and
+asking for a different one DOES evict. What does not follow is that
+goulash should therefore choose the number. An earlier design read the
+resident window, echoed it back, and demanded a floor when nothing was
+loaded — and the result on one machine, a minute apart, was `ollama run
+gemma4:e4b` giving that model 131072 tokens while goulash pinned the
+same model at 8192 and held it there across every session. That is not
+preserving a setting. That is overriding it with an invented number.
+
+If a pinned window is too small for the prompt the request fails and
+says so, which is how a setting someone chose should behave.
 
 `num_ctx` is **part of a model's load identity**:
 
@@ -225,16 +240,24 @@ at load, and each model's saved default differs wildly (`qwen3-1.7b`
 8192, `gemma-4-e4b` **118272**). So `auto` = respect what they set is the
 only behaviour that works on both engines.
 
-### B2. Model selection — **SETTLED: prefer resident**
+### B2. Model selection — **SETTLED: a favourites list, then a floor**
 
-```toml
-[engine]
-prefer_resident = true
-```
+`pick_model`, in order:
 
-Current `pick_model`: configured → favourites → *smallest installed*, with
-no reference to what is loaded. Proposed: configured → **resident** →
-favourites → smallest.
+1. the configured model — nothing overrules it
+2. the first installed `engine.favorites` entry, in the list's own order
+3. the smallest installed model at or above `MIN_AUTO_PARAMS_B` (2.0)
+4. the smallest installed model
+
+Step 3 exists because "smallest installed" alone hands a new user
+whatever tiny model they once pulled to try ollama out, and below ~2B
+the one-line-plus-`CMD:` contract does not hold. Step 4 exists because a
+floor that finds nothing must not leave goulash with no model at all.
+
+Not "prefer resident": that was the same reflex as B1, reaching for what
+the server happens to be holding. The favourites list says what actually
+does this job well, which is a different and better question than what
+is warm.
 
 Cold load is **median 4281 ms, p90 7214 ms** (7.7 s for `gemma3:12b`)
 against a warm TTFT median of **2314 ms**. Adopting a warm 12B is very
@@ -242,11 +265,16 @@ plausibly faster end-to-end than cold-loading a 0.8B — and the graded
 ranking put `gemma4:12b` at the *top* for correctness, so the big warm
 model is not a compromise.
 
-### B3. `keep_alive` — **SETTLED: keep, and map it**
+### B3. `keep_alive` — **SETTLED: goulash sends nothing**
 
-Residency control. Was silently ignored on OpenAI-compat entirely; now
-maps to LM Studio's `ttl` (seconds). LM Studio JIT-loads at a **1-hour**
-default TTL otherwise.
+Residency is the server's policy, on the same reasoning as B1. Sending
+`30m` on every request is not a hint: it overwrites the policy of a
+service someone configured, and holds their VRAM for half an hour
+because they once asked what time it was. Unset by default; set it if
+you want a specific TTL.
+
+The cost of not asking is a slower first ask after a gap, which is a
+fine thing to pay.
 
 ### B4. Endpoint choice — **SETTLED: prefer `/v1/completions`**
 
@@ -297,7 +325,7 @@ cached:
 | reasoning suppression works | measured per model | `think: false` vs endpoint choice |
 | honours `stop` | provider `Caps` | whether to send it at all |
 | reports prompt-eval time | ollama yes, OpenAI no | which cache metric to trust |
-| context is load-time | LM Studio yes | `num_ctx` vs `num_ctx_min` |
+| context is load-time | LM Studio yes | send neither; see B1 |
 | platform-error rate | measured | whether `divulge.platform` earns its tokens |
 
 Observed family patterns worth defaulting on:
@@ -327,9 +355,8 @@ and nobody must ever open the file.
 thinking         = "off"       # off | auto | forced
 response_tokens  = 1024        # raised: 256 was never the binding limit
 reasoning_tokens = 4096        # allowance on top, always (see A4)
-num_ctx_min      = 8192        # auto-adopt a resident model's context
-prefer_resident  = false
-keep_alive       = "30m"
+# num_ctx        = 8192        # unset: take the server's own window
+# keep_alive     = "30m"       # unset: the server's own residency policy
 
 [engine.divulge]
 platform  = true               # OS, shell, terminal — ~50 tokens, free
@@ -352,7 +379,7 @@ thinking = "auto"
 | proposed | shipped | reason |
 |---|---|---|
 | `situated = "platform"` | `[engine.divulge]` booleans | "situated" is jargon that says nothing to a reader; the flags are independent, so they are flags |
-| `prefer_resident = true` | `false` | the simpler shape is to ask for a context size and only nudge the host when what is resident is smaller |
+| `prefer_resident = true` | dropped | a favourites list says what does this job well; what is warm is a different question (see B2) |
 | `response_tokens = 512` | `1024` | see A5 |
 | `reasoning_tokens` only when thinking on | always | see A4 — that condition was the bug |
 | `[engine.vend_bias]` | not shipped | still **OPEN**; backlogged rather than guessed at |

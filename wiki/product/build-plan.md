@@ -114,8 +114,9 @@ start, probe chain live.
   `#/help`; `[engine] favorites` is a preference-ordered list — the
   first installed favorite wins auto-pick (before smallest-installed;
   explicit `model` beats both; favorites match through the `:tag`).
-  **Latency mechanics (knobs on by default)**: `keep_alive` holds the
-  model resident; streaming partials fill the bar as tokens arrive
+  **Latency mechanics**: residency and context window are the server's
+  to decide and goulash sends neither; streaming partials fill the bar
+  as tokens arrive
   (150ms throttle); context is an append-only session log with a
   byte-stable preamble — ollama's KV prefix cache re-uses everything
   but the appended tail — epoch-trimming at a block boundary when over

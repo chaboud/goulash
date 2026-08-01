@@ -398,6 +398,6 @@ nicety after one. (wiki: [two-lane-engagement](two-lane-engagement.md))
 ## Where this goes next
 
 Ingest becomes *classification* rather than only compression, and a
-second, slower engagement works the artifact properly with tools while
-fast keeps the microphone:
+second, slower engagement works the artifact properly with tools,
+amending the turn fast already answered:
 [two-lane-engagement](two-lane-engagement.md).

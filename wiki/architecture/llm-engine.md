@@ -233,8 +233,10 @@ capabilities:
 First real answers worked but were slow. The fix ladder, cheapest first:
 
 1. **Model residency**: ollama unloads idle models (~5 min); a cold ask
-   pays full load before any token. Pass `keep_alive` (configurable) so
-   the watcher-tier model stays resident.
+   pays full load before any token. goulash does NOT extend that — the
+   server's TTL is the server's to set, and `keep_alive` is unset by
+   default. A slower first ask after a gap is the price, and it is worth
+   less than half an hour of someone else's VRAM.
 2. **Streaming** into the bar/band: perceived latency beats total.
 3. **Stable-prefix prompting**: ollama prefix-caches KV against the
    previous request per model — the append-mostly epoch shape gets

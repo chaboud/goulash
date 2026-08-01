@@ -109,11 +109,32 @@ answers with the whole allowance spent thinking. Brevity comes from the
 prompt asking for one line, not from starving the budget; measured,
 answers that arrive use a median of 32 tokens.
 
-**Goulash tries not to disturb your engine.** It asks what context
-window is already loaded and requests exactly that, dropping to
-`num_ctx_min` only when the loaded window is too small to work in.
-Saying nothing would not be polite — an omitted window is a request for
-the model's own default, which reloads it just the same.
+**Goulash does not reach into your engine.** It names a model and takes
+what the service gives it — the context window and the residency policy
+you configured over there, untouched. It used to negotiate a window and
+send a keep-alive on every request, which meant `ollama run gemma4:e4b`
+gave that model 131072 tokens while goulash pinned the same model at
+8192, and held your VRAM for half an hour because you once asked what
+time it was. `engine.num_ctx` and `engine.keep_alive` are there if you
+want to pin either; empty means silence.
+
+## Caveats
+
+**Platforms.** Developed and used daily on macOS, in Terminal, under
+zsh. Some Linux and bash over ssh. That is the extent of it — no
+promises beyond, and terminal emulators differ in ways that matter to a
+program living this close to the PTY.
+
+**Engines.** Mostly ollama, a fair amount of LM Studio, nothing yet with
+a paid hosted provider. The OpenAI-compatible wire is there and works
+against llama.cpp and vLLM, but keeping your session on your own machine
+is rather the point — a shell transcript is not a thing to hand to a
+stranger by default.
+
+**Still moving.** Config keys, setting names and interaction details
+change between releases. The CHANGELOG says what moved and settings that
+move keep working from an existing `config.toml` where that is possible,
+but this is not yet a stable surface to build on.
 
 ## Nerd Stuff: Build & modify
 ```
@@ -147,8 +168,6 @@ provider   = "auto"    # auto | ollama | openai | openai-raw | none
                        # server's chat template and is for measurement
 thinking   = "off"     # off | low | medium | high
 max_tokens = 8192      # ONE cap over reasoning and answer together
-num_ctx_min = 8192     # smallest window goulash can work in
-# num_ctx  = 32768     # set to pin a window exactly (forces a reload)
 slow = "manual"        # when slow volunteers: manual | query | waldorf
                        # (`#?` and pins always reach it, at every rung)
 
