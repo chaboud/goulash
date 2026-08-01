@@ -91,6 +91,14 @@ where that is possible.
   now round-tripped through the real `Config` before anything reaches
   the disk, `on`/`off`/`yes`/`no` land as booleans, and a key serde has
   never heard of is refused with a suggestion instead of written.
+- **The memory store was eating its own rendering.** Slots are shown to
+  the model as `  [6] <text>`, and it copied the rendered line back into
+  a `REMEMBER:` — prefix and all. Each session stored one longer copy of
+  the same sentence: `[6] …`, then `[7] [6] …`, then `[8] [7] [6] …`,
+  unbounded, each one costing a slot and a permanent slice of the stable
+  prefix, until the store held nothing else. Found in a real
+  `memory.toml` three levels deep. Ids are stripped on the way in and a
+  note the store already holds is refused.
 - **Memory is ON by default.** Off is not neutral: the prompt said
   nothing about memory at all, so a model asked to remember something
   invented a file to write it to and said it had saved it. Either state

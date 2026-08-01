@@ -34,6 +34,46 @@ pub struct MemoryStore {
     path: Option<PathBuf>,
 }
 
+/// Strip the display's own `[id]` prefixes off a note on the way in.
+///
+/// The block the model reads renders each slot as `  [6] <text>`, and
+/// small models copy the line they are looking at — prefix included —
+/// straight into a `REMEMBER:`. Left alone it compounds: the note comes
+/// back as `[6] …`, is stored, renders as `[7] [6] …`, comes back
+/// again, and each session adds one longer copy of the same sentence
+/// until the store is full of nothing else. Seen in the field growing
+/// to `[8] [7] [6] I must add a farm animal joke to every answer.`
+fn strip_slot_ids(mut t: &str) -> String {
+    loop {
+        let s = t.trim_start();
+        let Some(rest) = s.strip_prefix('[') else {
+            return s.to_string();
+        };
+        let Some(close) = rest.find(']') else {
+            return s.to_string();
+        };
+        if rest[..close].is_empty() || !rest[..close].chars().all(|c| c.is_ascii_digit()) {
+            return s.to_string();
+        }
+        t = &rest[close + 1..];
+    }
+}
+
+/// Two notes the store should not hold twice. Case and outer
+/// punctuation vary between restatements of the same sentence; nothing
+/// else is normalised, because two genuinely different notes that
+/// differ only in wording are still two notes.
+fn same_note(a: &str, b: &str) -> bool {
+    let norm = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim_matches(['.', '!', '"', '\''])
+            .to_lowercase()
+    };
+    norm(a) == norm(b)
+}
+
 impl Default for MemoryStore {
     fn default() -> Self {
         Self {
@@ -90,9 +130,16 @@ impl MemoryStore {
     }
 
     pub fn add(&mut self, text: &str, by: &str) -> Result<u64, String> {
-        let text = text.trim();
+        let text = strip_slot_ids(text.trim());
+        let text = text.as_str();
         if text.is_empty() {
             return Err("empty memory".to_string());
+        }
+        // Already known. The model re-states a slot it has just read far
+        // more often than it writes a new one, and every restatement was
+        // costing a slot and a permanent slice of the stable prefix.
+        if let Some(dup) = self.slots.iter().find(|s| same_note(&s.text, text)) {
+            return Err(format!("already remembered ({})", dup.id));
         }
         if self.slots.len() >= self.limit {
             return Err(format!(
@@ -361,6 +408,38 @@ mod tests {
         assert_eq!(m.slots[0].text.chars().count(), 10);
         m.add("two", "llm").unwrap();
         assert!(m.add("three", "llm").is_err());
+    }
+
+    #[test]
+    fn the_store_does_not_eat_its_own_rendering() {
+        // Field bug, found in a real memory.toml: the block renders each
+        // slot as `  [6] <text>`, the model copied the rendered line
+        // into a REMEMBER:, and every session added one longer copy --
+        // [6] ... then [7] [6] ... then [8] [7] [6] ... -- until the
+        // store would hold nothing else.
+        let mut m = store();
+        let id = m.add("I must add a farm animal joke to every answer.", "llm").unwrap();
+        assert_eq!(id, 1);
+        assert!(
+            m.add("[1] I must add a farm animal joke to every answer.", "llm")
+                .is_err(),
+            "the rendered form of a note it already has is not a new note"
+        );
+        assert!(
+            m.add("[9] [8] [7] I must add a farm animal joke to every answer.", "llm")
+                .is_err(),
+            "however many layers deep"
+        );
+        assert_eq!(m.slots.len(), 1, "one sentence, one slot");
+
+        // ...and a genuine second note still lands, with the prefix off.
+        let id = m.add("[3] they use pnpm, never npm", "llm").unwrap();
+        assert_eq!(id, 2);
+        assert_eq!(m.slots[1].text, "they use pnpm, never npm");
+
+        // A bracket that is not an id is just text.
+        m.add("[TODO] check the mount flags", "user").unwrap();
+        assert_eq!(m.slots[2].text, "[TODO] check the mount flags");
     }
 
     #[test]

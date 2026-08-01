@@ -3244,7 +3244,6 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         // what makes them suggestible:
                                         // `CMD: #@/path ref.md` is a
                                         // normal pullable suggestion.
-                                        let had_pins = !work.list().is_empty();
                                         notice = at_command(
                                             rest,
                                             &mut work,
@@ -3253,55 +3252,18 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             engine_model.is_some(),
                                             &mut menu,
                                         );
-                                        // Unpinning the LAST pin moves the
-                                        // baseline: the questions asked
-                                        // about a file outlive the file,
-                                        // sitting in the log, still being
-                                        // read, still steering answers
-                                        // about something else. The pin's
-                                        // own text leaves the prefix by
-                                        // itself; this is the conversation
-                                        // it caused.
-                                        //
-                                        // A baseline, not an erasure. The
-                                        // model stops seeing the old turns;
-                                        // the user keeps every one of them
-                                        // — on screen, on the Down key, and
-                                        // in history/session-*.jsonl.
-                                        // `#/clear` is the one that takes
-                                        // both.
-                                        //
-                                        // Only when the set empties.
-                                        // Dropping one of three pins is
-                                        // still working, and throwing away
-                                        // the conversation mid-task would
-                                        // be worse than the residue.
-                                        //
-                                        // Not on ADD, deliberately: a pin
-                                        // is usually made to help with the
-                                        // question already in flight, and
-                                        // clearing there would delete the
-                                        // thing it was fetched for. The
-                                        // cache argument does not decide
-                                        // it — a changed pin block
-                                        // invalidates the prefix either
-                                        // way, so keeping the log is free.
-                                        if had_pins && work.list().is_empty() {
-                                            // The MODEL's view only. The
-                                            // slot stack and the band are
-                                            // the user's, and a pin coming
-                                            // off is no reason to take
-                                            // away suggestions they can
-                                            // still see and still pull.
-                                            let c = ctx_log.len();
-                                            ctx_log.clear();
-                                            rec.aside(&format!(
-                                                "[unpinned last: log baseline reset, {c} chars]"
-                                            ));
-                                            if let Some(n) = notice.as_mut() {
-                                                n.push_str(" \u{b7} log baseline reset");
-                                            }
-                                        }
+                                        // A pin is a LENS on the
+                                        // context, not a statement
+                                        // about the conversation: it
+                                        // changes what the model can
+                                        // see, and the history
+                                        // baseline is a separate thing
+                                        // that only `#/clear` moves.
+                                        // Unpinning briefly reset the
+                                        // log here, which made
+                                        // `#@/unset` do something
+                                        // nobody would predict from
+                                        // its name.
                                         band = None;
                                     } else if let Some(cmdline) = body.strip_prefix('/') {
                                         // #/ commands: goulash controls, not
