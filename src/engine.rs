@@ -60,6 +60,8 @@ pub enum Event {
         /// everything (context.rs line protocol).
         pins: Vec<String>,
         pinclear: bool,
+        /// The model was asked to forget the conversation and did.
+        clearhead: bool,
     },
     /// How big the prompt we just sent actually was. Nothing else
     /// measures this: the session knows the size of its own pieces, but
@@ -802,6 +804,7 @@ fn worker(
                     }
                     let (rest, remembers, forgets) = extract_memory_ops(&ans);
                     let (rest, pins, pinclear) = crate::context::extract_pin_ops(&rest);
+                    let (rest, clearhead) = extract_clear(&rest);
                     let (text, mut command) = split_answer(&rest, &path_set);
                     // Already vended mid-stream: don't hand it over twice.
                     if command.is_some() && command == early {
@@ -814,6 +817,7 @@ fn worker(
                         && forgets.is_empty()
                         && pins.is_empty()
                         && !pinclear
+                        && !clearhead
                     {
                         if proactive {
                             Ok(()) // silent pass
@@ -829,6 +833,7 @@ fn worker(
                             forgets,
                             pins,
                             pinclear,
+                            clearhead,
                         })
                     }
                 }
@@ -1603,6 +1608,11 @@ its tag and nothing else \u{2014} no explanation, no dash, no comment \
 after the value:\n\
 SAY: <one short line of plain text>\n\
 CMD: <a shell command, complete and runnable on its own>\n\
+CLEARHEAD (no colon, nothing else on the line) \u{2014} drops the session log \
+below. The ONLY way to forget this conversation: asked to forget it, start \
+over, or clear your head, output CLEARHEAD. Saying you have forgotten \
+without that line is a lie, because nothing happens. Never use it for \
+anything else.\n\
 Never put prose on a CMD line: the user runs that line verbatim.\n\
 When a file would let you answer better — a command reference, a runbook, \
 a config — you may suggest that the user pin it, with a normal command \
@@ -1936,6 +1946,32 @@ fn generate(
     Ok((acc.trim().to_string(), early))
 }
 
+/// `CLEARHEAD` on a line of its own: the model dropping the running
+/// conversation because it was asked to.
+///
+/// Everything else goulash carries can already be reached by the model
+/// — it pins, it remembers, it forgets — and the session log was the
+/// one thing it could only accumulate. "Forget all that and start
+/// over" had no way to happen, which matters because the log is what
+/// carries a stale subject forward: unpin the file and the questions
+/// you asked about it are still there, still being read.
+///
+/// Deliberately not the word `CLEAR`, which turns up in ordinary shell
+/// answers often enough to be a hazard on a line by itself.
+fn extract_clear(answer: &str) -> (String, bool) {
+    let mut rest = String::new();
+    let mut clear = false;
+    for line in answer.lines() {
+        if line.trim().trim_end_matches(['.', '!']) == "CLEARHEAD" {
+            clear = true;
+        } else {
+            rest.push_str(line);
+            rest.push('\n');
+        }
+    }
+    (rest.trim().to_string(), clear)
+}
+
 /// Does this line already carry one of the grammar's tags? Used only to
 /// stop a stray verb line being mistaken for the prose answer.
 fn is_tagged(l: &str) -> bool {
@@ -1947,6 +1983,7 @@ fn is_tagged(l: &str) -> bool {
         "FORGET:",
         "PIN:",
         "PINCLEAR",
+        "CLEARHEAD",
     ];
     TAGS.iter().any(|t| l.starts_with(t))
 }
@@ -2184,6 +2221,24 @@ mod answer_tests {
         assert_eq!(cmd.as_deref(), Some("rg -n todo"));
         assert_eq!(line, "faster than grep");
         assert!(reason.contains("gitignore"));
+    }
+
+    #[test]
+    fn clearhead_is_a_verb_and_not_a_word_in_a_sentence() {
+        use super::extract_clear;
+        // The verb, alone on its line.
+        let (rest, c) = extract_clear("CLEARHEAD\nSAY: starting over");
+        assert!(c);
+        assert_eq!(rest, "SAY: starting over");
+        let (_, c) = extract_clear("SAY: done\nCLEARHEAD.");
+        assert!(c, "a trailing full stop is still the verb");
+        // ...and not when it merely appears. This is why the verb is
+        // not the word `CLEAR`: that turns up in real shell answers on a
+        // line of its own often enough to be a hazard.
+        let (rest, c) = extract_clear("CMD: clear\nSAY: CLEARHEAD wipes the log");
+        assert!(!c, "inside a sentence it is prose: {rest}");
+        let (_, c) = extract_clear("CMD: printf '\\033c'\nSAY: clear the screen");
+        assert!(!c);
     }
 
     #[test]

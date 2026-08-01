@@ -530,6 +530,7 @@ const HELP_ITEMS: &[&str] = &[
     "#@/unset               drop every pin",
     "#@/list \u{b7} #@/cancel    what's pinned \u{b7} stop a running ingest",
     "#/settings             live-tune everything below",
+    "#/clear                start the conversation over (pins and memories stay)",
     "#? <question>          ask the slow lane; fast still answers first",
     "#?/cancel \u{b7} #/cancel   stop research \u{b7} stop everything",
     "#/debug                nerd stuff: knobs you probably don't need",
@@ -1520,6 +1521,9 @@ fn reclaim_rows(
 fn slash_command(
     cmdline: &str,
     engine: Option<&Engine>,
+    ctx_log: &mut String,
+    sug_hist: &mut Vec<SugTurn>,
+    band: &mut Option<Band>,
     blocks: u64,
     commentary: &mut bool,
     memory: &mut MemoryStore,
@@ -1663,6 +1667,11 @@ fn slash_command(
                 debug: dbg_rows,
                 dbg,
             });
+            // The settings tree is a static list — nothing is being
+            // fetched. Left unloaded, a filter that matched nothing said
+            // "probing …" at the user, which is a lie about what goulash
+            // is doing and hides the real answer ("no matches").
+            m.loaded = true;
             *menu = Some(m);
             None
         }
@@ -1703,6 +1712,23 @@ fn slash_command(
             m.loaded = true;
             *menu = Some(m);
             None
+        }
+        // Start the conversation over. Pins and memories are NOT
+        // touched — those are things the user deliberately put there.
+        // This is for the accumulated transcript, which is what actually
+        // carries a stale subject from one topic into the next: unpin
+        // the file all you like, the questions and answers you asked
+        // ABOUT it stay in the log, and the model keeps reading them.
+        // There was no way to clear it at all before this.
+        ("clear", _) | ("reset", _) => {
+            let (chars, turns) = clear_session(ctx_log, sug_hist, band);
+            if let Some(eng) = engine {
+                eng.cancel_research();
+            }
+            Some(format!(
+                "session log cleared \u{2014} {chars} chars, {turns} slots \
+                 (pins and memories kept)"
+            ))
         }
         ("cancel", _) => match engine {
             Some(eng) => {
@@ -2168,6 +2194,28 @@ fn ask_slow(
         pinned,
     );
     None
+}
+
+/// Drop the running conversation: the log the model reads, the slot
+/// stack, and the band showing the last turn. Returns what was dropped,
+/// so the caller can say so — this deletes something the user can see,
+/// and doing that quietly is the one thing goulash must not do.
+///
+/// The durable transcript is not touched. `history/session-*.jsonl` has
+/// every question, answer and command, before and after; `ctx_log` is
+/// only the rolling window the prompt is built from. So this is a
+/// watermark, not an erasure: everything before it stays on disk and
+/// stops being sent.
+fn clear_session(
+    ctx_log: &mut String,
+    sug_hist: &mut Vec<SugTurn>,
+    band: &mut Option<Band>,
+) -> (usize, usize) {
+    let dropped = (ctx_log.len(), sug_hist.len());
+    ctx_log.clear();
+    sug_hist.clear();
+    *band = None;
+    dropped
 }
 
 /// Land a finding on the turn it belongs to, and record it in the
@@ -3196,6 +3244,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         // what makes them suggestible:
                                         // `CMD: #@/path ref.md` is a
                                         // normal pullable suggestion.
+                                        let had_pins = !work.list().is_empty();
                                         notice = at_command(
                                             rest,
                                             &mut work,
@@ -3204,6 +3253,55 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             engine_model.is_some(),
                                             &mut menu,
                                         );
+                                        // Unpinning the LAST pin moves the
+                                        // baseline: the questions asked
+                                        // about a file outlive the file,
+                                        // sitting in the log, still being
+                                        // read, still steering answers
+                                        // about something else. The pin's
+                                        // own text leaves the prefix by
+                                        // itself; this is the conversation
+                                        // it caused.
+                                        //
+                                        // A baseline, not an erasure. The
+                                        // model stops seeing the old turns;
+                                        // the user keeps every one of them
+                                        // — on screen, on the Down key, and
+                                        // in history/session-*.jsonl.
+                                        // `#/clear` is the one that takes
+                                        // both.
+                                        //
+                                        // Only when the set empties.
+                                        // Dropping one of three pins is
+                                        // still working, and throwing away
+                                        // the conversation mid-task would
+                                        // be worse than the residue.
+                                        //
+                                        // Not on ADD, deliberately: a pin
+                                        // is usually made to help with the
+                                        // question already in flight, and
+                                        // clearing there would delete the
+                                        // thing it was fetched for. The
+                                        // cache argument does not decide
+                                        // it — a changed pin block
+                                        // invalidates the prefix either
+                                        // way, so keeping the log is free.
+                                        if had_pins && work.list().is_empty() {
+                                            // The MODEL's view only. The
+                                            // slot stack and the band are
+                                            // the user's, and a pin coming
+                                            // off is no reason to take
+                                            // away suggestions they can
+                                            // still see and still pull.
+                                            let c = ctx_log.len();
+                                            ctx_log.clear();
+                                            rec.aside(&format!(
+                                                "[unpinned last: log baseline reset, {c} chars]"
+                                            ));
+                                            if let Some(n) = notice.as_mut() {
+                                                n.push_str(" \u{b7} log baseline reset");
+                                            }
+                                        }
                                         band = None;
                                     } else if let Some(cmdline) = body.strip_prefix('/') {
                                         // #/ commands: goulash controls, not
@@ -3212,6 +3310,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         notice = slash_command(
                                             cmdline,
                                             engine.as_ref(),
+                                            &mut ctx_log,
+                                            &mut sug_hist,
+                                            &mut band,
                                             blocks_seen,
                                             &mut commentary,
                                             &mut memory,
@@ -4400,6 +4501,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             let out = slash_command(
                                 cmdline,
                                 engine.as_ref(),
+                                &mut ctx_log,
+                                &mut sug_hist,
+                                &mut band,
                                 blocks_seen,
                                 &mut commentary,
                                 &mut memory,
@@ -4725,11 +4829,27 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         forgets,
                         pins,
                         pinclear,
+                        clearhead,
                     } => {
                         // The generation completed: the bound model earned
                         // its trust (ends probation, clears any distrust).
                         if let Some(m) = engine_model.as_ref() {
                             fuse.promote(m);
+                        }
+                        // The model was asked to forget the conversation.
+                        // Done FIRST, so this turn's own reply lands in a
+                        // fresh log rather than on top of the transcript
+                        // it just dropped. Never silent: an action taken
+                        // on the user's behalf has to be visible, and
+                        // this one deletes something.
+                        if clearhead {
+                            let (chars, turns) =
+                                clear_session(&mut ctx_log, &mut sug_hist, &mut band);
+                            browse = None;
+                            rec.aside(&format!("[cleared {chars} chars, {turns} slots]"));
+                            notice = Some(format!(
+                                "cleared the session log \u{2014} {chars} chars, {turns} slots"
+                            ));
                         }
                         // Working-context verbs. Clear first, for the same
                         // reason forgets precede remembers below: a

@@ -1101,6 +1101,9 @@ def test_engine_ollama():
     # the cursor happened to land after descending.
     os.write(mfd, b"command_first")
     time.sleep(0.3)
+    # A two-value row toggles in place; only rows with more than two
+    # open a drop-down. "A two-item list you have to scroll is worse
+    # than pressing the key again."
     os.write(mfd, b"\r")
     out = read_until(mfd, rb"command_first: off", 4.0)
     check("command_first ROW toggles, not just the notice",
@@ -1128,9 +1131,15 @@ def test_engine_ollama():
     # suggestion to show instead -- so once anything had been vended it
     # could never pass, and every command after it was typed into the
     # filter instead of the shell.
+    # "Closed" has to be read off the CHROME, not off the text: a menu
+    # that is still open puts whatever you type into its filter, and the
+    # filter is drawn on screen -- so `echo MENU-CLOSED` "appeared"
+    # either way and the check passed while the menu was wide open. The
+    # reserved-row count cannot be faked that way.
     os.write(mfd, b"echo MENU-CLOSED\r")
-    out = read_until(mfd, rb"MENU-CLOSED", 4.0)
-    check("a second esc closes the menu", saw(out, b"MENU-CLOSED"), out[-200:])
+    out = read_until(mfd, rb"80x20\+4", 4.0)
+    check("a second esc closes the menu",
+          saw(out, b"80x20+4") and saw(out, b"MENU-CLOSED"), out[-260:])
     # #/debug: the nerd-stuff drawer. It is a shortcut straight into the
     # `nerd stuff` group of the same tree — so it leads with `..`, and
     # the knob is one Down away.
@@ -1140,28 +1149,14 @@ def test_engine_ollama():
           saw(out, b"cursor_save: decsc") and saw(out, b"idle_repaint: off"), out[-400:])
     os.write(mfd, b"\x1b[B")        # off `..` onto cursor_save
     time.sleep(0.2)
-    # Enter opens a drop-down of the row's values rather than stepping
-    # one press at a time: cycling meant five presses to see five
-    # options, and it could only ever go one way round.
+    # decsc/absolute is two values, so it toggles like any other pair.
     os.write(mfd, b"\r")
-    out = read_until(mfd, rb"absolute", 4.0)
-    check("Enter opens the row's values",
-          saw(out, b"decsc") and saw(out, b"absolute"), out[-400:])
-    os.write(mfd, b"\x1b[B")        # onto `absolute`
-    time.sleep(0.25)
-    os.write(mfd, b"\r")            # choose it
     out = read_until(mfd, rb"cursor_save: absolute", 4.0)
-    check("choosing commits and returns to the group",
-          saw(out, b"cursor_save: absolute"), out[-300:])
+    check("Enter toggles a two-value knob", saw(out, b"cursor_save: absolute"), out[-300:])
     time.sleep(0.3)
-    # ... and back, so the fix stays on for the rest of the session.
-    os.write(mfd, b"\r")
-    read_until(mfd, rb"decsc", 4.0)
-    os.write(mfd, b"\x1b[A")
-    time.sleep(0.25)
-    os.write(mfd, b"\r")
+    os.write(mfd, b"\r")            # ... and back, so the fix stays on
     out = read_until(mfd, rb"cursor_save: decsc", 4.0)
-    check("the drop-down walks both ways", saw(out, b"cursor_save: decsc"), out[-300:])
+    check("and back again", saw(out, b"cursor_save: decsc"), out[-300:])
     for _ in range(6):
         os.write(mfd, b"\x1b")
         time.sleep(0.3)
