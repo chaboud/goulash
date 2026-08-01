@@ -40,7 +40,7 @@ Type `#` and a question at your prompt (it's a shell comment recorded in history
 The LLM will provide a suggested command. Press down (past the end of shell history) and it lands on your prompt for editing.  Enter runs it as your own command. 
 Goulash also reviews your shell use as you go and may leave a tip in the same spot.  Use a local model, and it's all private, all local, just like your terminal command history.
 
-### Style - Arrows: one spatial axis
+### Arrows: one spatial axis
 
 Shell history lives above your prompt; goulash's suggestions live below. Up and Down just move along the line:
 
@@ -66,9 +66,7 @@ Point the model at a file and it knows *your* tools, not just common Unix:
 ```
 
 Big files don't get truncated. A pin that overflows its budget serves a
-structure-only outline immediately (commands, flags, tables — prose
-dropped), and if an engine is up, an LLM compression cooks in the
-background and swaps in behind it. The chrome shows a percentage while
+structure-only outline immediately, and if an engine is up, an LLM compression cooks in the background and swaps in behind it. The chrome shows a percentage while
 that runs; `#@/cancel` stops it. Nothing ever waits on an ingest.
 
 The pinned text rides in every ask, and the chrome shows what's anchored
