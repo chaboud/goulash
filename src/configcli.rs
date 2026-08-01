@@ -97,15 +97,10 @@ fn rows(c: &Config) -> Vec<(String, String)> {
         (
             "engine.num_ctx".into(),
             if e.num_ctx == 0 {
-                "(negotiate)".into()
+                "(the service's own)".into()
             } else {
                 e.num_ctx.to_string()
             },
-        ),
-        ("engine.num_ctx_min".into(), e.num_ctx_min.to_string()),
-        (
-            "engine.nudge_small_context".into(),
-            e.nudge_small_context.to_string(),
         ),
         ("engine.num_keep".into(), e.num_keep.to_string()),
         ("engine.keep_alive".into(), e.keep_alive.clone()),

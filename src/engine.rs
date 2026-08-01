@@ -999,6 +999,9 @@ fn research_once(
     // want eight thousand tokens. At 30 tok/s that is four minutes of
     // ceiling to sit under, which is what made `#?` look hung.
     let budget = slow_max_tokens(cfg);
+    // Built from the same config fast uses, so the two heads are equal
+    // byte for byte — which is the entire point of sharing one.
+    let facts = crate::facts::block(&cfg.divulge, &cfg.shell);
     // `#?` came straight here, so there is no quick answer to beat and
     // no honourable way to decline: the user asked THIS lane. Amending
     // is the other case — fast has already spoken and slow only earns
@@ -1029,14 +1032,17 @@ fn research_once(
             "If you have nothing better than an obvious answer, reply exactly: PASS",
         )
     };
+    // The SAME head fast sends, including the machine facts slow has
+    // never been given — it has been reasoning about this box without
+    // being told it is a Mac, which is its own bug living in here.
     let prompt = format!(
-        "{PREAMBLE}{memories}{pinned}Session log (oldest first):\n{context}\n\
-         Current local time: {}\nQuestion: {question}\n\
-         {framing}\nAnswer in exactly this shape:\n\
+        "{}Current local time: {}\nQuestion: {question}\n\
+         DIRECTIVE: SLOW\n{framing}\nAnswer in exactly this shape:\n\
          CMD: <the command, if one applies>\n\
          <ONE short line a terminal status bar can hold>\n\
          REASON: <why, including what you ruled out \u{2014} this is kept \
          for follow-up questions, not shown>\n{bail}",
+        prompt_head(&facts, memories, pinned, context),
         local_now()
     );
     let body = cl.be.wire.body(&Gen {
@@ -1052,7 +1058,7 @@ fn research_once(
         stream: true,
         temperature: 0.3,
         max_tokens: budget,
-        num_ctx: ctx_for(cl, cfg, model),
+        num_ctx: ctx_for(cfg),
         stop: &[],
         // The SLOW lane's own dial, which follows fast unless told
         // otherwise. The lanes exist to differ here: fast has to be
@@ -1267,7 +1273,7 @@ fn digest_once(
         stream: false,
         temperature: 0.1,
         max_tokens: budget,
-        num_ctx: ctx_for(cl, cfg, model),
+        num_ctx: ctx_for(cfg),
         stop: &[],
         // Reasoning here would spend the budget arguing with itself
         // about a document it is only meant to shorten.
@@ -1402,7 +1408,7 @@ fn warm_marked(
             stream: false,
             temperature: 0.0,
             max_tokens: 1,
-            num_ctx: ctx_for(cl, cfg, model),
+            num_ctx: ctx_for(cfg),
             stop: &[],
             think: None,
             effort: None,
@@ -1643,49 +1649,27 @@ user's question. Pinned items are shown as '@label (/real/path)': use the \
 path in the parentheses, never the label, and never guess where goulash \
 keeps its own files.\n\n";
 
-#[allow(clippy::too_many_arguments)]
-/// What context to ask the provider for — usually nothing.
+/// The context window to request: whatever the user pinned, or nothing.
 ///
-/// `num_ctx` is part of a model's load identity, so naming one evicts
-/// and reloads anything loaded at a different size (measured: 206ms to
-/// reuse a warm model, 1847ms to reload it). Both engines already let
-/// the user set a default, so the polite behaviour is to take it.
+/// goulash does not dictate a window. It names a model and takes what
+/// the service gives it — ollama's own default, LM Studio's own
+/// default, whatever the user configured over there. A window is part
+/// of a model's load identity, so every value goulash invents is a
+/// reload it caused and a prefix cache it threw away, and the only
+/// value that is certainly right is the one we were not asked for.
 ///
-/// Two exceptions:
-///   * `num_ctx` set explicitly: the user wants exactly this, pinned.
-///   * the resident window is below `num_ctx_min`: too small to hold a
-///     session log, so nudge the host and eat the reload.
+/// This used to negotiate: read the resident window, echo it back, and
+/// demand a floor when nothing was loaded. It meant a cold start pinned
+/// `gemma4:e4b` at 8192 forever while a model goulash had not touched
+/// sat at 131072 — measurably worse than doing nothing, and the
+/// "nothing loaded" case had no resident value to echo anyway.
 ///
-/// Returns 0 only when there is genuinely nothing to say — no floor
-/// configured and nothing resident. The wire layer omits the option
-/// entirely at zero, which is the *only* way to say nothing: a literal
-/// `num_ctx: 0` is a request, not a silence.
-///
-/// `resident` is None when we could not ask (an OpenAI-compatible
-/// server has no residency view) — which is *not* the same as "nothing
-/// is loaded", so it falls through to asking for the floor only when we
-/// genuinely know the model is cold.
-/// The window to send, resolved against what the server actually has
-/// loaded right now.
-///
-/// Queried per generation rather than cached. A cache is exactly wrong
-/// here: if the user loads a different model behind our back, a stale
-/// value makes us send a `num_ctx` that forces the reload this function
-/// exists to avoid. One localhost round-trip is ~1ms against a
-/// generation measured in hundreds, so correctness is nearly free.
-fn ctx_for(cl: &Client, cfg: &EngineConfig, model: &str) -> usize {
-    if cfg.num_ctx > 0 {
-        return cfg.num_ctx;
-    }
-    let loaded = cl.resident();
-    // An empty list means "could not tell" as often as "nothing loaded"
-    // — an OpenAI-compatible server has no residency view at all — so it
-    // is only read as cold when the server answered and said so.
-    let found = loaded
-        .iter()
-        .find(|(n, _)| n == model || n.split(':').next() == model.split(':').next())
-        .map(|(_, c)| *c);
-    negotiate_ctx(cfg, found.filter(|c| *c > 0))
+/// `engine.num_ctx` still pins a window for anyone who wants one. If
+/// that value, or the user's own server setting, is too small for the
+/// prompt, the request fails and says so. That is the user's decision
+/// to make and theirs to see.
+fn ctx_for(cfg: &EngineConfig) -> usize {
+    cfg.num_ctx
 }
 
 /// The prompt, assembled exactly as an ask sends it.
@@ -1705,6 +1689,29 @@ fn ctx_for(cl: &Client, cfg: &EngineConfig, model: &str) -> usize {
 /// Order is most-stable-first, which is what makes prefix caching work:
 /// preamble, machine facts, memories, pinned files, session log, then
 /// the volatile tail (time, cards, question, directive).
+/// Everything both lanes send, byte for byte, in the same order.
+///
+/// This is the whole cache story. The two lanes used to assemble their
+/// own prompts and had drifted apart: fast carried a machine-facts
+/// block that slow did not, so the two diverged at the FIRST byte after
+/// the preamble, and the memories, the pins and the entire session log
+/// then sat at a different offset in each. Neither lane could reuse a
+/// byte of the other's KV cache, and they alternate on one model, so
+/// every single call re-evaluated its whole prompt.
+///
+/// Measured against ollama, three fast/slow pairs, both arms run in
+/// both orders: split prompts cost ~1.9-2.3s of prompt evaluation per
+/// call; a shared head costs 0.5-0.8s. Note the metric — the timing.
+/// `prompt_eval_count` reported the full prompt in BOTH arms (4136 vs
+/// 4301 tokens for a 3x wall-clock difference), so it cannot see this
+/// at all and a conclusion drawn from it is worthless.
+///
+/// The lanes differ only after this: the clock, the cards, the
+/// question, and a `DIRECTIVE:` line naming which lane is asking.
+fn prompt_head(facts: &str, memories: &str, pinned: &str, context: &str) -> String {
+    format!("{PREAMBLE}{facts}{memories}{pinned}Session log (oldest first):\n{context}\n")
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_prompt(
     facts: &str,
@@ -1717,8 +1724,9 @@ pub fn build_prompt(
     now: &str,
 ) -> String {
     format!(
-        "{PREAMBLE}{facts}{memories}{pinned}Session log (oldest first):\n{context}\n\
-         Current local time: {now}\n{cards}Question: {question}\n{directive}\nAnswer:"
+        "{}Current local time: {now}\n{cards}Question: {question}\n\
+         DIRECTIVE: FAST\n{directive}\nAnswer:",
+        prompt_head(facts, memories, pinned, context)
     )
 }
 
@@ -1791,28 +1799,6 @@ fn slow_max_tokens(cfg: &EngineConfig) -> usize {
     cfg.slow_lane.max_tokens.unwrap_or(cfg.max_tokens)
 }
 
-fn negotiate_ctx(cfg: &EngineConfig, resident: Option<usize>) -> usize {
-    if cfg.num_ctx > 0 {
-        return cfg.num_ctx;
-    }
-    match resident {
-        // Loaded and roomy enough: ask for exactly what is loaded.
-        //
-        // Not "say nothing". Silence is not neutral here — ollama reads
-        // an absent `num_ctx` as the model's own default (131072 for
-        // gemma4:e4b, measured) and reloads to reach it. The only
-        // request that matches the current load identity, and so the
-        // only one that does not evict, is the resident number itself.
-        Some(c) if c >= cfg.num_ctx_min => c,
-        // Loaded but too small: the expensive case, on purpose.
-        Some(_) if cfg.nudge_small_context => cfg.num_ctx_min,
-        // Too small, and we were told not to nudge: take what is there
-        // rather than reload to something we were asked not to ask for.
-        Some(c) => c,
-        // Nothing to preserve — ask for the floor.
-        None => cfg.num_ctx_min,
-    }
-}
 
 fn generate(
     cl: &Client,
@@ -1873,7 +1859,7 @@ fn generate(
         stream: cfg.stream,
         temperature: 0.2,
         max_tokens: cfg.max_tokens,
-        num_ctx: ctx_for(cl, cfg, model),
+        num_ctx: ctx_for(cfg),
         // No stop sequence. It was `["\n\n"]` here — the last path still
         // carrying it, after research/digest/warm had already dropped it.
         //
@@ -2418,79 +2404,6 @@ mod pick_tests {
 }
 
 
-#[cfg(test)]
-mod ctx_tests {
-    use super::negotiate_ctx;
-    use crate::config::EngineConfig;
-
-    fn cfg(pin: usize, floor: usize, nudge: bool) -> EngineConfig {
-        let mut c = EngineConfig::default();
-        c.num_ctx = pin;
-        c.num_ctx_min = floor;
-        c.nudge_small_context = nudge;
-        c
-    }
-
-    /// An explicit window is a pin: the user accepts the reload.
-    #[test]
-    fn a_pinned_window_always_wins() {
-        assert_eq!(negotiate_ctx(&cfg(4096, 8192, true), Some(32768)), 4096);
-        assert_eq!(negotiate_ctx(&cfg(4096, 8192, true), None), 4096);
-    }
-
-    /// The default case, and the whole point: a model is loaded with
-    /// room to spare, so keep it loaded. Sending 8192 at a model loaded
-    /// with 32768 evicts it — 206ms became 1847ms.
-    ///
-    /// "Keep it" is spelled by echoing the resident number, NOT by
-    /// staying silent. This test used to assert 0, and 0 is the one
-    /// answer that reloads: absent, ollama reaches for the model's own
-    /// default (131072 on gemma4:e4b) and evicts to get there. The
-    /// negotiation was reloading the model on every ask precisely
-    /// because it was trying not to.
-    #[test]
-    fn a_roomy_resident_model_is_asked_for_what_it_already_has() {
-        assert_eq!(negotiate_ctx(&cfg(0, 8192, true), Some(32768)), 32768);
-        assert_eq!(negotiate_ctx(&cfg(0, 8192, true), Some(8192)), 8192);
-    }
-
-    /// Too small to hold a session log: pay the reload, once.
-    #[test]
-    fn a_cramped_resident_model_is_nudged() {
-        assert_eq!(negotiate_ctx(&cfg(0, 8192, true), Some(2048)), 8192);
-    }
-
-    /// ...unless the user said never provoke a reload — in which case
-    /// we take the cramped window as it stands, and say so on the wire.
-    #[test]
-    fn nudging_can_be_refused() {
-        assert_eq!(negotiate_ctx(&cfg(0, 8192, false), Some(2048)), 2048);
-    }
-
-    /// Nothing loaded, so nothing to protect — ask for the floor.
-    #[test]
-    fn a_cold_model_gets_the_floor() {
-        assert_eq!(negotiate_ctx(&cfg(0, 8192, true), None), 8192);
-    }
-
-    /// With a resident model, the negotiated value is never 0 — because
-    /// 0 does not reach the server as a window at all, and every path
-    /// that produced it was an eviction wearing a "leave it alone" hat.
-    #[test]
-    fn a_resident_model_never_negotiates_to_silence() {
-        for floor in [0, 2048, 8192, 131072] {
-            for nudge in [true, false] {
-                for res in [512, 2048, 8192, 131072] {
-                    assert_ne!(
-                        negotiate_ctx(&cfg(0, floor, nudge), Some(res)),
-                        0,
-                        "floor={floor} nudge={nudge} resident={res}"
-                    );
-                }
-            }
-        }
-    }
-}
 
 #[cfg(test)]
 mod stream_tests {

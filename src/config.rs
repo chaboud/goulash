@@ -145,8 +145,18 @@ pub struct EngineConfig {
     /// `DEFAULT_FAVORITES`; setting it REPLACES that list rather than
     /// extending it, so `--config print` always shows what is in play.
     pub favorites: Vec<String>,
-    /// Keep the model resident between asks (ollama keep_alive; "" to
-    /// let the server unload on its own schedule).
+    /// How long the server should hold the model after an ask (ollama
+    /// `keep_alive`). Empty — the default — sends nothing, so the
+    /// server's own policy applies.
+    ///
+    /// goulash used to send `30m`, which is not a hint: it overwrites
+    /// the residency policy of a service the user configured, on every
+    /// request, and holds their VRAM for half an hour because they once
+    /// asked what time it was. If the server would rather let go after
+    /// five minutes, that is its call, and the cost of being wrong is a
+    /// slower first ask after a gap. That is a fine thing to pay.
+    ///
+    /// Set it if you want a specific TTL.
     pub keep_alive: String,
     /// Stream tokens into the bar as they arrive.
     pub stream: bool,
@@ -218,30 +228,22 @@ pub struct EngineConfig {
     /// by `context_files_max_chars` regardless; this bounds the READ.
     pub context_tree_max_files: usize,
     pub context_tree_max_depth: usize,
-    /// Context window requested from the provider; bounds KV memory
-    /// (ollama may otherwise load models at huge default contexts).
-    /// Context window to demand, **exactly**, on every request.
+    /// Context window to request, in tokens. Zero — the default — sends
+    /// nothing at all, so the service loads the model however it would
+    /// have on its own.
     ///
-    /// Zero means "negotiate" — see `num_ctx_min`. A non-zero value is a
-    /// pin: the user wants this window and accepts the reload it costs.
+    /// goulash used to negotiate this: read the resident window, echo it
+    /// back, demand a floor when nothing was loaded. Measured on one
+    /// machine a minute apart, `ollama run gemma4:e4b` gave 131072 while
+    /// goulash pinned the same model at 8192. The negotiation was not
+    /// preserving anything — it was overriding the user's own server
+    /// settings with a number goulash invented, and every engine already
+    /// has a place to set this properly.
+    ///
+    /// Set it if you want a specific window. If it is too small for the
+    /// prompt the request fails and says so, which is how a setting you
+    /// chose should behave.
     pub num_ctx: usize,
-    /// The smallest window goulash can work in.
-    ///
-    /// `num_ctx` is part of a model's *load identity*, so naming one
-    /// evicts and reloads anything already loaded at a different size —
-    /// measured 206ms to reuse a warm model against 1847ms to reload it.
-    /// Both engines already let the user choose a default (ollama has a
-    /// context slider, LM Studio stores one per model), so the polite
-    /// behaviour is to take whatever they picked and say nothing.
-    ///
-    /// The exception is a window too small to hold a session log. Then
-    /// goulash asks for this floor and eats the reload, once.
-    pub num_ctx_min: usize,
-    /// Whether to nudge a host whose loaded window is below the floor.
-    ///
-    /// Off means "never provoke a reload": goulash works in whatever is
-    /// loaded, however small, and the user owns the consequence.
-    pub nudge_small_context: bool,
     /// Leading prompt tokens the server must keep when the context
     /// overflows. It truncates from the LEFT, and the left is where the
     /// grammar and the pinned memories live — so the default is sized
@@ -372,7 +374,7 @@ impl Default for EngineConfig {
             slow_lane: LaneOverride::default(),
             model: None,
             favorites: DEFAULT_FAVORITES.iter().map(|s| s.to_string()).collect(),
-            keep_alive: "30m".to_string(),
+            keep_alive: String::new(),
             stream: true,
             context_max_chars: 12_000,
             tail_chars: 800,
@@ -393,8 +395,6 @@ impl Default for EngineConfig {
             // flat 8192 sent on every request, which silently reloaded
             // any model the user had loaded at a different size.
             num_ctx: 0,
-            num_ctx_min: 8192,
-            nudge_small_context: true,
             num_keep: 512,
             seed: -1,
             prewarm: true,
