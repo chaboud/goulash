@@ -170,6 +170,11 @@ pub enum Job {
         /// The turn this will amend. Findings land at their origin, so
         /// this is carried the whole way round.
         turn: u64,
+        /// Answering outright (`#?` came straight here) rather than
+        /// amending a fast answer. Decides whether PASS is even on the
+        /// table: with nothing above to improve on, "nothing better" is
+        /// not a considered opinion, it is silence.
+        direct: bool,
         question: String,
         context: String,
         memories: String,
@@ -366,6 +371,7 @@ impl Engine {
     pub fn research(
         &self,
         turn: u64,
+        direct: bool,
         question: String,
         context: String,
         memories: String,
@@ -373,6 +379,7 @@ impl Engine {
     ) {
         let _ = self.job_tx.send(Job::Research {
             turn,
+            direct,
             question,
             context,
             memories,
@@ -866,6 +873,7 @@ fn run_research(
     let job = pending.take().or_else(|| backfill.pop_front());
     let Some(Job::Research {
         turn,
+        direct,
         question,
         context,
         memories,
@@ -887,7 +895,7 @@ fn run_research(
     });
     notify(wr);
     let out = research_once(
-        cl, cfg, caps, model, &question, &context, &memories, &pinned,
+        cl, cfg, caps, model, &question, &context, &memories, &pinned, direct,
     );
     let _ = ev.send(Event::Idle { kind: Work::Research });
     let _ = ev.send(Event::Researching(None));
@@ -919,20 +927,41 @@ fn research_once(
     context: &str,
     memories: &str,
     pinned: &str,
+    direct: bool,
 ) -> Result<(String, Option<String>, String), String> {
-    let budget = (cfg.max_tokens * 4).clamp(512, 4096);
+    // The slow lane's own ceiling, not an inflated one. This used to be
+    // `(max_tokens * 4).clamp(512, 4096)` and then `.max(slow_max_tokens)`
+    // — so with the shipped 8192 it asked for 8192 tokens on EVERY `#?`,
+    // and a considered answer that is CMD + one line + REASON does not
+    // want eight thousand tokens. At 30 tok/s that is four minutes of
+    // ceiling to sit under, which is what made `#?` look hung.
+    let budget = slow_max_tokens(cfg);
+    // `#?` came straight here, so there is no quick answer to beat and
+    // no honourable way to decline: the user asked THIS lane. Amending
+    // is the other case — fast has already spoken and slow only earns
+    // its keep by improving on it.
+    let (framing, bail) = if direct {
+        (
+            "The user asked YOU directly rather than the quick model. \
+             Take your time and get this RIGHT.",
+            "",
+        )
+    } else {
+        (
+            "Take your time and get this RIGHT rather than fast \u{2014} another \
+             model already gave a quick answer, and yours only earns its keep \
+             by being better.",
+            "If you have nothing better than an obvious answer, reply exactly: PASS",
+        )
+    };
     let prompt = format!(
         "{PREAMBLE}{memories}{pinned}Session log (oldest first):\n{context}\n\
          Current local time: {}\nQuestion: {question}\n\
-         Take your time and get this RIGHT rather than fast \u{2014} another \
-         model already gave a quick answer, and yours only earns its keep \
-         by being better.\nAnswer in exactly this shape:\n\
+         {framing}\nAnswer in exactly this shape:\n\
          CMD: <the command, if one applies>\n\
          <ONE short line a terminal status bar can hold>\n\
          REASON: <why, including what you ruled out \u{2014} this is kept \
-         for follow-up questions, not shown>\n\
-         If you have nothing better than an obvious answer, reply exactly: \
-         PASS",
+         for follow-up questions, not shown>\n{bail}",
         local_now()
     );
     let body = cl.be.wire.body(&Gen {
@@ -940,7 +969,7 @@ fn research_once(
         prompt: &prompt,
         stream: false,
         temperature: 0.3,
-        max_tokens: budget.max(slow_max_tokens(cfg)),
+        max_tokens: budget,
         num_ctx: ctx_for(cl, cfg, model),
         stop: &[],
         // The SLOW lane's own dial, which follows fast unless told
@@ -1924,6 +1953,7 @@ mod backfill_tests {
     fn job(n: u64) -> Job {
         Job::Research {
             turn: n,
+            direct: false,
             question: String::new(),
             context: String::new(),
             memories: String::new(),

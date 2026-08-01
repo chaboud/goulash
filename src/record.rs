@@ -140,6 +140,18 @@ impl Recorder {
         self.flush();
     }
 
+    /// A researched finding arriving from the slow lane, and what
+    /// happened to it. The log recorded nothing about research at all,
+    /// so "did slow answer, and did its answer land?" was unanswerable
+    /// from outside — which is a whole class of bug you cannot even see.
+    pub fn finding(&mut self, turn: u64, cmd: Option<&str>, outcome: &str) {
+        self.write(json!({
+            "t": now_ms() as u64, "ev": "finding",
+            "turn": turn, "cmd": cmd, "outcome": outcome,
+        }));
+        self.flush();
+    }
+
     pub fn suggest(&mut self, id: u64, cmd: &str, why: &str, vendor: &str) {
         self.write(json!({
             "t": now_ms() as u64, "ev": "suggest",

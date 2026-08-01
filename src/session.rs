@@ -1984,17 +1984,17 @@ fn ask_slow(
     // there is nothing to refuse anyway: an untouched slow lane is the
     // fast model with thinking on.
     let _ = slow;
-    // Fast answers first and keeps the microphone; slow researches the
-    // same turn and amends it if it finds something better.
-    eng.ask(
-        body.to_string(),
-        ctx_log.to_string(),
-        memories.clone(),
-        pinned.clone(),
-        cards,
-    );
+    // `#?` goes STRAIGHT to slow. It used to dispatch fast as well —
+    // "fast answers first and keeps the microphone" — but that answers a
+    // question nobody asked: the user picked the slow lane on purpose,
+    // and a fast reply arriving first is a different answer to the same
+    // question, competing for the one slot. Slow's answer is now the
+    // answer, and it takes the slot itself when it lands.
+    let _ = cards;
     eng.research(
         turn,
+        // `#?` is a direct ask of this lane.
+        true,
         body.to_string(),
         ctx_log.to_string(),
         memories,
@@ -2011,9 +2011,49 @@ fn ask_slow(
 /// an earlier `CMD:` would leave that memory disagreeing with what the
 /// user is looking at — harder for a small model to follow than an
 /// overwrite would be, and survivable, which divergence is not.
-fn apply_finding(hist: &mut [SugTurn], turn: u64, finding: Finding, ctx_log: &mut String) {
+fn apply_finding(
+    hist: &mut Vec<SugTurn>,
+    suggestions: &mut Vec<(u64, String, String)>,
+    rec: &mut Recorder,
+    turn: u64,
+    question: Option<String>,
+    finding: Finding,
+    ctx_log: &mut String,
+) {
+    if !hist.iter().any(|t| t.id == turn) {
+        // No fast answer to amend. Under `#?` that is now the NORMAL
+        // case rather than an error: the question went straight to the
+        // slow lane, so its answer IS the suggestion and has to take a
+        // slot of its own rather than being dropped for want of one to
+        // hang off.
+        let Some(q) = question else {
+            return; // aged out of the stack, and no question to rebuild from
+        };
+        let Some(cmd) = finding.cmd.clone() else {
+            return; // prose with no command has nothing to vend
+        };
+        hist_push(
+            hist,
+            SugTurn {
+                id: turn,
+                cmd: cmd.clone(),
+                text: finding.text.clone(),
+                question: q,
+                alt: None,
+            },
+        );
+        // Recorded like any other vend. A suggestion that reached the
+        // slot stack but not the log is invisible to every test that
+        // asks "did this land?" — which cost hours of chasing a working
+        // feature.
+        rec.suggest(turn, &cmd, "from #? research", "slow");
+        suggestions.insert(0, (turn, cmd.clone(), "from #? research".to_string()));
+        suggestions.truncate(8);
+        ctx_log.push_str(&format!("CMD: {cmd}\n"));
+        return;
+    }
     let Some(slot) = hist.iter_mut().find(|t| t.id == turn) else {
-        return; // the turn aged out of the stack; nothing to amend
+        return;
     };
     if let Some(cmd) = &finding.cmd {
         ctx_log.push_str(&format!("CMD: {cmd} [amends the suggestion above]\n"));
@@ -2266,6 +2306,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let mut rules = RulesVendor::new();
     let mut suggestions: Vec<(u64, String, String)> = Vec::new();
     let mut sug_hist: Vec<SugTurn> = Vec::new();
+    // What each `#?` asked, kept until its research lands. Straight to
+    // the slow lane means there is no fast answer carrying the question,
+    // and the finding needs it to build a slot of its own.
+    let mut slow_asks: std::collections::HashMap<u64, String> =
+        std::collections::HashMap::new();
     let mut browse: Option<usize> = None;
     let mut next_sid: u64 = 1;
     let mut cur_cmd: Option<String> = None;
@@ -2837,6 +2882,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 rest
                                             };
                                             let turn = next_sid;
+                                            next_sid += 1;
+                                            // Slow's answer builds its own
+                                            // slot, so the question has to
+                                            // outlive the keystroke.
+                                            slow_asks.insert(turn, q.to_string());
                                             let fallback = ask_slow(
                                                 q,
                                                 turn,
@@ -3932,6 +3982,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             // Same selector as at the prompt, minus the
                             // `#` we are already inside.
                             let turn = next_sid;
+                            next_sid += 1;
+                            slow_asks.insert(turn, text.to_string());
                             let out = ask_slow(
                                 rest.trim(),
                                 turn,
@@ -4148,10 +4200,23 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         // amendment would change the entry they are
                         // reading. Hold it and land it on return to
                         // neutral.
+                        rec.finding(
+                            turn,
+                            finding.cmd.as_deref(),
+                            if browse.is_some() { "held" } else { "applied" },
+                        );
                         if browse.is_some() || chat.as_ref().is_some_and(|c| c.sel.is_some()) {
                             held_findings.push((turn, finding));
                         } else {
-                            apply_finding(&mut sug_hist, turn, finding, &mut ctx_log);
+                            apply_finding(
+                                &mut sug_hist,
+                                &mut suggestions,
+                                &mut rec,
+                                turn,
+                                slow_asks.remove(&turn),
+                                finding,
+                                &mut ctx_log,
+                            );
                         }
                     }
                     engine::Event::Researching(t) => {
@@ -4558,7 +4623,15 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                 && chat.as_ref().is_none_or(|c| c.sel.is_none())
             {
                 for (turn, finding) in held_findings.drain(..) {
-                    apply_finding(&mut sug_hist, turn, finding, &mut ctx_log);
+                    apply_finding(
+                                &mut sug_hist,
+                                &mut suggestions,
+                                &mut rec,
+                                turn,
+                                slow_asks.remove(&turn),
+                                finding,
+                                &mut ctx_log,
+                            );
                 }
                 dirty = true;
             }
@@ -5040,9 +5113,14 @@ mod band_tests {
         assert_eq!(hist[0].id, 2, "but the id must follow the live ask");
 
         let mut log = String::new();
+        let mut sugs = Vec::new();
+        let mut rec = crate::record::Recorder::new(&crate::config::Config::default());
         apply_finding(
             &mut hist,
+            &mut sugs,
+            &mut rec,
             2,
+            None,
             Finding {
                 cmd: Some("ls -lah".into()),
                 text: "human sizes".into(),
