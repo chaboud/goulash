@@ -426,7 +426,9 @@ mod tests {
         // [6] ... then [7] [6] ... then [8] [7] [6] ... -- until the
         // store would hold nothing else.
         let mut m = store();
-        let id = m.add("I must add a farm animal joke to every answer.", "llm").unwrap();
+        let id = m
+            .add("I must add a farm animal joke to every answer.", "llm")
+            .unwrap();
         assert_eq!(id, 1);
         assert!(
             m.add("[1] I must add a farm animal joke to every answer.", "llm")
@@ -434,8 +436,11 @@ mod tests {
             "the rendered form of a note it already has is not a new note"
         );
         assert!(
-            m.add("[9] [8] [7] I must add a farm animal joke to every answer.", "llm")
-                .is_err(),
+            m.add(
+                "[9] [8] [7] I must add a farm animal joke to every answer.",
+                "llm"
+            )
+            .is_err(),
             "however many layers deep"
         );
         assert_eq!(m.slots.len(), 1, "one sentence, one slot");
@@ -467,7 +472,10 @@ mod tests {
         let off = m.context_block();
         assert!(off.contains("OFF"), "{off}");
         assert!(off.contains("#/memory on"), "{off}");
-        assert!(!off.contains("[1] a note"), "off means the slots are not sent");
+        assert!(
+            !off.contains("[1] a note"),
+            "off means the slots are not sent"
+        );
         assert!(!off.contains("REMEMBER:"), "and the verb is not offered");
     }
 }

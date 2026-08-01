@@ -15,10 +15,12 @@
 //! preamble and directive — never the log, memories, or question — so a
 //! difference is attributable to wording alone.
 
+use crate::drive::{MemPos, PromptShape, Think};
 use crate::journal::{Journal, cell_key};
 use crate::load_catalog;
-use crate::sweep::{NUM_CTX, agent, await_headroom, preload_lmstudio, wire_for, run_one, seed_memory, unload_all};
-use crate::drive::{MemPos, PromptShape, Think};
+use crate::sweep::{
+    NUM_CTX, agent, await_headroom, preload_lmstudio, run_one, seed_memory, unload_all, wire_for,
+};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
@@ -199,7 +201,12 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
             println!("  [skip] {} — complete", cell.model);
             continue;
         }
-        println!("  {} ({}) — {} to go", cell.model, cell.provider, todo.len());
+        println!(
+            "  {} ({}) — {} to go",
+            cell.model,
+            cell.provider,
+            todo.len()
+        );
         await_headroom(15, Duration::from_secs(900));
         if cell.provider.starts_with("openai") {
             preload_lmstudio(&cell.model, NUM_CTX, "3m");
@@ -244,8 +251,11 @@ pub fn summarize(dir: &Path) {
     }
     let refusal = |t: &str| {
         let l = t.to_lowercase();
-        l.contains("i cannot") || l.contains("i can't") || l.contains("i am an ai") ||
-            l.contains("unable to") || l.contains("i'm not able")
+        l.contains("i cannot")
+            || l.contains("i can't")
+            || l.contains("i am an ai")
+            || l.contains("unable to")
+            || l.contains("i'm not able")
     };
 
     println!(

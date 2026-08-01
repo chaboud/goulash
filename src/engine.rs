@@ -3,9 +3,9 @@ use crate::models::{Caps, Overrides, Source, Think, caps_for};
 use crate::wire::{Backend, Client, Gen, Wire};
 use std::io::BufRead;
 use std::os::fd::OwnedFd;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// The LLM engine: a worker thread so inference latency never touches the
@@ -584,7 +584,7 @@ fn worker(
                 &mut backfill,
                 &ev,
                 &wr,
-            &preempt,
+                &preempt,
             ) {
                 continue;
             }
@@ -676,8 +676,7 @@ fn worker(
                             (v != "same as fast").then(|| v.parse().ok()).flatten();
                     }
                     "slow_thinking" => {
-                        cfg.slow_lane.thinking =
-                            (v != "same as fast").then(|| v.to_string());
+                        cfg.slow_lane.thinking = (v != "same as fast").then(|| v.to_string());
                     }
                     "slow" => cfg.slow = v,
                     "command_first" => cfg.command_first = v == "true" || v == "on",
@@ -692,8 +691,7 @@ fn worker(
                     // probe, not a field assignment.
                     "provider" => cfg.provider = v,
                     "slow_provider" => {
-                        cfg.slow_lane.provider =
-                            (v != "same as fast").then(|| v.to_string());
+                        cfg.slow_lane.provider = (v != "same as fast").then(|| v.to_string());
                     }
                     "divulge_tools" => cfg.divulge.tools = v == "true" || v == "on",
                     "divulge_path" => cfg.divulge.full_path = v == "true" || v == "on",
@@ -892,8 +890,8 @@ fn worker(
             &mut backfill,
             &ev,
             &wr,
-        &preempt,
-            ) {
+            &preempt,
+        ) {
             continue;
         }
         run_one_digest(
@@ -971,7 +969,11 @@ fn run_research(
         return true;
     };
     let _ = ev.send(Event::Researching(Some(turn)));
-    let kind = if asked { Work::Research } else { Work::Ruminate };
+    let kind = if asked {
+        Work::Research
+    } else {
+        Work::Ruminate
+    };
     let _ = ev.send(Event::Busy {
         model: model.clone(),
         warm: false,
@@ -1771,7 +1773,7 @@ pub fn directive_for(command_first: bool, proactive: bool, pin_ask: bool) -> &'s
             "Answer ONLY with PIN: / PINCLEAR lines plus at most one short \
              prose line. No CMD: line."
         }
-        
+
         // Nothing may follow `CMD: <command>` on these lines. Mimicry is
         // what teaches a small model the format, so a directive that
         // trails an em-dash and an explanation after the placeholder
@@ -1831,7 +1833,6 @@ fn slow_max_tokens(cfg: &EngineConfig) -> usize {
     cfg.slow_lane.max_tokens.unwrap_or(cfg.max_tokens)
 }
 
-
 fn generate(
     cl: &Client,
     cfg: &EngineConfig,
@@ -1874,7 +1875,14 @@ fn generate(
     // miss ever, and every later turn reads them for free.
     let facts = crate::facts::block(&cfg.divulge, &cfg.shell);
     let prompt = build_prompt(
-        &facts, memories, pinned, context, cards, question, directive, &local_now(),
+        &facts,
+        memories,
+        pinned,
+        context,
+        cards,
+        question,
+        directive,
+        &local_now(),
     );
     let _ = ev.send(Event::Prompt {
         chars: prompt.chars().count(),
@@ -2434,8 +2442,6 @@ mod pick_tests {
         );
     }
 }
-
-
 
 #[cfg(test)]
 mod stream_tests {

@@ -4,10 +4,12 @@
 //! broken cells are known rather than discovered eight hours in. Each
 //! probe isolates one setting against a fixed, tiny context.
 
+use crate::drive::Think;
 use crate::journal::{Journal, cell_key};
 use crate::load_catalog;
-use crate::sweep::{NUM_CTX, agent, await_headroom, preload_lmstudio, wire_for, run_one, shapes, unload_all};
-use crate::drive::Think;
+use crate::sweep::{
+    NUM_CTX, agent, await_headroom, preload_lmstudio, run_one, shapes, unload_all, wire_for,
+};
 use std::path::Path;
 use std::time::Duration;
 
@@ -245,7 +247,10 @@ pub fn summarize(dir: &Path) {
     if rows.is_empty() {
         return;
     }
-    println!("\n  {:<34} {:>8} {:>8} {:>7} {:>7}", "cell", "baseline", "no-stop", "fenced", "errors");
+    println!(
+        "\n  {:<34} {:>8} {:>8} {:>7} {:>7}",
+        "cell", "baseline", "no-stop", "fenced", "errors"
+    );
     let mut models: Vec<String> = rows.iter().map(|r| r.model.clone()).collect();
     models.sort();
     models.dedup();

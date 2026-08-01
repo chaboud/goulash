@@ -125,7 +125,9 @@ pub fn store(dir: &Path, key: &str, label: &str, digest: Option<&str>, card: Opt
 /// mtime, which the OS updates on write — so an entry that keeps being
 /// re-cooked keeps its place, and one pinned once a year ago goes.
 pub fn evict(dir: &Path, keep: usize) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut files: Vec<(std::time::SystemTime, PathBuf)> = rd
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "toml"))
@@ -166,7 +168,11 @@ mod tests {
         store(&d, &k, "doc.md", Some("compressed"), None);
         store(&d, &k, "doc.md", None, Some("crib"));
         let c = load(&d, &k).expect("cached");
-        assert_eq!(c.digest.as_deref(), Some("compressed"), "kept by the card write");
+        assert_eq!(
+            c.digest.as_deref(),
+            Some("compressed"),
+            "kept by the card write"
+        );
         assert_eq!(c.card.as_deref(), Some("crib"));
         // A different revision of the ingest is a different entry.
         assert!(load(&d, &key("some document", "rev2")).is_none());

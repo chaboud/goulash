@@ -33,7 +33,12 @@ fn now_ms() -> u128 {
 /// `keep` is never considered: it is the file this session is about to
 /// write, and a sweep that can delete the thing it is standing on is a
 /// sweep that eventually does.
-fn sweep(dir: &std::path::Path, max_mb: u64, max_sessions: usize, keep: &std::path::Path) -> (usize, u64) {
+fn sweep(
+    dir: &std::path::Path,
+    max_mb: u64,
+    max_sessions: usize,
+    keep: &std::path::Path,
+) -> (usize, u64) {
     let Ok(rd) = fs::read_dir(dir) else {
         return (0, 0);
     };

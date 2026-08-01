@@ -96,8 +96,7 @@ fn base() -> PathBuf {
 /// long sweep across sittings.
 pub fn load_catalog() -> Catalog {
     let p = base().join("catalog.toml");
-    let text =
-        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+    let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
     let mut cat: Catalog =
         toml::from_str(&text).unwrap_or_else(|e| panic!("parse catalog.toml: {e}"));
     // Footprint ceiling. This box has 24 GB shared with a desktop, and a
@@ -123,15 +122,17 @@ pub fn load_catalog() -> Catalog {
             let hay = format!("{} {} {}", c.model, c.provider, c.tier).to_lowercase();
             pats.iter().any(|p| hay.contains(p))
         });
-        eprintln!("catalog filtered to {} cell(s) by {filter:?}", cat.cell.len());
+        eprintln!(
+            "catalog filtered to {} cell(s) by {filter:?}",
+            cat.cell.len()
+        );
     }
     cat
 }
 
 pub fn load_scenarios() -> Scenarios {
     let p = base().join("scenarios.toml");
-    let text = std::fs::read_to_string(&p)
-        .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+    let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
     toml::from_str(&text).unwrap_or_else(|e| panic!("parse scenarios.toml: {e}"))
 }
 

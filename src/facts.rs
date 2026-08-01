@@ -17,10 +17,10 @@ use crate::config::DivulgeConfig;
 /// Tools a shell assistant actually reaches for. The full PATH set is
 /// ~1700 names and mostly noise (`kextload`, `segedit`, `prl_convert`).
 const CURATED: &[&str] = &[
-    "jq", "yq", "rg", "fd", "ag", "tree", "bat", "delta", "fzf", "gh", "git", "docker",
-    "kubectl", "tmux", "curl", "wget", "ffmpeg", "zstd", "pigz", "pv", "rsync", "gsed",
-    "gawk", "ggrep", "gdate", "gstat", "gfind", "gtar", "python3", "node", "cargo", "go",
-    "make", "cmake", "tar", "unzip",
+    "jq", "yq", "rg", "fd", "ag", "tree", "bat", "delta", "fzf", "gh", "git", "docker", "kubectl",
+    "tmux", "curl", "wget", "ffmpeg", "zstd", "pigz", "pv", "rsync", "gsed", "gawk", "ggrep",
+    "gdate", "gstat", "gfind", "gtar", "python3", "node", "cargo", "go", "make", "cmake", "tar",
+    "unzip",
 ];
 
 fn uname() -> String {
@@ -77,8 +77,16 @@ pub fn platform_line(actual_shell: &str) -> String {
 
 pub fn tools_line() -> String {
     let have = crate::vendor::path_executable_set();
-    let present: Vec<&str> = CURATED.iter().copied().filter(|t| have.contains(*t)).collect();
-    let absent: Vec<&str> = CURATED.iter().copied().filter(|t| !have.contains(*t)).collect();
+    let present: Vec<&str> = CURATED
+        .iter()
+        .copied()
+        .filter(|t| have.contains(*t))
+        .collect();
+    let absent: Vec<&str> = CURATED
+        .iter()
+        .copied()
+        .filter(|t| !have.contains(*t))
+        .collect();
     format!(
         "Installed: {}. NOT installed, never suggest: {}.\n\n",
         present.join(" "),
@@ -155,4 +163,3 @@ mod tests {
         assert!(!b.contains("NOT installed, never suggest"));
     }
 }
-

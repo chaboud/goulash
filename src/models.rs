@@ -372,10 +372,19 @@ mod tests {
     #[test]
     fn gemma4_reasons_and_gemma3_does_not() {
         // No probe: exactly what an OpenAI-compatible server gives us.
-        for m in ["gemma4:e4b", "gemma4:12b", "google/gemma-4-e4b", "google/gemma-4-12b-qat"] {
+        for m in [
+            "gemma4:e4b",
+            "gemma4:12b",
+            "google/gemma-4-e4b",
+            "google/gemma-4-12b-qat",
+        ] {
             let c = caps_for(m, None, &Overrides::new());
             assert_eq!(c.think, Think::Bool, "{m} reasons");
-            assert_eq!(c.effort_field("off"), Some("none"), "{m} must be silenceable");
+            assert_eq!(
+                c.effort_field("off"),
+                Some("none"),
+                "{m} must be silenceable"
+            );
         }
         for m in ["gemma3:4b", "gemma3:27b", "gemma:7b", "codegemma:7b"] {
             assert_eq!(caps(m).think, Think::None, "{m} does not reason");
@@ -433,7 +442,11 @@ mod tests {
     fn every_reasoning_model_can_be_told_to_stop() {
         for m in ["gemma4:e4b", "qwen3:8b", "gpt-oss:20b", "deepseek-r1:7b"] {
             let c = caps_for(m, Some(true), &Overrides::new());
-            assert_eq!(c.effort_field("off"), Some("none"), "{m} must be silenceable");
+            assert_eq!(
+                c.effort_field("off"),
+                Some("none"),
+                "{m} must be silenceable"
+            );
             assert!(c.effort_field("high").is_some(), "{m} must be askable");
         }
         // A model that cannot reason is handed nothing at all: some

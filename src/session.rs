@@ -401,10 +401,18 @@ const TEXT_ENTRY: &[&str] = &["limit"];
 /// for nothing; the terminal knobs exist to bisect a field problem in
 /// place. A menu that shows everything at once teaches nobody which
 /// three things actually matter.
-const ADVANCED: &[&str] = &["command_first", "max_tokens", "divulge_tools", "divulge_path"];
+const ADVANCED: &[&str] = &[
+    "command_first",
+    "max_tokens",
+    "divulge_tools",
+    "divulge_path",
+];
 
 const FAST_ROWS: &[(&str, &[&str])] = &[
-    ("provider", &["auto", "ollama", "openai", "openai-chat", "none"]),
+    (
+        "provider",
+        &["auto", "ollama", "openai", "openai-chat", "none"],
+    ),
     ("model", &[]),
     ("thinking", &["off", "low", "medium", "high"]),
     ("command_first", &["on", "off"]),
@@ -432,10 +440,7 @@ const CONTEXT_ROWS: &[(&str, &[&str])] = &[
     ("divulge_path", &["off", "on"]),
 ];
 
-const MEMORY_ROWS: &[(&str, &[&str])] = &[
-    ("memory", &["off", "on"]),
-    ("limit", &[]),
-];
+const MEMORY_ROWS: &[(&str, &[&str])] = &[("memory", &["off", "on"]), ("limit", &[])];
 
 const TERMINAL_ROWS: &[(&str, &[&str])] = &[
     ("cursor_save", &["decsc", "absolute"]),
@@ -457,7 +462,16 @@ const TERMINAL_ROWS: &[(&str, &[&str])] = &[
     (
         "bar_slide_ms",
         &[
-            "60", "90", "120", "150", "180", "250", "350", "500", "750", "1000",
+            "60",
+            "90",
+            "120",
+            "150",
+            "180",
+            "250",
+            "350",
+            "500",
+            "750",
+            "1000",
             "custom\u{2026}",
         ],
     ),
@@ -1232,7 +1246,9 @@ fn compose_rows(
     // answered — and a researched alternative keeps its own row below
     // rather than swapping the chip out under the cursor. Down moves
     // the highlight between the two; the layout does not move.
-    let head = here.map(|(i, _)| i).or_else(|| flat.first().map(|&(i, _)| i));
+    let head = here
+        .map(|(i, _)| i)
+        .or_else(|| flat.first().map(|&(i, _)| i));
     let head_turn = head.and_then(|i| sug_hist.get(i));
     let sug_cmd = head_turn.map(|t| format!(" {} ", t.cmd));
     let alt_selected = browsed.map(|(_, _, is_alt)| is_alt).unwrap_or(false);
@@ -1279,9 +1295,7 @@ fn compose_rows(
             flat.len(),
             if p + 1 < flat.len() { " \u{2193}" } else { "" }
         )),
-        None if sug_cmd.is_none() => {
-            Some(" # message to chat \u{b7} #/help for help ".to_string())
-        }
+        None if sug_cmd.is_none() => Some(" # message to chat \u{b7} #/help for help ".to_string()),
         None => None,
     };
     // Two things on one chip, and they are not the same kind of thing.
@@ -1317,7 +1331,11 @@ fn compose_rows(
                 // is coming". The moment it lands the chip changes under
                 // you and the wave recedes; miss that and Down still
                 // reaches it.
-                if taken { label_sgr } else { status::IDLE_CHIP_SGR },
+                if taken {
+                    label_sgr
+                } else {
+                    status::IDLE_CHIP_SGR
+                },
             ));
         }
         (None, Some(n)) => chip.push((n.as_str(), status::TEXT_SGR)),
@@ -1870,7 +1888,9 @@ fn setting_help(slow: bool, name: &str, value: &str) -> &'static str {
         ("provider", "openai") => "an OpenAI-compatible server: LM Studio, llama.cpp, vLLM",
         ("provider", "openai-chat") => "the same wire, spelled out; applies the model's template",
         ("provider", "none") => "no model at all — goulash stays out of the way",
-        ("provider", _) if slow => "send research somewhere better — a bigger box, or a hosted model",
+        ("provider", _) if slow => {
+            "send research somewhere better — a bigger box, or a hosted model"
+        }
         ("model", _) if slow => "the slow lane can use a different model, or machine",
         ("thinking", _) if slow => "let the slow lane think harder than the one that answers",
         ("max_tokens", _) if slow => "a considered answer can afford a longer one",
@@ -1900,10 +1920,14 @@ fn setting_help(slow: bool, name: &str, value: &str) -> &'static str {
         ("idle_repaint", _) => "redraw the bar unprompted after output settles",
         ("wrap_guard", _) => "skip a paint while the cursor sits in the last column",
         ("slow_via_fast", _) => "have fast re-voice slow's findings instead of showing them raw",
-        ("quote_fast_to_slow", _) => "show slow what fast answered, instead of leaving it in the log",
+        ("quote_fast_to_slow", _) => {
+            "show slow what fast answered, instead of leaving it in the log"
+        }
         ("working_bar", _) => "the sweep that says the slot holds the PREVIOUS answer",
         ("record", _) => "write a session transcript; for debugging goulash, not for you",
-        ("raw_output", _) => "also record every byte the terminal drew \u{2014} big, and rarely needed",
+        ("raw_output", _) => {
+            "also record every byte the terminal drew \u{2014} big, and rarely needed"
+        }
         ("max_mb", _) => "megabytes of transcript to keep; the oldest go first",
         ("max_sessions", _) => "how many sessions to keep, on the same rule",
         ("bar_rate_ms", _) => "ms the head spends on each cell; lower is faster, and writes more",
@@ -1996,59 +2020,65 @@ fn settings_items(v: &Live) -> Vec<String> {
     // `..` first, so leaving is the thing your hand finds without being
     // told it exists.
     std::iter::once("..".to_string())
-        .chain(g.rows.iter().filter(|(n, _)| v.debug || !ADVANCED.contains(n)).map(|(name, _)| {
-            let v = match *name {
-                // Rows repeat across the lanes on purpose — inside a
-                // group already labelled `slow lane`, a `slow_` prefix
-                // says nothing. The LANE disambiguates, not the name.
-                "mode" => slow.to_string(),
-                "provider" if in_slow => {
-                    v.slow_provider.unwrap_or("auto").to_string()
-                }
-                "provider" => v.provider.to_string(),
-                "model" if in_slow => v.slow_model.unwrap_or("auto").to_string(),
-                "model" => v.fast_model.unwrap_or("(auto)").to_string(),
-                "thinking" if in_slow => v.slow_thinking.unwrap_or("medium").to_string(),
-                "thinking" => format!("{thinking}{}", thinking_note(caps)),
-                "max_tokens" if in_slow => {
-                    v.slow_max_tokens.unwrap_or("auto").to_string()
-                }
-                "max_tokens" => max_tokens.to_string(),
-                "cursor_save" => v.dbg.cursor_save.clone(),
-                "slow_via_fast" => if v.dbg.slow_via_fast { "on" } else { "off" }.to_string(),
-                "quote_fast_to_slow" => {
-                    if v.dbg.quote_fast_to_slow { "on" } else { "off" }.to_string()
-                }
-                "working_bar" => if v.dbg.working_bar { "on" } else { "off" }.to_string(),
-                "record" => if v.rec.enabled { "on" } else { "off" }.to_string(),
-                "raw_output" => if v.rec.output { "on" } else { "off" }.to_string(),
-                "max_mb" => v.rec.max_mb.to_string(),
-                "max_sessions" => v.rec.max_sessions.to_string(),
-                "bar_rate_ms" => v.dbg.working_bar_step_ms.to_string(),
-                "bar_slide_ms" => v.dbg.working_bar_grow_ms.to_string(),
-                "idle_repaint" => if v.dbg.idle_repaint { "on" } else { "off" }.to_string(),
-                "wrap_guard" => if v.dbg.wrap_guard { "on" } else { "off" }.to_string(),
-                "divulge_tools" => if v.tools { "on" } else { "off" }.to_string(),
-                "divulge_path" => if v.full_path { "on" } else { "off" }.to_string(),
-                "commentary" => if commentary { "on" } else { "off" }.to_string(),
-                "memory" => if memory.enabled { "on" } else { "off" }.to_string(),
-                // A number, not a list — so say how to change it. Every
-                // other row here cycles on Enter; without the hint this
-                // one just looks like a row that ignores you.
-                "limit" => format!("{} (press enter to edit)", memory.limit),
-                "command_first" => if command_first { "on" } else { "off" }.to_string(),
-                "platform" => if platform { "on" } else { "off" }.to_string(),
-                "stats" => if stats { "on" } else { "off" }.to_string(),
-                _ => String::new(),
-            };
-            // `auto` alone does not say what it follows.
-            let v = if in_slow && v == "auto" {
-                "auto (follow fast)".to_string()
-            } else {
-                v
-            };
-            format!("{name}: {v}")
-        }))
+        .chain(
+            g.rows
+                .iter()
+                .filter(|(n, _)| v.debug || !ADVANCED.contains(n))
+                .map(|(name, _)| {
+                    let v = match *name {
+                        // Rows repeat across the lanes on purpose — inside a
+                        // group already labelled `slow lane`, a `slow_` prefix
+                        // says nothing. The LANE disambiguates, not the name.
+                        "mode" => slow.to_string(),
+                        "provider" if in_slow => v.slow_provider.unwrap_or("auto").to_string(),
+                        "provider" => v.provider.to_string(),
+                        "model" if in_slow => v.slow_model.unwrap_or("auto").to_string(),
+                        "model" => v.fast_model.unwrap_or("(auto)").to_string(),
+                        "thinking" if in_slow => v.slow_thinking.unwrap_or("medium").to_string(),
+                        "thinking" => format!("{thinking}{}", thinking_note(caps)),
+                        "max_tokens" if in_slow => v.slow_max_tokens.unwrap_or("auto").to_string(),
+                        "max_tokens" => max_tokens.to_string(),
+                        "cursor_save" => v.dbg.cursor_save.clone(),
+                        "slow_via_fast" => {
+                            if v.dbg.slow_via_fast { "on" } else { "off" }.to_string()
+                        }
+                        "quote_fast_to_slow" => if v.dbg.quote_fast_to_slow {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                        .to_string(),
+                        "working_bar" => if v.dbg.working_bar { "on" } else { "off" }.to_string(),
+                        "record" => if v.rec.enabled { "on" } else { "off" }.to_string(),
+                        "raw_output" => if v.rec.output { "on" } else { "off" }.to_string(),
+                        "max_mb" => v.rec.max_mb.to_string(),
+                        "max_sessions" => v.rec.max_sessions.to_string(),
+                        "bar_rate_ms" => v.dbg.working_bar_step_ms.to_string(),
+                        "bar_slide_ms" => v.dbg.working_bar_grow_ms.to_string(),
+                        "idle_repaint" => if v.dbg.idle_repaint { "on" } else { "off" }.to_string(),
+                        "wrap_guard" => if v.dbg.wrap_guard { "on" } else { "off" }.to_string(),
+                        "divulge_tools" => if v.tools { "on" } else { "off" }.to_string(),
+                        "divulge_path" => if v.full_path { "on" } else { "off" }.to_string(),
+                        "commentary" => if commentary { "on" } else { "off" }.to_string(),
+                        "memory" => if memory.enabled { "on" } else { "off" }.to_string(),
+                        // A number, not a list — so say how to change it. Every
+                        // other row here cycles on Enter; without the hint this
+                        // one just looks like a row that ignores you.
+                        "limit" => format!("{} (press enter to edit)", memory.limit),
+                        "command_first" => if command_first { "on" } else { "off" }.to_string(),
+                        "platform" => if platform { "on" } else { "off" }.to_string(),
+                        "stats" => if stats { "on" } else { "off" }.to_string(),
+                        _ => String::new(),
+                    };
+                    // `auto` alone does not say what it follows.
+                    let v = if in_slow && v == "auto" {
+                        "auto (follow fast)".to_string()
+                    } else {
+                        v
+                    };
+                    format!("{name}: {v}")
+                }),
+        )
         .collect()
 }
 
@@ -2595,8 +2625,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // What each `#?` asked, kept until its research lands. Straight to
     // the slow lane means there is no fast answer carrying the question,
     // and the finding needs it to build a slot of its own.
-    let mut slow_asks: std::collections::HashMap<u64, String> =
-        std::collections::HashMap::new();
+    let mut slow_asks: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
     // `query` and `waldorf` run BOTH lanes on one turn, and the order is
     // the point: fast answers, then slow researches with fast's answer
     // already in the log and amends the slot fast just filled. Firing
@@ -3633,7 +3662,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 if let Some((row, grp)) = m.value_row.clone() {
                                                     picked = Some((
                                                         row,
-                                                        v.split(" (").next().unwrap_or(v).to_string(),
+                                                        v.split(" (")
+                                                            .next()
+                                                            .unwrap_or(v)
+                                                            .to_string(),
                                                         grp,
                                                     ));
                                                 }
@@ -3648,8 +3680,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             match sel.as_deref() {
                                                 Some("..") => nav_up = true,
                                                 Some(t) if t.ends_with('\u{25b8}') => {
-                                                    nav_into =
-                                                        Some(t.trim_end_matches('\u{25b8}').trim().to_string());
+                                                    nav_into = Some(
+                                                        t.trim_end_matches('\u{25b8}')
+                                                            .trim()
+                                                            .to_string(),
+                                                    );
                                                 }
                                                 _ => committed = sel,
                                             }
@@ -3904,10 +3939,8 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             && listed.len() > 2
                             && !TEXT_ENTRY.contains(&name.as_str())
                         {
-                            open_values = Some((
-                                name.clone(),
-                                menu.as_ref().and_then(|m| m.group.clone()),
-                            ));
+                            open_values =
+                                Some((name.clone(), menu.as_ref().and_then(|m| m.group.clone())));
                         } else if TEXT_ENTRY.contains(&name.as_str()) {
                             if let Some(m) = menu.as_mut() {
                                 // Empty, not pre-filled with the current
@@ -4038,7 +4071,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 // accident.
                                 "record" | "raw_output" => {
                                     let on = next == "on";
-                                    let key = if name == "record" { "enabled" } else { "output" };
+                                    let key = if name == "record" {
+                                        "enabled"
+                                    } else {
+                                        "output"
+                                    };
                                     if name == "record" {
                                         rec_cfg.enabled = on;
                                     } else {
@@ -4056,8 +4093,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     } else {
                                         rec_cfg.max_sessions = n as usize;
                                     }
-                                    let _ =
-                                        Config::persist_key("record", &name, &n.to_string());
+                                    let _ = Config::persist_key("record", &name, &n.to_string());
                                 }
                                 "bar_rate_ms" | "bar_slide_ms" => {
                                     let n: u64 = next.parse().unwrap_or(60);
@@ -4226,7 +4262,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     slow_max_tokens: opt_slow_max.as_deref(),
                                     debug: opt_dbg_rows,
                                     dbg: &dbg,
-                                rec: &rec_cfg,
+                                    rec: &rec_cfg,
                                     commentary,
                                     slow: &opt_slow,
                                     thinking: &opt_thinking,
@@ -4307,7 +4343,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         let vals = row_values(grp.as_deref(), &row).unwrap_or(&[]);
                         let cur = menu
                             .as_ref()
-                            .and_then(|m| m.items.iter().find(|i| i.starts_with(&format!("{row}:"))))
+                            .and_then(|m| {
+                                m.items.iter().find(|i| i.starts_with(&format!("{row}:")))
+                            })
                             .and_then(|i| i.split_once(':'))
                             .map(|(_, v)| split_row(&format!("x:{v}")).1)
                             .unwrap_or_default();
@@ -4398,48 +4436,48 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     if (nav_into.is_some() || nav_up)
                         && let Some(m) = menu.as_mut()
                     {
-                            // Where we are about to stand. Backing out
-                            // of a group used to land on the first row of
-                            // the parent, so leaving `nerd stuff` to
-                            // check one thing and going back in meant
-                            // scrolling down to it again. Esc means
-                            // "back", and back is the row you came
-                            // through, not the top of the list.
-                            let came_from = nav_up.then(|| m.group.clone()).flatten();
-                            m.group = if nav_up { None } else { nav_into.clone() };
-                            m.filter.clear();
-                            m.cursor = 0;
-                            m.items = settings_items(&Live {
-                                group: m.group.as_deref(),
-                                platform: opt_platform,
-                                tools: opt_tools,
-                                full_path: opt_full_path,
-                                fast_model: engine_model.as_deref(),
-                                slow_model: opt_slow_model.as_deref(),
-                                provider: &opt_provider,
-                                slow_provider: opt_slow_provider.as_deref(),
-                                slow_thinking: opt_slow_thinking.as_deref(),
-                                slow_max_tokens: opt_slow_max.as_deref(),
-                                debug: opt_dbg_rows,
-                                dbg: &dbg,
-                                rec: &rec_cfg,
-                                commentary,
-                                slow: &opt_slow,
-                                thinking: &opt_thinking,
-                                max_tokens: opt_max_tokens,
-                                command_first: opt_command_first,
-                                stats: opt_stats,
-                                memory: &memory,
-                                caps: model_caps.as_ref(),
-                            });
-                            if let Some(g) = came_from
-                                && let Some(i) = m
-                                    .items
-                                    .iter()
-                                    .position(|r| r.trim_end_matches('\u{25b8}').trim() == g)
-                            {
-                                m.cursor = i;
-                            }
+                        // Where we are about to stand. Backing out
+                        // of a group used to land on the first row of
+                        // the parent, so leaving `nerd stuff` to
+                        // check one thing and going back in meant
+                        // scrolling down to it again. Esc means
+                        // "back", and back is the row you came
+                        // through, not the top of the list.
+                        let came_from = nav_up.then(|| m.group.clone()).flatten();
+                        m.group = if nav_up { None } else { nav_into.clone() };
+                        m.filter.clear();
+                        m.cursor = 0;
+                        m.items = settings_items(&Live {
+                            group: m.group.as_deref(),
+                            platform: opt_platform,
+                            tools: opt_tools,
+                            full_path: opt_full_path,
+                            fast_model: engine_model.as_deref(),
+                            slow_model: opt_slow_model.as_deref(),
+                            provider: &opt_provider,
+                            slow_provider: opt_slow_provider.as_deref(),
+                            slow_thinking: opt_slow_thinking.as_deref(),
+                            slow_max_tokens: opt_slow_max.as_deref(),
+                            debug: opt_dbg_rows,
+                            dbg: &dbg,
+                            rec: &rec_cfg,
+                            commentary,
+                            slow: &opt_slow,
+                            thinking: &opt_thinking,
+                            max_tokens: opt_max_tokens,
+                            command_first: opt_command_first,
+                            stats: opt_stats,
+                            memory: &memory,
+                            caps: model_caps.as_ref(),
+                        });
+                        if let Some(g) = came_from
+                            && let Some(i) = m
+                                .items
+                                .iter()
+                                .position(|r| r.trim_end_matches('\u{25b8}').trim() == g)
+                        {
+                            m.cursor = i;
+                        }
                     }
                     if close {
                         menu = None;
@@ -4708,18 +4746,18 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             && m.kind == MenuKind::Settings
                         {
                             m.items = settings_items(&Live {
-                                    group: m.group.as_deref(),
-                                    platform: opt_platform,
-                                    tools: opt_tools,
-                                    full_path: opt_full_path,
-                                    fast_model: engine_model.as_deref(),
-                                    slow_model: opt_slow_model.as_deref(),
-                                    provider: &opt_provider,
-                                    slow_provider: opt_slow_provider.as_deref(),
-                                    slow_thinking: opt_slow_thinking.as_deref(),
-                                    slow_max_tokens: opt_slow_max.as_deref(),
-                                    debug: opt_dbg_rows,
-                                    dbg: &dbg,
+                                group: m.group.as_deref(),
+                                platform: opt_platform,
+                                tools: opt_tools,
+                                full_path: opt_full_path,
+                                fast_model: engine_model.as_deref(),
+                                slow_model: opt_slow_model.as_deref(),
+                                provider: &opt_provider,
+                                slow_provider: opt_slow_provider.as_deref(),
+                                slow_thinking: opt_slow_thinking.as_deref(),
+                                slow_max_tokens: opt_slow_max.as_deref(),
+                                debug: opt_dbg_rows,
+                                dbg: &dbg,
                                 rec: &rec_cfg,
                                 commentary,
                                 slow: &opt_slow,
@@ -5353,13 +5391,13 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
             {
                 for (turn, finding) in held_findings.drain(..) {
                     apply_finding(
-                                &mut sug_hist,
-                                &mut rec,
-                                turn,
-                                slow_asks.remove(&turn),
-                                finding,
-                                &mut ctx_log,
-                            );
+                        &mut sug_hist,
+                        &mut rec,
+                        turn,
+                        slow_asks.remove(&turn),
+                        finding,
+                        &mut ctx_log,
+                    );
                 }
                 dirty = true;
             }
@@ -5581,7 +5619,10 @@ mod row_tests {
     /// tree end up here.
     #[test]
     fn a_parenthesised_aside_never_reaches_the_apply_path() {
-        assert_eq!(split_row("thinking: off"), ("thinking".into(), "off".into()));
+        assert_eq!(
+            split_row("thinking: off"),
+            ("thinking".into(), "off".into())
+        );
         assert_eq!(
             split_row("provider: auto (follow fast)"),
             ("provider".into(), "auto".into())
@@ -5610,8 +5651,16 @@ mod row_tests {
             ("nerd stuff", "idle_repaint", bool_word(d.idle_repaint)),
             ("nerd stuff", "wrap_guard", bool_word(d.wrap_guard)),
             ("nerd stuff", "working_bar", bool_word(d.working_bar)),
-            ("nerd stuff", "bar_rate_ms", d.working_bar_step_ms.to_string()),
-            ("nerd stuff", "bar_slide_ms", d.working_bar_grow_ms.to_string()),
+            (
+                "nerd stuff",
+                "bar_rate_ms",
+                d.working_bar_step_ms.to_string(),
+            ),
+            (
+                "nerd stuff",
+                "bar_slide_ms",
+                d.working_bar_grow_ms.to_string(),
+            ),
             ("slow lane", "mode", e.slow.clone()),
             ("fast lane", "thinking", e.thinking.clone()),
             ("fast lane", "max_tokens", e.max_tokens.to_string()),
@@ -5641,14 +5690,20 @@ mod row_tests {
             .map(|(n, _)| *n)
             .collect();
         let bounded: Vec<&str> = CUSTOM_BOUNDS.iter().map(|(n, ..)| *n).collect();
-        assert_eq!(with_custom, bounded, "custom rows must be exactly the bounded ones");
+        assert_eq!(
+            with_custom, bounded,
+            "custom rows must be exactly the bounded ones"
+        );
         for (n, lo, hi) in CUSTOM_BOUNDS {
             assert!(lo < hi, "{n}: {lo} is not below {hi}");
             // The listed presets must all be reachable by typing too, or
             // the list and the field disagree about what is legal.
             for v in row_values(Some("nerd stuff"), n).unwrap_or(&[]) {
                 if let Ok(x) = v.parse::<u64>() {
-                    assert!((*lo..=*hi).contains(&x), "{n}: preset {x} outside {lo}-{hi}");
+                    assert!(
+                        (*lo..=*hi).contains(&x),
+                        "{n}: preset {x} outside {lo}-{hi}"
+                    );
                 }
             }
         }

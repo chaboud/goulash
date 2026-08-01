@@ -732,7 +732,12 @@ impl Config {
         let mut w = Vec::new();
         let e = &self.engine;
         known(&mut w, "engine.thinking", &e.thinking, THINK);
-        known(&mut w, "engine.slow", &e.slow, &["manual", "query", "waldorf"]);
+        known(
+            &mut w,
+            "engine.slow",
+            &e.slow,
+            &["manual", "query", "waldorf"],
+        );
         known(
             &mut w,
             "debug.cursor_save",
@@ -826,8 +831,7 @@ mod persist_tests {
     /// `["engine.slow_lane"]` in it, both inert.
     #[test]
     fn a_dotted_section_nests_and_survives_a_round_trip() {
-        let mut doc: toml_edit::DocumentMut =
-            "[engine]\nmodel = \"m\"\n".parse().unwrap();
+        let mut doc: toml_edit::DocumentMut = "[engine]\nmodel = \"m\"\n".parse().unwrap();
         descend(&mut doc, "engine.slow_lane")
             .unwrap()
             .insert("thinking", toml_edit::value("medium"));
@@ -889,7 +893,9 @@ mod persist_tests {
         let t = descend(&mut doc, "engine.slow_lane").unwrap();
         t.insert("thinking", toml_edit::value("high"));
         t.insert("provider", toml_edit::value("ollama"));
-        descend(&mut doc, "engine.slow_lane").unwrap().remove("thinking");
+        descend(&mut doc, "engine.slow_lane")
+            .unwrap()
+            .remove("thinking");
         let cfg: Config = toml::from_str(&doc.to_string()).unwrap();
         assert_eq!(cfg.engine.slow_lane.thinking, None, "gone");
         assert_eq!(

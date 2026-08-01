@@ -311,7 +311,8 @@ mod tests {
         let d = tmp("replay");
         {
             let mut j = Journal::open(&d).unwrap();
-            j.record(&row("a/1", "disk is mostly target/"), "P").unwrap();
+            j.record(&row("a/1", "disk is mostly target/"), "P")
+                .unwrap();
         }
         let j = Journal::open(&d).unwrap();
         let prev = j.recorded("a/1").expect("row must be recoverable");

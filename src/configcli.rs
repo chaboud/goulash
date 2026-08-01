@@ -132,13 +132,22 @@ fn rows(c: &Config) -> Vec<(String, String)> {
         ),
         ("status.band_rows".into(), c.status.band_rows.to_string()),
         ("status.stats".into(), c.status.stats.to_string()),
-        ("debug.idle_repaint".into(), c.debug.idle_repaint.to_string()),
+        (
+            "debug.idle_repaint".into(),
+            c.debug.idle_repaint.to_string(),
+        ),
         ("debug.cursor_save".into(), c.debug.cursor_save.clone()),
         ("record.enabled".into(), c.record.enabled.to_string()),
         ("engine.stream".into(), e.stream.to_string()),
         ("engine.seed".into(), e.seed.to_string()),
-        ("engine.backfill_abandoned".into(), e.backfill_abandoned.to_string()),
-        ("engine.context_max_chars".into(), e.context_max_chars.to_string()),
+        (
+            "engine.backfill_abandoned".into(),
+            e.backfill_abandoned.to_string(),
+        ),
+        (
+            "engine.context_max_chars".into(),
+            e.context_max_chars.to_string(),
+        ),
         ("engine.tail_chars".into(), e.tail_chars.to_string()),
         (
             "engine.context_files_max_chars".into(),
@@ -198,9 +207,15 @@ fn rows(c: &Config) -> Vec<(String, String)> {
         ("status.rows".into(), c.status.rows.to_string()),
         ("status.band".into(), c.status.band.to_string()),
         ("status.menu_rows".into(), c.status.menu_rows.to_string()),
-        ("shell.auto_integrate".into(), c.shell.auto_integrate.to_string()),
+        (
+            "shell.auto_integrate".into(),
+            c.shell.auto_integrate.to_string(),
+        ),
         ("record.output".into(), c.record.output.to_string()),
-        ("debug.show_advanced".into(), c.debug.show_advanced.to_string()),
+        (
+            "debug.show_advanced".into(),
+            c.debug.show_advanced.to_string(),
+        ),
         ("debug.wrap_guard".into(), c.debug.wrap_guard.to_string()),
         ("debug.working_bar".into(), c.debug.working_bar.to_string()),
         (
@@ -215,7 +230,10 @@ fn rows(c: &Config) -> Vec<(String, String)> {
             "debug.working_bar_grow_ms".into(),
             c.debug.working_bar_grow_ms.to_string(),
         ),
-        ("debug.slow_via_fast".into(), c.debug.slow_via_fast.to_string()),
+        (
+            "debug.slow_via_fast".into(),
+            c.debug.slow_via_fast.to_string(),
+        ),
         (
             "debug.quote_fast_to_slow".into(),
             c.debug.quote_fast_to_slow.to_string(),
@@ -234,7 +252,13 @@ fn print_effective() -> i32 {
     let text = std::fs::read_to_string(&p).unwrap_or_default();
     let mine = set_keys(&text);
     let c = Config::load();
-    let mark = |k: &str| if mine.iter().any(|m| m == k) { "you" } else { "default" };
+    let mark = |k: &str| {
+        if mine.iter().any(|m| m == k) {
+            "you"
+        } else {
+            "default"
+        }
+    };
 
     println!("# {}\n", p.display());
     let rows = rows(&c);
@@ -282,8 +306,7 @@ fn set(key: &str, value: &str) -> i32 {
             .into_iter()
             .map(|(k, _)| k)
             .filter(|k| {
-                k.split('.').next_back() == key.split('.').next_back()
-                    || k.starts_with(parts[0])
+                k.split('.').next_back() == key.split('.').next_back() || k.starts_with(parts[0])
             })
             .take(6)
             .collect();
@@ -306,19 +329,20 @@ fn set(key: &str, value: &str) -> i32 {
     }
     cands.push(toml_edit::Value::from(value));
 
-    let write_at = |doc: &mut toml_edit::DocumentMut, v: toml_edit::Value| -> Result<String, String> {
-        let mut node = doc.as_table_mut();
-        for seg in &parts[..parts.len() - 1] {
-            if node.get(seg).is_none() {
-                node[seg] = toml_edit::table();
+    let write_at =
+        |doc: &mut toml_edit::DocumentMut, v: toml_edit::Value| -> Result<String, String> {
+            let mut node = doc.as_table_mut();
+            for seg in &parts[..parts.len() - 1] {
+                if node.get(seg).is_none() {
+                    node[seg] = toml_edit::table();
+                }
+                node = node[seg]
+                    .as_table_mut()
+                    .ok_or_else(|| format!("{seg} is not a table"))?;
             }
-            node = node[seg]
-                .as_table_mut()
-                .ok_or_else(|| format!("{seg} is not a table"))?;
-        }
-        node[parts[parts.len() - 1]] = toml_edit::value(v);
-        Ok(doc.to_string())
-    };
+            node[parts[parts.len() - 1]] = toml_edit::value(v);
+            Ok(doc.to_string())
+        };
 
     let mut last_err = String::new();
     let mut good: Option<String> = None;
@@ -386,7 +410,10 @@ fn reset(key: Option<&str>) -> i32 {
             let _ = std::fs::write(&bak, &text);
             match std::fs::remove_file(&p) {
                 Ok(_) => {
-                    println!("reset all settings to defaults (old file kept at {})", bak.display());
+                    println!(
+                        "reset all settings to defaults (old file kept at {})",
+                        bak.display()
+                    );
                     0
                 }
                 Err(e) => {

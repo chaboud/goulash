@@ -200,7 +200,12 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
             median(ok.iter().filter_map(|r| r.prompt_eval_ms).collect())
                 .map(|v| format!("{v}ms"))
                 .unwrap_or("-".into()),
-            pct(rs.iter().filter(|r| outcome(r) != Outcome::Answered && r.error.is_none()).count(), rs.len()),
+            pct(
+                rs.iter()
+                    .filter(|r| outcome(r) != Outcome::Answered && r.error.is_none())
+                    .count(),
+                rs.len()
+            ),
             pct(rs.iter().filter(|r| r.prose_lines <= 1).count(), rs.len()),
             pct(rs.iter().filter(|r| r.has_cmd_tag).count(), rs.len()),
         ));
@@ -288,7 +293,11 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();
         for r in &failed {
             *seen
-                .entry(format!("{} — {}", r.model, r.error.clone().unwrap_or_default()))
+                .entry(format!(
+                    "{} — {}",
+                    r.model,
+                    r.error.clone().unwrap_or_default()
+                ))
                 .or_default() += 1;
         }
         for (what, n) in seen {
@@ -353,7 +362,10 @@ pub fn blind(dir: &Path) -> std::io::Result<()> {
     let mut key_map = String::new();
     for (step, rs) in &by_step {
         let question = rs.first().map(|r| r.question.as_str()).unwrap_or("");
-        out.push_str(&format!("## {step}\n\n> {}\n\n", question.replace('\n', " ")));
+        out.push_str(&format!(
+            "## {step}\n\n> {}\n\n",
+            question.replace('\n', " ")
+        ));
         // Deterministic shuffle: order by blind id, which is a hash of the
         // cell key and therefore uncorrelated with catalog order.
         let mut sorted = rs.clone();
@@ -476,8 +488,7 @@ pub fn grade(dir: &Path) -> std::io::Result<()> {
         );
         return Ok(());
     }
-    let by_id: BTreeMap<String, &Row> =
-        rows.iter().map(|r| (blind_id(&r.key), r)).collect();
+    let by_id: BTreeMap<String, &Row> = rows.iter().map(|r| (blind_id(&r.key), r)).collect();
     let _ = &by_id;
 
     let mut joined: Vec<(&Grade, &Row)> = Vec::new();
@@ -524,7 +535,9 @@ pub fn grade(dir: &Path) -> std::io::Result<()> {
     let mut ranked: Vec<_> = per_model.iter().collect();
     ranked.sort_by(|a, b| {
         let s = |gs: &Vec<&Grade>| mean(&gs.iter().map(|g| g.correct).collect::<Vec<_>>());
-        s(b.1).partial_cmp(&s(a.1)).unwrap_or(std::cmp::Ordering::Equal)
+        s(b.1)
+            .partial_cmp(&s(a.1))
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
     for ((model, provider), gs) in ranked {
         out.push_str(&format!(

@@ -30,10 +30,12 @@
 //! "exonerated": it is harmless for ordinary output, and fatal the moment
 //! reasoning is switched on.
 
+use crate::drive::{MemPos, PromptShape, Think};
 use crate::journal::{Journal, cell_key};
 use crate::load_catalog;
-use crate::sweep::{NUM_CTX, agent, await_headroom, preload_lmstudio, wire_for, run_one, seed_memory, unload_all};
-use crate::drive::{MemPos, PromptShape, Think};
+use crate::sweep::{
+    NUM_CTX, agent, await_headroom, preload_lmstudio, run_one, seed_memory, unload_all, wire_for,
+};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
@@ -172,13 +174,7 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
     for c in &catalog.cell {
         for p in &ps {
             for (qid, _) in QUESTIONS {
-                planned.push(cell_key(
-                    "pass-t",
-                    &c.provider,
-                    &c.model,
-                    p.id,
-                    qid,
-                ));
+                planned.push(cell_key("pass-t", &c.provider, &c.model, p.id, qid));
             }
         }
     }
@@ -204,7 +200,12 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
             println!("  [skip] {} — complete", cell.model);
             continue;
         }
-        println!("  {} ({}) — {} to go", cell.model, cell.provider, todo.len());
+        println!(
+            "  {} ({}) — {} to go",
+            cell.model,
+            cell.provider,
+            todo.len()
+        );
         await_headroom(15, Duration::from_secs(900));
         if cell.provider.starts_with("openai") {
             preload_lmstudio(&cell.model, NUM_CTX, "3m");
@@ -276,7 +277,10 @@ pub fn summarize(dir: &Path) {
                 .filter(|r| r.stop_reason.as_deref() == Some("length"))
                 .count(),
             med(rs.iter().filter_map(|r| r.eval_tokens).collect()),
-            med(answered.iter().map(|r| r.text.chars().count() as u64).collect()),
+            med(answered
+                .iter()
+                .map(|r| r.text.chars().count() as u64)
+                .collect()),
         );
     }
     println!(

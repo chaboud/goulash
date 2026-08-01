@@ -166,7 +166,6 @@ impl Client {
     pub fn models_url(&self) -> String {
         self.be.wire.models_url(&self.be.host)
     }
-
 }
 
 /// What one generation cost, as the server measured it.
@@ -275,7 +274,6 @@ impl Wire {
             Wire::LmStudio => None,
         }
     }
-
 
     /// Read the terminal event's accounting, if this wire has one.
     ///
@@ -709,7 +707,10 @@ mod tests {
         assert!((g.tokens_per_second - 32.0).abs() < 0.01);
         // ollama cannot separate reasoning from output; 0 is honest.
         assert_eq!(g.reasoning_tokens, 0);
-        assert_eq!(Wire::Ollama.gen_stats(r#"{"done":false,"response":"x"}"#), None);
+        assert_eq!(
+            Wire::Ollama.gen_stats(r#"{"done":false,"response":"x"}"#),
+            None
+        );
 
         // The OpenAI wires: usage arrives in its own chunk before
         // `data: [DONE]`, with `choices` empty — the shape the spec
@@ -740,7 +741,10 @@ mod tests {
         }
         g.stream = false;
         for w in [Wire::OpenAi, Wire::OpenAiChat] {
-            assert!(w.body(&g).get("stream_options").is_none(), "{w:?} not streaming");
+            assert!(
+                w.body(&g).get("stream_options").is_none(),
+                "{w:?} not streaming"
+            );
         }
     }
 

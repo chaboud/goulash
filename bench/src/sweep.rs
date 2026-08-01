@@ -5,12 +5,12 @@
 //! builds it. That is the only way prefix-cache behavior is observable,
 //! and the same run doubles as the quality corpus.
 
+use crate::drive::{GenRequest, MemPos, PromptShape, Think, generate, shape_prompt};
 use crate::journal::{Journal, Row, cell_key};
 use crate::{Cell, NOW, Step, load_catalog, load_scenarios};
-use crate::drive::{GenRequest, MemPos, PromptShape, Think, generate, shape_prompt};
-use goulash::wire::Wire;
 use goulash::engine::{extract_memory_ops, split_answer};
 use goulash::memory::MemoryStore;
+use goulash::wire::Wire;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
@@ -33,14 +33,16 @@ pub fn budget() -> usize {
     goulash::config::Config::default().engine.max_tokens
 }
 
-
 /// Long-context mode. The shipped budget keeps prompts under ~3k tokens —
 /// 36% of an 8192 window — so nothing in the normal corpus tests what
 /// happens when a session log actually gets big, which is the steady
 /// state of a terminal left open all day. These raise the ceiling so the
 /// bulk session can push past 20k tokens.
 fn env_usize(k: &str, default: usize) -> usize {
-    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(k)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 pub fn num_ctx() -> usize {
     env_usize("GOULASH_BENCH_NUM_CTX", 8192)
@@ -66,13 +68,15 @@ pub fn shapes() -> Vec<(&'static str, PromptShape)> {
     let all = all_shapes();
     match std::env::var("GOULASH_BENCH_SHAPES") {
         Ok(f) => {
-            let want: Vec<String> =
-                f.split(',').map(|s| s.trim().to_uppercase()).collect();
+            let want: Vec<String> = f.split(',').map(|s| s.trim().to_uppercase()).collect();
             let kept: Vec<_> = all
                 .into_iter()
                 .filter(|(n, _)| want.iter().any(|w| w == n))
                 .collect();
-            eprintln!("shapes restricted to {:?}", kept.iter().map(|(n, _)| *n).collect::<Vec<_>>());
+            eprintln!(
+                "shapes restricted to {:?}",
+                kept.iter().map(|(n, _)| *n).collect::<Vec<_>>()
+            );
             kept
         }
         Err(_) => all,
@@ -84,25 +88,33 @@ pub fn shapes() -> Vec<(&'static str, PromptShape)> {
 /// prefix — static per machine, so cached once for the life of a session
 /// and unable to perturb the session-log prefix behind them.
 fn platform_line() -> String {
-    let os = std::process::Command::new("uname").arg("-s").output().ok()
+    let os = std::process::Command::new("uname")
+        .arg("-s")
+        .output()
+        .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string()).unwrap_or_else(|| "unknown".into());
-    let shell = std::env::var("SHELL").ok()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let shell = std::env::var("SHELL")
+        .ok()
         .and_then(|s| s.rsplit('/').next().map(String::from))
         .unwrap_or_else(|| "sh".into());
     if os == "Darwin" {
-        format!("Environment: macOS ({os}), BSD userland, {shell} shell. BSD differs \
+        format!(
+            "Environment: macOS ({os}), BSD userland, {shell} shell. BSD differs \
 from GNU: 'du -d N' not '--max-depth', 'sed -i \"\"' not 'sed -i', 'date -v' not \
-'date -d', 'stat -f' not 'stat -c'. BSD grep has NO -P.\n\n")
+'date -d', 'stat -f' not 'stat -c'. BSD grep has NO -P.\n\n"
+        )
     } else {
         format!("Environment: {os}, GNU userland, {shell} shell.\n\n")
     }
 }
 
 const CURATED: &[&str] = &[
-    "jq","yq","rg","fd","ag","tree","bat","delta","fzf","gh","git","docker","kubectl",
-    "tmux","curl","wget","ffmpeg","zstd","pigz","pv","rsync","gsed","gawk","ggrep",
-    "gdate","gstat","gfind","gtar","python3","node","cargo","go","make","cmake","tar","unzip",
+    "jq", "yq", "rg", "fd", "ag", "tree", "bat", "delta", "fzf", "gh", "git", "docker", "kubectl",
+    "tmux", "curl", "wget", "ffmpeg", "zstd", "pigz", "pv", "rsync", "gsed", "gawk", "ggrep",
+    "gdate", "gstat", "gfind", "gtar", "python3", "node", "cargo", "go", "make", "cmake", "tar",
+    "unzip",
 ];
 
 /// Everything on PATH, not a curated slice. ~1700 names, ~3900 tokens —
@@ -113,15 +125,30 @@ const CURATED: &[&str] = &[
 fn full_path_line() -> String {
     let mut have: Vec<String> = goulash::vendor::path_executable_set().into_iter().collect();
     have.sort();
-    format!("Every executable on PATH ({} total): {}.\n\n", have.len(), have.join(" "))
+    format!(
+        "Every executable on PATH ({} total): {}.\n\n",
+        have.len(),
+        have.join(" ")
+    )
 }
 
 fn tools_line() -> String {
     let have = goulash::vendor::path_executable_set();
-    let present: Vec<&str> = CURATED.iter().copied().filter(|t| have.contains(*t)).collect();
-    let absent: Vec<&str> = CURATED.iter().copied().filter(|t| !have.contains(*t)).collect();
-    format!("Installed: {}. NOT installed, never suggest: {}.\n\n",
-            present.join(" "), absent.join(" "))
+    let present: Vec<&str> = CURATED
+        .iter()
+        .copied()
+        .filter(|t| have.contains(*t))
+        .collect();
+    let absent: Vec<&str> = CURATED
+        .iter()
+        .copied()
+        .filter(|t| !have.contains(*t))
+        .collect();
+    format!(
+        "Installed: {}. NOT installed, never suggest: {}.\n\n",
+        present.join(" "),
+        absent.join(" ")
+    )
 }
 
 fn leak(s: String) -> &'static str {
@@ -200,7 +227,11 @@ fn all_shapes() -> Vec<(&'static str, PromptShape)> {
                 divulge: Default::default(),
                 memories: MemPos::BeforeLog,
                 command_first: true,
-                preamble: Some(leak(format!("{}{}{base}", platform_line(), full_path_line()))),
+                preamble: Some(leak(format!(
+                    "{}{}{base}",
+                    platform_line(),
+                    full_path_line()
+                ))),
                 directive: None,
             },
         ),
@@ -233,7 +264,8 @@ impl SessionLog {
     }
 
     pub fn block(&mut self, cmd: &str, exit: i32, hms: &str, tail: &str) {
-        self.text.push_str(&format!("$ {cmd} [exit {exit}, {hms}]\n"));
+        self.text
+            .push_str(&format!("$ {cmd} [exit {exit}, {hms}]\n"));
         let t: String = tail.chars().take(tail_chars()).collect();
         if !t.trim().is_empty() {
             self.text.push_str(t.trim());
@@ -419,7 +451,9 @@ pub fn await_headroom(min_free_pct: u64, max_wait: Duration) -> u64 {
 /// System-wide free memory percentage, via `memory_pressure`. None if the
 /// tool is unavailable (non-macOS), in which case the caller proceeds.
 fn free_pct() -> Option<u64> {
-    let out = std::process::Command::new("memory_pressure").output().ok()?;
+    let out = std::process::Command::new("memory_pressure")
+        .output()
+        .ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     text.lines()
         .find(|l| l.contains("free percentage"))
@@ -468,7 +502,10 @@ pub fn preload_lmstudio(model: &str, num_ctx: usize, keep_alive: &str) {
         }
         Ok(o) => eprintln!(
             "    ! preload {model} failed: {}",
-            String::from_utf8_lossy(&o.stderr).lines().next().unwrap_or("")
+            String::from_utf8_lossy(&o.stderr)
+                .lines()
+                .next()
+                .unwrap_or("")
         ),
         Err(e) => eprintln!("    ! preload {model}: {e}"),
     }
@@ -649,7 +686,9 @@ fn run_session(
                     apply_memory_ops(&mut memory, &prev.remembers, &prev.forgets);
                     let one_line = prev.text.split_whitespace().collect::<Vec<_>>().join(" ");
                     if !prev.empty
-                        && !one_line.trim_matches(['.', '!']).eq_ignore_ascii_case("PASS")
+                        && !one_line
+                            .trim_matches(['.', '!'])
+                            .eq_ignore_ascii_case("PASS")
                     {
                         log.answer(&one_line, prev.command.as_deref());
                     }
@@ -677,7 +716,10 @@ fn run_session(
                 if let Some((text, command, remembers, forgets)) = parsed {
                     apply_memory_ops(&mut memory, &remembers, &forgets);
                     let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                    if !one_line.trim_matches(['.', '!']).eq_ignore_ascii_case("PASS") {
+                    if !one_line
+                        .trim_matches(['.', '!'])
+                        .eq_ignore_ascii_case("PASS")
+                    {
                         log.answer(&one_line, command.as_deref());
                     }
                 }
@@ -700,8 +742,7 @@ pub fn run(dir: &Path) -> std::io::Result<()> {
         .iter()
         .filter(|s| s.kind == "ask" || s.kind == "proactive")
         .collect();
-    let mut sessions: Vec<String> =
-        scenarios.step.iter().map(|s| s.session.clone()).collect();
+    let mut sessions: Vec<String> = scenarios.step.iter().map(|s| s.session.clone()).collect();
     sessions.sort();
     sessions.dedup();
     let mut planned: Vec<String> = Vec::new();
@@ -793,9 +834,8 @@ mod tests {
             after.lines().next().unwrap_or("")
         );
 
-        let shared = |a: &str, b: &str| {
-            a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count()
-        };
+        let shared =
+            |a: &str, b: &str| a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count();
 
         let s1 = PromptShape {
             memories: MemPos::BeforeLog,
@@ -840,7 +880,10 @@ mod tests {
     /// Resume must reach the same memory state, or later prompts differ.
     #[test]
     fn replayed_ops_reproduce_the_same_block() {
-        let ops = [(vec!["one".to_string()], vec![]), (vec!["two".to_string()], vec![1u64])];
+        let ops = [
+            (vec!["one".to_string()], vec![]),
+            (vec!["two".to_string()], vec![1u64]),
+        ];
         let build = || {
             let mut m = seed_memory();
             for (rem, forg) in &ops {

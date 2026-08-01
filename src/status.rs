@@ -45,13 +45,13 @@ pub const WORKING_SLOW_SGR: &str = "\x1b[0;93;48;5;238m";
 /// steps down one level, so the *pattern* moves continuously even though
 /// each glyph still snaps to its cell.
 const TRAIL_FAST: [&str; 7] = [
-    "\x1b[0;1;97;48;5;39m",  // head: white on bright cyan
+    "\x1b[0;1;97;48;5;39m", // head: white on bright cyan
     "\x1b[0;1;97;48;5;32m",
     "\x1b[0;96;48;5;31m",
     "\x1b[0;96;48;5;24m",
     "\x1b[0;36;48;5;23m",
     "\x1b[0;36;48;5;238m",
-    "\x1b[0;90;48;5;238m",   // tail, fading into the chip
+    "\x1b[0;90;48;5;238m", // tail, fading into the chip
 ];
 const TRAIL_SLOW: [&str; 7] = [
     "\x1b[0;1;97;48;5;214m", // head: white on gold
@@ -437,7 +437,11 @@ mod tests {
 
     #[test]
     fn tip_yields_when_tight() {
-        let row = rule_row(&[(" a long left chip ", SUGGEST_SGR)], Some(" a long tip "), 24);
+        let row = rule_row(
+            &[(" a long left chip ", SUGGEST_SGR)],
+            Some(" a long tip "),
+            24,
+        );
         assert!(!row.contains("tip"));
         assert_eq!(width(&row), 24);
     }
@@ -513,13 +517,19 @@ mod tests {
                 .unwrap()
         };
         let heads: Vec<usize> = (0..14).map(|i| head_at(GROW + 20 + i * STEP)).collect();
-        assert!(heads.windows(2).any(|w| w[1] > w[0]), "sweeps out: {heads:?}");
+        assert!(
+            heads.windows(2).any(|w| w[1] > w[0]),
+            "sweeps out: {heads:?}"
+        );
         assert!(heads.windows(2).any(|w| w[1] < w[0]), "and back: {heads:?}");
         assert!(heads.iter().all(|h| *h <= 4), "stays inside: {heads:?}");
 
         // Shrinking is monotone and terminates.
         let widths: Vec<usize> = (0..8).map(|i| width(i * 30, false)).collect();
-        assert!(widths.windows(2).all(|w| w[1] <= w[0]), "monotone: {widths:?}");
+        assert!(
+            widths.windows(2).all(|w| w[1] <= w[0]),
+            "monotone: {widths:?}"
+        );
         assert_eq!(bar(10_000, false), None, "the shrink must END");
 
         // The dials are honoured, not decorative.
@@ -539,7 +549,11 @@ mod tests {
 
     #[test]
     fn a_two_tone_chip_keeps_its_width() {
-        let one = rule_row(&[(" \u{2193} suggestion: du -sh * ", SUGGEST_SGR)], None, 60);
+        let one = rule_row(
+            &[(" \u{2193} suggestion: du -sh * ", SUGGEST_SGR)],
+            None,
+            60,
+        );
         let two = rule_row(
             &[
                 (" \u{2193} suggestion: ", SUGGEST_SGR),
@@ -560,7 +574,10 @@ mod tests {
     fn a_long_command_clips_without_eating_the_label() {
         let long = "x".repeat(200);
         let row = rule_row(
-            &[(" \u{2193} suggestion: ", SUGGEST_SGR), (&long, IDLE_CHIP_SGR)],
+            &[
+                (" \u{2193} suggestion: ", SUGGEST_SGR),
+                (&long, IDLE_CHIP_SGR),
+            ],
             None,
             40,
         );
@@ -584,13 +601,30 @@ mod tests {
     /// left one is dim.
     #[test]
     fn each_lane_animates_only_its_own_dot() {
-        let fast_frames: Vec<char> = (0..4).map(|p| lane_dots(true, false, p).chars().filter(|c| "\u{b7}\u{2022}\u{25cf}".contains(*c)).next().unwrap()).collect();
-        assert!(fast_frames.iter().collect::<std::collections::HashSet<_>>().len() > 1,
-                "fast dot must change over a cycle: {fast_frames:?}");
+        let fast_frames: Vec<char> = (0..4)
+            .map(|p| {
+                lane_dots(true, false, p)
+                    .chars()
+                    .filter(|c| "\u{b7}\u{2022}\u{25cf}".contains(*c))
+                    .next()
+                    .unwrap()
+            })
+            .collect();
+        assert!(
+            fast_frames
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                > 1,
+            "fast dot must change over a cycle: {fast_frames:?}"
+        );
 
         for p in 0..4 {
             let only_slow = lane_dots(false, true, p);
-            let cells: Vec<char> = only_slow.chars().filter(|c| "\u{b7}\u{2022}\u{25cf}".contains(*c)).collect();
+            let cells: Vec<char> = only_slow
+                .chars()
+                .filter(|c| "\u{b7}\u{2022}\u{25cf}".contains(*c))
+                .collect();
             assert_eq!(cells.len(), 2);
             assert_eq!(cells[0], '\u{b7}', "left dot idle while only slow works");
         }
@@ -600,11 +634,15 @@ mod tests {
     /// keeps that readable as two things rather than one wide blink.
     #[test]
     fn simultaneous_lanes_are_out_of_phase() {
-        let differ = (0..4).filter(|p| {
-            let c: Vec<char> = lane_dots(true, true, *p).chars()
-                .filter(|c| "\u{b7}\u{2022}\u{25cf}".contains(*c)).collect();
-            c[0] != c[1]
-        }).count();
+        let differ = (0..4)
+            .filter(|p| {
+                let c: Vec<char> = lane_dots(true, true, *p)
+                    .chars()
+                    .filter(|c| "\u{b7}\u{2022}\u{25cf}".contains(*c))
+                    .collect();
+                c[0] != c[1]
+            })
+            .count();
         assert!(differ >= 2, "dots should disagree for most of the cycle");
     }
 
@@ -615,7 +653,16 @@ mod tests {
     fn chrome_row_reserves_the_dots_without_counting_their_escapes() {
         let size = Size { rows: 24, cols: 80 };
         for (f, sl) in [(false, false), (true, false), (false, true), (true, true)] {
-            let row = chrome_row(size, 20, 4, "zsh", "prompt", None, None, &lane_dots(f, sl, 1));
+            let row = chrome_row(
+                size,
+                20,
+                4,
+                "zsh",
+                "prompt",
+                None,
+                None,
+                &lane_dots(f, sl, 1),
+            );
             assert_eq!(width(&row), 79, "must stop one short of the real edge");
         }
     }
@@ -624,7 +671,16 @@ mod tests {
     #[test]
     fn dots_survive_a_narrow_terminal() {
         let size = Size { rows: 24, cols: 20 };
-        let row = chrome_row(size, 16, 4, "zsh", "prompt", None, None, &lane_dots(true, true, 1));
+        let row = chrome_row(
+            size,
+            16,
+            4,
+            "zsh",
+            "prompt",
+            None,
+            None,
+            &lane_dots(true, true, 1),
+        );
         assert_eq!(width(&row), 19);
         assert!(row.chars().any(|c| c == '\u{2022}' || c == '\u{25cf}'));
     }
@@ -644,7 +700,12 @@ mod tests {
     /// When there is no room, the note goes rather than the setting.
     #[test]
     fn a_tight_row_drops_the_note_not_the_value() {
-        let row = pad_row_with_note(" thinking: off", "a very long explanation indeed", 24, TEXT_SGR);
+        let row = pad_row_with_note(
+            " thinking: off",
+            "a very long explanation indeed",
+            24,
+            TEXT_SGR,
+        );
         assert_eq!(width(&row), 24);
         assert!(row.contains("thinking: off"), "the value survives");
         assert!(!row.contains("explanation"), "the note yields");
