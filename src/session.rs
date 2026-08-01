@@ -363,6 +363,7 @@ const TERMINAL_ROWS: &[(&str, &[&str])] = &[
     ("cursor_save", &["decsc", "absolute"]),
     ("idle_repaint", &["off", "on"]),
     ("wrap_guard", &["off", "on"]),
+    ("slow_via_fast", &["off", "on"]),
     ("working_bar", &["on", "off"]),
     // Rate and duration. Listed rather than typed because the useful
     // range is narrow and the difference between neighbours is visible
@@ -1679,6 +1680,7 @@ fn setting_help(slow: bool, name: &str, value: &str) -> &'static str {
         ("stats", _) => "counters in the bar, for spotting something climbing",
         ("idle_repaint", _) => "redraw the bar unprompted after output settles",
         ("wrap_guard", _) => "skip a paint while the cursor sits in the last column",
+        ("slow_via_fast", _) => "have fast re-voice slow's findings instead of showing them raw",
         ("working_bar", _) => "the sweep that says the slot holds the PREVIOUS answer",
         ("bar_rate_ms", _) => "how fast the sweep moves; lower is smoother and writes more",
         ("bar_slide_ms", _) => "how long it takes to slide in — the part the eye reads",
@@ -1789,6 +1791,7 @@ fn settings_items(v: &Live) -> Vec<String> {
                 }
                 "max_tokens" => max_tokens.to_string(),
                 "cursor_save" => v.dbg.cursor_save.clone(),
+                "slow_via_fast" => if v.dbg.slow_via_fast { "on" } else { "off" }.to_string(),
                 "working_bar" => if v.dbg.working_bar { "on" } else { "off" }.to_string(),
                 "bar_rate_ms" => v.dbg.working_bar_step_ms.to_string(),
                 "bar_slide_ms" => v.dbg.working_bar_grow_ms.to_string(),
@@ -3596,6 +3599,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 // through here or they do not cycle at
                                 // all — they were rendering and changing
                                 // nothing.
+                                "slow_via_fast" => {
+                                    dbg.slow_via_fast = next == "on";
+                                    let _ = Config::persist_key(
+                                        "debug",
+                                        "slow_via_fast",
+                                        &(next == "on").to_string(),
+                                    );
+                                }
                                 "working_bar" => {
                                     dbg.working_bar = next == "on";
                                     let _ = Config::persist_key(
@@ -4215,6 +4226,40 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         // amendment would change the entry they are
                         // reading. Hold it and land it on return to
                         // neutral.
+                        // The documented contract: "slow researches,
+                        // fast relays" — one voice, and slow's output
+                        // never reaches the band unmediated. Off by
+                        // default because a competent slow model already
+                        // returns house-shaped output, making the relay a
+                        // second round trip to reformat something already
+                        // formatted. On, it costs that trip and buys
+                        // consistency. Fast is INSTRUCTED to relay
+                        // faithfully, never forced — the same pattern as
+                        // CMD:, PIN: and REMEMBER: everywhere else.
+                        if dbg.slow_via_fast
+                            && let Some(eng) = engine.as_ref()
+                            && let Some(q) = slow_asks.get(&turn)
+                        {
+                            let cmd = finding.cmd.clone().unwrap_or_default();
+                            rec.finding(turn, finding.cmd.as_deref(), "relayed");
+                            eng.ask(
+                                format!(
+                                    "The researcher answered \"{q}\" with:\n\
+                                     CMD: {cmd}\n{}\nREASON: {}\n\
+                                     Relay this faithfully as your own answer. You may adapt \
+                                     the wording and the command to THIS machine \u{2014} real \
+                                     paths, this shell \u{2014} but do not re-decide it and do \
+                                     not summarise the reasoning away.",
+                                    finding.text, finding.reasoning
+                                ),
+                                ctx_log.clone(),
+                                memory.context_block(),
+                                work.context_block(),
+                                String::new(),
+                            );
+                            slow_asks.remove(&turn);
+                            continue;
+                        }
                         rec.finding(
                             turn,
                             finding.cmd.as_deref(),

@@ -398,6 +398,16 @@ pub struct DebugConfig {
     /// you did not ask for. Off is for anyone who finds motion in the
     /// periphery worse than that risk, which is a real preference.
     pub working_bar: bool,
+    /// Hand every slow finding to fast to re-voice before it is shown.
+    ///
+    /// The wiki's original contract was "you always hear fast" — slow
+    /// researches, fast relays — so there is one voice and slow's output
+    /// never reaches the band unmediated. Measured against it: a
+    /// competent slow model already returns house-shaped output (CMD,
+    /// one line, REASON), so the relay is a second round trip buying a
+    /// reformat of something already formatted. Off by default for that
+    /// reason; on to get the documented behaviour back, and to compare.
+    pub slow_via_fast: bool,
     /// Show the wave for goulash's own unprompted commentary too.
     ///
     /// Off: an observation you did not ask for is not worth moving
@@ -422,6 +432,7 @@ impl Default for DebugConfig {
             cursor_save: "decsc".to_string(),
             idle_repaint: false,
             wrap_guard: false,
+            slow_via_fast: false,
             working_bar: true,
             working_bar_on_watch: false,
             // Both of these MUST appear in the menu's value lists
