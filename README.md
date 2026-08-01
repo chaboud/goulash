@@ -94,42 +94,15 @@ you — `CMD: #@/path commandRef.md` arrives as a normal pullable chip.
 #/help
 ```
 
-Thinking follows whatever the bound model actually speaks — a level
-string for `gpt-oss`, a boolean for `qwen3`, nothing at all for
-`gemma3`, which is told nothing rather than handed a field it rejects.
-Goulash asks the server what the model can do and believes the answer
-over its own table, which ages. The dial says plainly when a model will
-ignore it.
-
-There is **one** token budget covering reasoning and answer together,
-and it is deliberately generous. Reasoning is not ours to ration: a chat
-template reasons whatever we send, and `deepseek-r1` reasons straight
-through `think: false` — so splitting the meter only ever produced empty
-answers with the whole allowance spent thinking. Brevity comes from the
-prompt asking for one line, not from starving the budget; measured,
-answers that arrive use a median of 32 tokens.
-
-**Goulash does not reach into your engine.** It names a model and takes
-what the service gives it — the context window and the residency policy
-you configured over there, untouched. It used to negotiate a window and
-send a keep-alive on every request, which meant `ollama run gemma4:e4b`
-gave that model 131072 tokens while goulash pinned the same model at
-8192, and held your VRAM for half an hour because you once asked what
-time it was. `engine.num_ctx` and `engine.keep_alive` are there if you
-want to pin either; empty means silence.
-
 ## Caveats
 
 **Platforms.** Developed and used daily on macOS, in Terminal, under
-zsh. Some Linux and bash over ssh. That is the extent of it — no
-promises beyond, and terminal emulators differ in ways that matter to a
-program living this close to the PTY.
+zsh. Some Linux and bash over ssh.
 
 **Engines.** Mostly ollama, a fair amount of LM Studio, nothing yet with
 a paid hosted provider. The OpenAI-compatible wire is there and works
 against llama.cpp and vLLM, but keeping your session on your own machine
-is rather the point — a shell transcript is not a thing to hand to a
-stranger by default.
+is the, like... the point.
 
 **Still moving.** Config keys, setting names and interaction details
 change between releases. The CHANGELOG says what moved and settings that
