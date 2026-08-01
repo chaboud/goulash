@@ -24,6 +24,12 @@ pub struct RulesVendor {
     path_cache: Option<HashSet<String>>,
 }
 
+impl Default for RulesVendor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RulesVendor {
     pub fn new() -> Self {
         Self { path_cache: None }

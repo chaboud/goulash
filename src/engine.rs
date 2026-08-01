@@ -1833,6 +1833,14 @@ fn slow_max_tokens(cfg: &EngineConfig) -> usize {
     cfg.slow_lane.max_tokens.unwrap_or(cfg.max_tokens)
 }
 
+/// Fourteen parameters, and the lint is right that it is too many.
+/// They group naturally — the backend (`cl`, `cfg`, `caps`, `model`),
+/// the prompt's parts, the event channel (`ev`, `wr`), and what kind of
+/// turn this is (`proactive`, `pin_ask`) — and pulling those into
+/// structs is the fix. Not on release day: this is the function every
+/// ask goes through, and a mechanical refactor of it buys nothing today
+/// and risks the thing that works.
+#[allow(clippy::too_many_arguments)]
 fn generate(
     cl: &Client,
     cfg: &EngineConfig,

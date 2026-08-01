@@ -34,6 +34,12 @@ pub struct OscFilter {
     pending: Vec<u8>,
 }
 
+impl Default for OscFilter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OscFilter {
     pub fn new() -> Self {
         Self {

@@ -311,6 +311,10 @@ fn dot(active: bool, phase: u8) -> char {
     }
 }
 
+/// Eight parameters: everything the bottom row shows. They are all
+/// independent readouts rather than a thing with parts, so a struct
+/// here would be a bag with a name, not a better shape.
+#[allow(clippy::too_many_arguments)]
 pub fn chrome_row(
     real: Size,
     inner_rows: u16,
