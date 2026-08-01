@@ -88,7 +88,7 @@ you — `CMD: #@/path commandRef.md` arrives as a normal pullable chip.
 #/memory           browse the slots: filter, ↑↓, ⏎⏎ to forget one
 #/thinking low     reasoning level: off | low | medium | high
 #/settings         live-tune everything, applied and saved on the spot
-#/debug            terminal-hackery toggles (you probably don't need these)
+#/debug            nerd stuff (you probably don't need these)
 #/commentary off   quiet the per-turn heckling
 #/status
 #/help

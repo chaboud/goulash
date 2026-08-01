@@ -10,7 +10,17 @@ where that is possible.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+- **The `terminal` settings group is now `nerd stuff`.** It stopped
+  being about the emulator once the working bar and `slow_via_fast`
+  moved in; the name promised terminal knobs and delivered a drawer of
+  goulash's own internals. `#/debug` still opens it.
+- **Drop-downs explain the value you are standing on.** A row's values
+  were a bare list of words, and `waldorf` beside `query` is a quiz with
+  no question. Every drop-down now carries the same one-line help the
+  settings row does — including `custom…`, and including `provider`,
+  where `auto` means *go find a local server* on the fast lane and
+  *follow the fast lane* on the slow one.
 
 ## [0.4.0] — unreleased
 
@@ -124,8 +134,8 @@ and two engines ([`bench/`](bench/)).
 - **`limit` in the memory menu did nothing.** It rendered as a row that
   silently ignored Enter. It is a text field now: `limit: 25 (press
   enter to edit)`, type a number, Enter.
-- **The expert toggle moved out from under the cursor.** `terminal` is a
-  debug-gated group, so turning expert on inserted a row *above* the
+- **The expert toggle moved out from under the cursor.** `nerd stuff` is
+  a debug-gated group, so turning expert on inserted a row *above* the
   switch and the selection slid onto whatever took its place — a switch
   you could not turn back off. Everything expert reveals now sits below
   it.

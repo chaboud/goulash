@@ -1063,7 +1063,7 @@ def test_engine_ollama():
     check("a `..` row offers the way back", saw(out, b".."), out[-300:])
     os.write(mfd, b"\x1b[D")        # Left: back out before the expert walk
     read_until(mfd, "fast lane \u25b8".encode(), 4.0)
-    # The expert toggle must not move under the cursor. `terminal` is a
+    # The expert toggle must not move under the cursor. `nerd stuff` is a
     # debug-gated GROUP, so it used to be emitted up among the others:
     # flipping the switch inserted a row ABOVE the selection and the
     # cursor slid onto whatever took its place -- a switch you cannot
@@ -1131,8 +1131,8 @@ def test_engine_ollama():
     os.write(mfd, b"echo MENU-CLOSED\r")
     out = read_until(mfd, rb"MENU-CLOSED", 4.0)
     check("a second esc closes the menu", saw(out, b"MENU-CLOSED"), out[-200:])
-    # #/debug: the terminal-hackery drawer, same cycle mechanic.
-    # #/debug is a shortcut straight into the `terminal` group of the
+    # #/debug: the nerd-stuff drawer, same cycle mechanic.
+    # #/debug is a shortcut straight into the `nerd stuff` group of the
     # same tree — so it leads with `..`, and the knob is one Down away.
     os.write(mfd, b"#/debug\r")
     out = read_until(mfd, rb"cursor_save: decsc", 5.0)

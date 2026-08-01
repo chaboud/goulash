@@ -51,7 +51,7 @@ owner can do.
   because CUP cannot carry the wrap flag and silently cancelled it —
   the tab-completion listing that cleared one row short. Full mechanism
   in [status-rows](../architecture/status-rows.md).
-- **`#/debug`**: `[debug]` config + menu for terminal hackery —
+- **`#/debug`**: `[debug]` config + the `nerd stuff` settings group —
   `cursor_save` (A/B the fix above), `idle_repaint` (is the unprovoked
   paint buying anything?), `wrap_guard`. Defaults are the shipped
   behaviour.

@@ -353,7 +353,7 @@ impl Default for EngineConfig {
     }
 }
 
-/// Terminal hackery, behind `#/debug` — the drawer for behaviours that
+/// Nerd stuff, behind `#/debug` — the drawer for behaviours that
 /// are real levers on how goulash talks to the emulator, but which most
 /// people should never have to think about. Defaults are the shipped
 /// behaviour; every one of these exists so a field problem can be

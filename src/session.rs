@@ -417,8 +417,8 @@ const GROUPS: &[Group] = &[
         debug: false,
     },
     Group {
-        name: "terminal",
-        what: "how goulash drives the emulator",
+        name: "nerd stuff",
+        what: "how goulash itself behaves; here be dragons, small ones",
         rows: TERMINAL_ROWS,
         debug: true,
     },
@@ -465,7 +465,7 @@ const HELP_ITEMS: &[&str] = &[
     "#/settings             live-tune everything below",
     "#? <question>          ask the slow lane; fast still answers first",
     "#?/cancel \u{b7} #/cancel   stop research \u{b7} stop everything",
-    "#/debug                terminal-hackery toggles (esoteric)",
+    "#/debug                nerd stuff: knobs you probably don't need",
     "#/thinking off|low|medium|high",
     "#/commentary on|off    per-turn heckling",
     "#/status               engine, model, blocks this session",
@@ -1065,6 +1065,24 @@ fn compose_rows(
                         setting_help(m.group.as_deref() == Some("slow lane"), k, v)
                     })
                     .unwrap_or(""),
+                // A drop-down is a list of bare values with the row it
+                // belongs to off-screen, so `waldorf` sits next to
+                // `query` as a quiz with no question. The row name comes
+                // from the menu, the value from the line — same help
+                // text as the settings row, at the moment of choosing
+                // rather than after.
+                (MenuKind::ValuePick, true) => filtered
+                    .get(idx)
+                    .zip(m.value_row.as_ref())
+                    .map(|(n, (row, grp))| {
+                        let n: &str = n;
+                        // `custom… (15–1000)` carries its range as an
+                        // aside; the help is about the word, not the
+                        // bounds already on screen.
+                        let v = n.split(" (").next().unwrap_or(n).trim();
+                        setting_help(grp.as_deref() == Some("slow lane"), row, v)
+                    })
+                    .unwrap_or(""),
                 _ => "",
             };
             rows.push(status::pad_row_with_note(&line, help, cols, sgr));
@@ -1536,13 +1554,13 @@ fn slash_command(
             *menu = Some(m);
             None
         }
-        // `#/debug` is the terminal group, reached directly. Same tree,
+        // `#/debug` is the `nerd stuff` group, reached directly. Same tree,
         // same rows — a shortcut into it, not a second menu.
         ("debug", _) => {
             let mut m = Menu::open("settings", MenuKind::Settings);
-            m.group = Some("terminal".to_string());
+            m.group = Some("nerd stuff".to_string());
             m.items = settings_items(&Live {
-                group: Some("terminal"),
+                group: Some("nerd stuff"),
                 platform,
                 commentary: *commentary,
                 slow,
@@ -1663,7 +1681,21 @@ fn setting_help(slow: bool, name: &str, value: &str) -> &'static str {
         ("mode", "query") => "on # as well as #?",
         ("mode", "waldorf") => "whenever fast runs — always in the party",
 
+        // Every list that has one ends with it, so it earns a line of
+        // its own before any row-keyed arm can claim it.
+        (_, CUSTOM) => "type your own, inside the range shown",
+
+        // One word, two jobs: in the slow lane `auto` means follow the
+        // fast lane, and on the fast lane's own provider row it means go
+        // and find a server. Order matters — the general arm below would
+        // otherwise tell you it follows itself.
+        ("provider", "auto") if !slow => "look for a local server: ollama, then LM Studio",
         (_, "auto") => "follows the fast lane; change it to differ",
+
+        ("provider", "ollama") => "ollama, on :11434",
+        ("provider", "openai") => "an OpenAI-compatible server: LM Studio, llama.cpp, vLLM",
+        ("provider", "openai-chat") => "the same wire, spelled out; applies the model's template",
+        ("provider", "none") => "no model at all — goulash stays out of the way",
         ("provider", _) if slow => "send research somewhere better — a bigger box, or a hosted model",
         ("model", _) if slow => "the slow lane can use a different model, or machine",
         ("thinking", _) if slow => "let the slow lane think harder than the one that answers",
@@ -2438,7 +2470,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // ahead of the macro so the macro body can reach it (hygiene binds
     // identifiers at the definition site).
     let mut paint_deferred = false;
-    // Terminal-hackery knobs, live-tunable from #/debug. Copied out of
+    // Internal knobs, live-tunable from #/debug. Copied out of
     // cfg because the menu turns them mid-session.
     let mut dbg = cfg.debug.clone();
     // Input typed while the shell is being handed its rows back.
@@ -5014,8 +5046,8 @@ mod root_tests {
         // ...and it really does reveal something, or the test above
         // passes for the wrong reason.
         assert!(on.len() > off.len());
-        assert!(on.iter().any(|r| r.starts_with("terminal")));
-        assert!(!off.iter().any(|r| r.starts_with("terminal")));
+        assert!(on.iter().any(|r| r.starts_with("nerd stuff")));
+        assert!(!off.iter().any(|r| r.starts_with("nerd stuff")));
     }
 }
 
@@ -5053,12 +5085,12 @@ mod row_tests {
         let d = crate::config::DebugConfig::default();
         let e = crate::config::EngineConfig::default();
         let cases: &[(&str, &str, String)] = &[
-            ("terminal", "cursor_save", d.cursor_save.clone()),
-            ("terminal", "idle_repaint", bool_word(d.idle_repaint)),
-            ("terminal", "wrap_guard", bool_word(d.wrap_guard)),
-            ("terminal", "working_bar", bool_word(d.working_bar)),
-            ("terminal", "bar_rate_ms", d.working_bar_step_ms.to_string()),
-            ("terminal", "bar_slide_ms", d.working_bar_grow_ms.to_string()),
+            ("nerd stuff", "cursor_save", d.cursor_save.clone()),
+            ("nerd stuff", "idle_repaint", bool_word(d.idle_repaint)),
+            ("nerd stuff", "wrap_guard", bool_word(d.wrap_guard)),
+            ("nerd stuff", "working_bar", bool_word(d.working_bar)),
+            ("nerd stuff", "bar_rate_ms", d.working_bar_step_ms.to_string()),
+            ("nerd stuff", "bar_slide_ms", d.working_bar_grow_ms.to_string()),
             ("slow lane", "mode", e.slow.clone()),
             ("fast lane", "thinking", e.thinking.clone()),
             ("fast lane", "max_tokens", e.max_tokens.to_string()),
@@ -5093,7 +5125,7 @@ mod row_tests {
             assert!(lo < hi, "{n}: {lo} is not below {hi}");
             // The listed presets must all be reachable by typing too, or
             // the list and the field disagree about what is legal.
-            for v in row_values(Some("terminal"), n).unwrap_or(&[]) {
+            for v in row_values(Some("nerd stuff"), n).unwrap_or(&[]) {
                 if let Ok(x) = v.parse::<u64>() {
                     assert!((*lo..=*hi).contains(&x), "{n}: preset {x} outside {lo}-{hi}");
                 }
