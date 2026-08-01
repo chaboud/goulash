@@ -260,6 +260,13 @@ enum MenuKind {
     /// confirm keystroke, not a hair-trigger — and they do not belong on
     /// the key every other menu uses to say "yes, this one".
     Memory,
+    /// A row's values as a list you scroll — the model selector's flow,
+    /// for every setting that has more than two of them. Cycling in
+    /// place made you press Enter five times to see five options and
+    /// gave `custom…` nowhere to live but the end of the cycle, where
+    /// it trapped you: reaching it opened the editor, cancelling
+    /// returned the same value, and the next Enter opened it again.
+    ValuePick,
     /// Enter cycles the setting's value in place, applying it live AND
     /// persisting it — no config-file round trip.
     Settings,
@@ -494,6 +501,9 @@ struct Menu {
     group: Option<String>,
     /// Which row the open text field belongs to, when one is open.
     compose_row: Option<String>,
+    /// For a `ValuePick`: the row whose value is being chosen, and the
+    /// group it lives in, so committing can apply it and go back.
+    value_row: Option<(String, Option<String>)>,
     /// The menu that opened this one, if any.
     ///
     /// A picker reached FROM the settings tree has to go back to it —
@@ -518,6 +528,7 @@ impl Menu {
             viewing: None,
             group: None,
             compose_row: None,
+            value_row: None,
             parent: None,
         }
     }
@@ -985,7 +996,8 @@ fn compose_rows(
                     MenuKind::Model | MenuKind::SlowModel => "\u{23ce} save",
                     MenuKind::Memory => "\u{23ce} read \u{b7} \u{232b}\u{232b} forget",
                     MenuKind::Pins => "\u{23ce} read \u{b7} \u{232b}\u{232b} unpin",
-                    MenuKind::Settings => "\u{23ce} cycles",
+                    MenuKind::Settings => "\u{23ce} opens",
+                    MenuKind::ValuePick => "\u{23ce} choose",
                     MenuKind::Help => "reference",
                 },
                 (m.cursor + 1).min(filtered.len()),
@@ -3154,6 +3166,12 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     let mut nav_into: Option<String> = None;
                     let mut nav_up = false;
                     let mut open_picker: Option<String> = None;
+                    // A value chosen from a drop-down: (row, value). Feeds
+                    // the same apply path as cycling, so there is one
+                    // place that knows what each setting means.
+                    let mut picked: Option<(String, String, Option<String>)> = None;
+                    // A row whose drop-down should open: (row, group).
+                    let mut open_values: Option<(String, Option<String>)> = None;
                     // Remembered before the picker replaces the menu.
                     let group_at_open = menu.as_ref().and_then(|m| m.group.clone());
                     let mut kind = MenuKind::Model;
@@ -3267,6 +3285,25 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                                 nav_up = true;
                                             }
                                         }
+                                        // A drop-down over one row's
+                                        // values. Choosing commits and
+                                        // goes back to the group, so
+                                        // setting two things costs one
+                                        // trip.
+                                        MenuKind::ValuePick => match sel.as_deref() {
+                                            Some("..") => nav_up = true,
+                                            Some(v) => {
+                                                if let Some((row, grp)) = m.value_row.clone() {
+                                                    picked = Some((
+                                                        row,
+                                                        v.split(" (").next().unwrap_or(v).to_string(),
+                                                        grp,
+                                                    ));
+                                                }
+                                                nav_up = true;
+                                            }
+                                            None => {}
+                                        },
                                         MenuKind::Settings => {
                                             // A group row opens; `..`
                                             // closes; anything else is a
@@ -3497,21 +3534,43 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             m.clamp();
                         }
                     }
-                    if kind == MenuKind::Settings
-                        && let Some(item) = committed.take()
-                    {
-                        // Enter cycles the value in place: apply live,
-                        // persist, refresh the list under the cursor.
-                        let (name, cur) = split_row(&item);
+                    // Two ways in: a toggle cycled in place, or a value
+                    // chosen from its drop-down. Both land here, because
+                    // one place should know what each setting MEANS —
+                    // the difference is only where the new value came
+                    // from.
+                    let from_pick = picked.clone();
+                    if (kind == MenuKind::Settings && committed.is_some()) || from_pick.is_some() {
+                        let item = committed.take().unwrap_or_default();
+                        let (name, cur) = match &from_pick {
+                            Some((row, _, _)) => (row.clone(), String::new()),
+                            None => split_row(&item),
+                        };
                         // Row names repeat across the lanes, so the name
                         // alone does not identify a setting. Without
                         // this, cycling `provider` inside `slow lane`
                         // fell through to the fast lane's arm and edited
                         // the wrong one, silently.
-                        let in_slow =
-                            menu.as_ref().and_then(|m| m.group.as_deref()) == Some("slow lane");
-                        // Rows with no value list are doors, not dials.
-                        if TEXT_ENTRY.contains(&name.as_str()) {
+                        let group_now: Option<String> = match &from_pick {
+                            Some((_, _, g)) => g.clone(),
+                            None => menu.as_ref().and_then(|m| m.group.clone()),
+                        };
+                        let in_slow = group_now.as_deref() == Some("slow lane");
+                        // Rows with more than a toggle's worth of values
+                        // open a drop-down. On/off stays a toggle: a
+                        // two-item list you have to scroll is worse than
+                        // pressing the key again.
+                        let listed = row_values(group_now.as_deref(), &name).unwrap_or(&[]);
+                        // Already chosen: fall through to the apply.
+                        if from_pick.is_none()
+                            && listed.len() > 2
+                            && !TEXT_ENTRY.contains(&name.as_str())
+                        {
+                            open_values = Some((
+                                name.clone(),
+                                menu.as_ref().and_then(|m| m.group.clone()),
+                            ));
+                        } else if TEXT_ENTRY.contains(&name.as_str()) {
                             if let Some(m) = menu.as_mut() {
                                 // Empty, not pre-filled with the current
                                 // value: the first digit typed would
@@ -3532,16 +3591,23 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             } else {
                                 name.clone()
                             });
-                        } else if let Some(vals) =
-                            row_values(menu.as_ref().and_then(|m| m.group.as_deref()), &name)
-                        {
-                            // A value that is not on the list is a
-                            // custom one (or a stale config entry), and
-                            // cycling from it starts at the TOP rather
-                            // than one past a position it never had.
-                            let next = match vals.iter().position(|v| *v == cur) {
+                        } else if let Some(vals) = row_values(group_now.as_deref(), &name) {
+                            // Chosen from the drop-down, or cycled in
+                            // place for a toggle. Either way it lands in
+                            // the same apply below — one place knows what
+                            // each setting means.
+                            //
+                            // A value that is not on the list is a custom
+                            // one (or a stale config entry), and cycling
+                            // from it starts at the TOP rather than one
+                            // past a position it never had.
+                            let cycled = match vals.iter().position(|v| *v == cur) {
                                 Some(i) => vals[(i + 1) % vals.len()],
                                 None => vals[0],
+                            };
+                            let next: &str = match &from_pick {
+                                Some((_, v, _)) => v.as_str(),
+                                None => cycled,
                             };
                             // Cycling onto `custom…` is a request to
                             // type, not a value to store. Open the field
@@ -3854,6 +3920,55 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 Err(e) => format!("config write failed: {e}"),
                             }
                         });
+                    }
+                    // Build the drop-down: the row's values, `..` to
+                    // leave, and the cursor already on the current one so
+                    // Enter with no movement is a no-op rather than a
+                    // surprise.
+                    if let Some((row, grp)) = open_values.take() {
+                        let vals = row_values(grp.as_deref(), &row).unwrap_or(&[]);
+                        let cur = menu
+                            .as_ref()
+                            .and_then(|m| m.items.iter().find(|i| i.starts_with(&format!("{row}:"))))
+                            .and_then(|i| i.split_once(':'))
+                            .map(|(_, v)| split_row(&format!("x:{v}")).1)
+                            .unwrap_or_default();
+                        let bounds = CUSTOM_BOUNDS.iter().find(|(n, ..)| *n == row);
+                        let mut items: Vec<String> = Vec::with_capacity(vals.len() + 1);
+                        items.push("..".to_string());
+                        for v in vals {
+                            // `custom…` carries the value it would edit
+                            // when the current setting is off the list —
+                            // otherwise the row it is standing in for is
+                            // invisible from the drop-down.
+                            if *v == CUSTOM {
+                                let off_list = !vals.iter().any(|x| *x == cur);
+                                items.push(if off_list {
+                                    format!("{CUSTOM} ({cur})")
+                                } else {
+                                    match bounds {
+                                        Some((_, lo, hi)) => {
+                                            format!("{CUSTOM} ({lo}\u{2013}{hi})")
+                                        }
+                                        None => CUSTOM.to_string(),
+                                    }
+                                });
+                            } else {
+                                items.push((*v).to_string());
+                            }
+                        }
+                        let at = items
+                            .iter()
+                            .position(|i| *i == cur)
+                            .or_else(|| items.iter().position(|i| i.starts_with(CUSTOM)))
+                            .unwrap_or(0);
+                        let mut m = Menu::open(&row, MenuKind::ValuePick);
+                        m.items = items;
+                        m.cursor = at;
+                        m.loaded = true;
+                        m.value_row = Some((row, grp.clone()));
+                        m.parent = Some((MenuKind::Settings, grp));
+                        menu = Some(m);
                     }
                     // A `model` row hands off to the existing picker,
                     // which already knows how to list, filter and bind —
