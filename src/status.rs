@@ -38,19 +38,31 @@ pub const WORKING_SLOW_SGR: &str = "\x1b[0;93;48;5;238m";
 /// the trail gives it that: as the head advances, every cell behind it
 /// steps down one level, so the *pattern* moves continuously even though
 /// each glyph still snaps to its cell.
-const TRAIL_FAST: [&str; 4] = [
-    "\x1b[0;1;97;48;5;31m",  // head: bright on cyan
+const TRAIL_FAST: [&str; 7] = [
+    "\x1b[0;1;97;48;5;39m",  // head: white on bright cyan
+    "\x1b[0;1;97;48;5;32m",
+    "\x1b[0;96;48;5;31m",
     "\x1b[0;96;48;5;24m",
     "\x1b[0;36;48;5;23m",
+    "\x1b[0;36;48;5;238m",
     "\x1b[0;90;48;5;238m",   // tail, fading into the chip
 ];
-const TRAIL_SLOW: [&str; 4] = [
-    "\x1b[0;1;97;48;5;136m", // head: bright on amber
+const TRAIL_SLOW: [&str; 7] = [
+    "\x1b[0;1;97;48;5;214m", // head: white on gold
+    "\x1b[0;1;97;48;5;172m",
+    "\x1b[0;93;48;5;136m",
     "\x1b[0;93;48;5;94m",
     "\x1b[0;33;48;5;58m",
+    "\x1b[0;33;48;5;238m",
     "\x1b[0;90;48;5;238m",
 ];
-const TRAIL_GLYPH: [&str; 4] = ["\u{2588}", "\u{2593}", "\u{2592}", "\u{2591}"];
+/// Seven steps of shade to match seven of colour. Glyphs are coarse —
+/// four is all Unicode gives — so the extra resolution comes from the
+/// palette, and the two are indexed together so a cell's shade and hue
+/// always agree.
+const TRAIL_GLYPH: [&str; 7] = [
+    "\u{2588}", "\u{2588}", "\u{2593}", "\u{2593}", "\u{2592}", "\u{2591}", "\u{2591}",
+];
 
 /// One styled run inside a chip: the text, and the SGR it wears.
 ///
@@ -215,26 +227,42 @@ pub fn working_bar(
         return None;
     }
     let trail = if fast { &TRAIL_FAST } else { &TRAIL_SLOW };
-    // Ping-pong: reversing rather than wrapping, because a head that
-    // teleports from the right edge back to the left reads as a glitch.
-    let head = if running && width > 1 {
-        let span = (width - 1) * 2;
-        let p = ((ms / step_ms) as usize) % span;
-        if p < width { p } else { span - p }
+    // A FLOAT position, ping-ponging. Integer steps were the chunk: at
+    // 150ms a cell the head sat still for nine frames and then jumped,
+    // so every frame in between rendered identically and the wave read
+    // as a strobe. Continuous position means each frame shades slightly
+    // differently — the glyphs still snap to their cells, but the
+    // brightness slides, and the eye reads the slide.
+    //
+    // Reversing rather than wrapping: a head that teleports from the
+    // right edge back to the left reads as a glitch, not a sweep.
+    let head: f32 = if running && width > 1 {
+        let span = (width - 1) as f32 * 2.0;
+        let p = (ms as f32 / step_ms as f32) % span;
+        if p < (width - 1) as f32 { p } else { span - p }
     } else {
-        0
+        0.0
     };
     Some(
         (0..width)
             .map(|i| {
-                // Distance from the head sets the shade...
-                let mut d = if running { i.abs_diff(head).min(3) } else { 2 };
+                // Distance from the FLOAT head, scaled across the
+                // seven levels: a cell one and a half away is dimmer
+                // than one exactly one away, which is the whole source
+                // of the between-step motion.
+                const LAST: usize = TRAIL_GLYPH.len() - 1;
+                let mut d = if running {
+                    let dist = (i as f32 - head).abs() * 1.6;
+                    (dist.round() as usize).min(LAST)
+                } else {
+                    LAST - 1
+                };
                 // ...and the leading cell is dimmed further by how much
                 // of it has actually arrived, so growth and shrink read
                 // as a fade rather than a jump.
                 if i == full {
-                    let fading = 3usize.saturating_sub((frac * 4.0) as usize);
-                    d = d.max(fading.min(3));
+                    let arrived = (frac * LAST as f32) as usize;
+                    d = d.max(LAST.saturating_sub(arrived));
                 }
                 (TRAIL_GLYPH[d], trail[d])
             })

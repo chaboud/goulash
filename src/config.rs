@@ -438,8 +438,8 @@ impl Default for DebugConfig {
             // Both of these MUST appear in the menu's value lists
             // (session.rs TERMINAL_ROWS) — a default the row cannot
             // find renders fine and then cycles from somewhere else.
-            working_bar_step_ms: 60,
-            working_bar_grow_ms: 250,
+            working_bar_step_ms: 150,
+            working_bar_grow_ms: 350,
         }
     }
 }
