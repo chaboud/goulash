@@ -23,6 +23,50 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
+/// Trim the history directory to its limits, oldest first.
+///
+/// Returns what went, so the caller can say so. Deleting a developer's
+/// transcripts silently is the kind of helpfulness nobody asked for —
+/// and this runs at startup, where the alternative to a line of output
+/// is finding out later that last Tuesday is gone.
+///
+/// `keep` is never considered: it is the file this session is about to
+/// write, and a sweep that can delete the thing it is standing on is a
+/// sweep that eventually does.
+fn sweep(dir: &std::path::Path, max_mb: u64, max_sessions: usize, keep: &std::path::Path) -> (usize, u64) {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    let mut files: Vec<(SystemTime, u64, std::path::PathBuf)> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p != keep && p.extension().is_some_and(|x| x == "jsonl"))
+        .filter_map(|p| {
+            let m = p.metadata().ok()?;
+            Some((m.modified().ok()?, m.len(), p))
+        })
+        .collect();
+    // Newest first, so the walk keeps what is worth keeping and the
+    // budget runs out on the old.
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    let budget = max_mb.saturating_mul(1024 * 1024);
+    let (mut kept_bytes, mut kept_n) = (0u64, 0usize);
+    let (mut gone_n, mut gone_bytes) = (0usize, 0u64);
+    for (_, len, path) in files {
+        kept_bytes += len;
+        kept_n += 1;
+        if kept_bytes > budget || kept_n > max_sessions {
+            if fs::remove_file(&path).is_ok() {
+                gone_n += 1;
+                gone_bytes += len;
+            }
+            kept_bytes -= len;
+            kept_n -= 1;
+        }
+    }
+    (gone_n, gone_bytes)
+}
+
 impl Recorder {
     pub fn new(cfg: &Config) -> Recorder {
         if !cfg.record.enabled {
@@ -31,14 +75,33 @@ impl Recorder {
                 record_output: false,
             };
         }
+        let mut swept = None;
         let out = Config::dir()
             .map(|d| d.join("history"))
             .and_then(|dir| {
                 fs::create_dir_all(&dir).ok()?;
                 let name = format!("session-{}-{}.jsonl", now_ms(), std::process::id());
-                File::create(dir.join(name)).ok()
+                let path = dir.join(name);
+                let f = File::create(&path).ok()?;
+                let (n, bytes) = sweep(&dir, cfg.record.max_mb, cfg.record.max_sessions, &path);
+                if n > 0 {
+                    swept = Some((n, bytes));
+                }
+                Some(f)
             })
             .map(BufWriter::new);
+        // Said, not silent. Written before the session takes the screen,
+        // so it lands in the scrollback rather than fighting the band.
+        if let Some((n, bytes)) = swept {
+            eprintln!(
+                "goulash: history trimmed to {} MB / {} sessions \u{2014} removed {n} older \
+                 session{} ({} MB)",
+                cfg.record.max_mb,
+                cfg.record.max_sessions,
+                if n == 1 { "" } else { "s" },
+                bytes / (1024 * 1024)
+            );
+        }
         Recorder {
             out,
             record_output: cfg.record.output,

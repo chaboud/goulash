@@ -541,18 +541,49 @@ impl Default for ShellConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+/// Session transcripts under `~/.goulash/history/`.
+///
+/// A development instrument, off by default. No feature reads these
+/// files — the only reader in the tree is the e2e suite, asserting
+/// against the session it just drove — so nothing a user does depends
+/// on them existing. What they are FOR is the kind of question you
+/// cannot answer from a screenshot: how often the session log mutates
+/// against how often memory does (171:1, measured), how often
+/// commentary vends after a failure against after a success (2% against
+/// 13%, measured), whether the store is quietly re-remembering its own
+/// rendering (it was). Every one of those came out of these files.
+///
+/// It was on by default with `output` on, and on one machine that came
+/// to 198 MB across 167 sessions — 99.9% of it raw terminal bytes,
+/// including a single 60 MB session. Hence: off unless asked for, and
+/// capped when asked for.
 pub struct RecordConfig {
     pub enabled: bool,
-    /// Also record raw output bytes (base64) in the transcript, not just
-    /// state annotations.
+    /// Also record raw output bytes (base64), not just the annotations.
+    ///
+    /// Separate because the cost is not comparable: the annotations —
+    /// commands, asks, answers, suggestions — are ~5 KB a session and
+    /// carry every finding above. The raw bytes are everything written
+    /// to the terminal and are the other 99.9%. They earn it only when
+    /// the bug IS the terminal.
     pub output: bool,
+    /// Total megabytes of history to keep. Oldest sessions are removed
+    /// first, at startup, and never the one being written.
+    pub max_mb: u64,
+    /// How many sessions to keep, on the same rule. Two limits because
+    /// they fail differently: a thousand small sessions is a directory
+    /// nobody can search, and one 60 MB session is a disk nobody
+    /// noticed.
+    pub max_sessions: usize,
 }
 
 impl Default for RecordConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            output: true,
+            enabled: false,
+            output: false,
+            max_mb: 500,
+            max_sessions: 1000,
         }
     }
 }

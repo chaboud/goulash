@@ -309,6 +309,12 @@ impl Engine {
         // said "use ls -lh instead" in prose and vended nothing. It
         // named the fix and kept it.
         //
+        // Name the SHAPE of make-work, not the commands. An earlier
+        // draft said "no logging, note-taking or echo", and a small
+        // model reads a command name in a prohibition as a ban: it
+        // would have stopped suggesting `echo` at all, including the
+        // times echo is exactly the right answer.
+        //
         // The exit code is NOT the signal. Plenty of commands exit 0 and
         // still do the wrong thing — `du -b` on BSD, a flag that means
         // something else here — and the model is the only thing in the
@@ -322,10 +328,11 @@ impl Engine {
                         would help — a fix, a correction, the thing they \
                         were reaching for — put it on a CMD: line. Naming \
                         it in prose and withholding the line is the one \
-                        unhelpful thing you can do here. Do not invent \
-                        busywork to have something to offer: no logging, \
-                        note-taking or echo. Only if you truly have \
-                        nothing worth saying, reply exactly: PASS"
+                        unhelpful thing you can do here. What is not \
+                        worth offering is make-work: a command that only \
+                        writes down what already happened. Only if you \
+                        truly have nothing worth saying, reply exactly: \
+                        PASS"
             .to_string();
         let _ = self.job_tx.send(Job::Ask {
             question,
@@ -1595,11 +1602,19 @@ fn pick_model(
             return Some(hit.clone());
         }
     }
-    // The size ladder needs sizes, and only ollama reports them. An
-    // OpenAI-compatible listing is names and nothing else, so the
-    // fallback there is simply the first — the server's own order, which
-    // for LM Studio is the model you last loaded.
-    if wire == Wire::OpenAi {
+    // The size ladder needs sizes, and only ollama reports them. Every
+    // other listing is names and nothing else, so the fallback there is
+    // simply the first — the server's own order, which for LM Studio is
+    // the model you last loaded.
+    //
+    // This tested `wire == Wire::OpenAi` alone, and had done since
+    // before that variant split into three. `OpenAiChat` (the default
+    // for llama.cpp and vLLM) and `LmStudio` fell through to the ollama
+    // branch instead, read `listing["models"]` — a key an OpenAI listing
+    // does not have — and returned None. Point goulash at LM Studio or
+    // llama.cpp without naming a model and it reported "no engine
+    // reachable", naming the ollama host it had never tried.
+    if wire != Wire::Ollama {
         return names.first().cloned();
     }
     let sized: Vec<(u64, Option<f32>, &str)> = listing["models"]

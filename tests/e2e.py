@@ -60,6 +60,15 @@ def pin_engine(home):
         with open(path, "w") as f:
             f.write(f'[engine]\nprovider = "ollama"\n'
                     f'host = "http://127.0.0.1:{closed_port()}"\n')
+    # Recording is OFF by default -- it is a development instrument, and
+    # left on for everyone it reached 198 MB on one machine. Seven checks
+    # in this suite read the transcript, so the suite turns it on for
+    # every session it spawns, here rather than in twelve config blocks
+    # that would drift apart.
+    text = open(path).read()
+    if "[record]" not in text:
+        with open(path, "a") as f:
+            f.write("\n[record]\nenabled = true\noutput = true\n")
     return home
 
 
@@ -684,16 +693,25 @@ def test_tab_completion():
 
 
 def test_engine_openai():
-    """LM Studio, llama.cpp's server and vLLM all speak the OpenAI `/v1`
-    wire, so one provider reaches all three. Proxied here by a fake that
-    is deliberately strict about the differences from ollama — it 400s
-    on ollama-only fields rather than ignoring them, which is what a real
-    strict server does and what would otherwise show up as a blank bar.
+    """llama.cpp's server, vLLM and any hosted `/v1` all speak the
+    OpenAI chat wire, so one provider reaches all of them. Proxied here
+    by a fake that is deliberately strict about the differences from
+    ollama — it 400s on ollama-only fields rather than ignoring them,
+    which is what a real strict server does and what would otherwise
+    show up as a blank bar.
 
-    The load-bearing assertion is that the PROMPT is unchanged: goulash
-    targets /v1/completions, not /v1/chat/completions, precisely so the
-    stable prefix the KV cache depends on survives the move."""
-    print("OpenAI-compatible provider (fake LM Studio):")
+    Targets **/v1/chat/completions**, which is the endpoint that applies
+    the model's own template. The raw `/v1/completions` endpoint applies
+    none, so an instruction sent there is *continued* rather than
+    followed: Gemma degenerates into a repetition loop and qwen3 answers
+    a question nobody asked. It stayed the default for one release by
+    accident and that was a regression, not a choice — hence the
+    explicit assertion on the path.
+
+    `provider = "openai"`, not `lmstudio`: LM Studio has its own native
+    wire now (`/api/v1/chat`, with a reasoning dial and spend reporting),
+    and this test was still asserting the shared one for it."""
+    print("OpenAI-compatible provider (fake llama.cpp/vLLM):")
     if not shutil.which("zsh"):
         print("  [SKIP] zsh not installed")
         return
@@ -714,7 +732,7 @@ def test_engine_openai():
         def do_GET(self):
             if self.path == "/v1/models":
                 self._send({"object": "list", "data": [
-                    {"id": "lmstudio-model", "object": "model"},
+                    {"id": "openai-model", "object": "model"},
                     {"id": "second-model", "object": "model"},
                 ]})
             else:
@@ -733,10 +751,13 @@ def test_engine_openai():
                 if bad in req:
                     self._send({"error": f"unknown field {bad}"}, code=400)
                     return
-            if self.path != "/v1/completions":
+            if self.path != "/v1/chat/completions":
                 self._send({"error": "wrong endpoint"}, code=404)
                 return
-            prompt = req.get("prompt", "")
+            # One user message carrying the whole stable prefix: that is
+            # how the prompt survives the move to a chat wire.
+            msgs = req.get("messages") or []
+            prompt = msgs[-1].get("content", "") if msgs else ""
             if prompt:
                 seen["prompt"] = prompt
             if not req.get("max_tokens"):
@@ -754,13 +775,15 @@ def test_engine_openai():
                 for piece in (ans[:6], ans[6:]):
                     self.wfile.write(
                         b": keep-alive\n\n" + b"data: " + json.dumps(
-                            {"choices": [{"text": piece, "finish_reason": None}]}
+                            {"choices": [{"delta": {"content": piece},
+                                          "finish_reason": None}]}
                         ).encode() + b"\n\n")
                     self.wfile.flush()
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
             else:
-                self._send({"choices": [{"text": ans, "finish_reason": "stop"}]})
+                self._send({"choices": [{"message": {"content": ans},
+                                         "finish_reason": "stop"}]})
 
         def log_message(self, *a):
             pass
@@ -772,17 +795,17 @@ def test_engine_openai():
     home = tempfile.mkdtemp(prefix="goulash-test-")
     os.environ["GOULASH_TEST_KEY"] = "sk-test-123"
     with open(os.path.join(home, "config.toml"), "w") as f:
-        f.write('[engine]\nprovider = "lmstudio"\n'
+        f.write('[engine]\nprovider = "openai"\n'
                 f'openai_host = "http://127.0.0.1:{port}"\n'
                 'api_key_env = "GOULASH_TEST_KEY"\n')
     proc, mfd = spawn(["zsh"], home=home)
     time.sleep(1.5)
     os.write(mfd, b"# what is the answer\r")
-    out = read_until(mfd, rb"OAI-lmstudio-model", 8.0)
+    out = read_until(mfd, rb"OAI-openai-model", 8.0)
     check("model picked from /v1/models and answered",
-          b"OAI-lmstudio-model" in out, out[-300:])
-    check("targets /v1/completions, not chat-completions",
-          seen["path"] == "/v1/completions", str(seen["path"]))
+          b"OAI-openai-model" in out, out[-300:])
+    check("targets chat-completions, the endpoint that templates",
+          seen["path"] == "/v1/chat/completions", str(seen["path"]))
     check("SSE stream decoded and accumulated", seen["streamed"], str(seen))
     check("bearer token attached from api_key_env",
           seen["auth"] == "Bearer sk-test-123", str(seen["auth"]))
@@ -793,7 +816,7 @@ def test_engine_openai():
           repr(seen["prompt"][:80]))
     os.write(mfd, b"#/status\r")
     out = read_until(mfd, rb"blocks this session", 5.0)
-    check("#/status names the openai provider", b"lmstudio-model" in out, out[-300:])
+    check("#/status names the openai provider", b"openai-model" in out, out[-300:])
     dismiss_and_exit(mfd)
     drain_exit(proc, mfd)
     srv.shutdown()
@@ -979,15 +1002,18 @@ def test_engine_ollama():
                 self._send({"capabilities": show_caps(req.get("model", ""))})
                 return
             if "prompt" not in req:
-                # prewarm/load request: model + keep_alive only
-                assert req.get("keep_alive"), "keep_alive missing from warm"
                 self._send({"done": True})
                 return
-            assert req.get("keep_alive"), "keep_alive missing from request"
             assert "Session log" in req.get("prompt", ""), "stable preamble missing"
             opts = req.get("options", {})
             assert opts.get("num_predict"), "token cap missing"
-            assert opts.get("num_ctx"), "num_ctx missing"
+            # goulash does NOT dictate the window or the residency: it
+            # names a model and takes what the service gives it. These
+            # used to be REQUIRED here, which is how they survived --
+            # measured, `ollama run gemma4:e4b` gives 131072 and goulash
+            # was pinning the same model at 8192.
+            assert "num_ctx" not in opts, "goulash dictated a context window"
+            assert "keep_alive" not in req, "goulash dictated a model TTL"
             assert "think" not in req, "think sent to a non-reasoning model"
             ans = f"ANS-{req.get('model')}"
             if "goulash:" in req.get("prompt", ""):
@@ -2088,9 +2114,15 @@ def test_memory():
         f.write(f'[engine]\nprovider = "ollama"\nhost = "http://127.0.0.1:{port}"\n')
     proc, mfd = spawn(["zsh"], home=home)
     time.sleep(1.5)
+    # ON by default. Off was not neutral: with nothing in the prompt
+    # about memory at all, a model asked to remember something invented
+    # a file to write it to and said it had saved it.
     os.write(mfd, b"#/memory status\r")
+    out = read_until(mfd, rb"memory on", 5.0)
+    check("memory defaults on", b"memory on" in out, out[-300:])
+    os.write(mfd, b"#/memory off\r")
     out = read_until(mfd, rb"memory off", 5.0)
-    check("memory defaults off", b"memory off" in out, out[-300:])
+    check("#/memory off takes", b"memory off" in out, out[-300:])
     os.write(mfd, b"#/memory on\r")
     out = read_until(mfd, rb"memory on", 5.0)
     check("#/memory on", b"memory on" in out, out[-300:])

@@ -379,7 +379,12 @@ const CUSTOM: &str = "custom\u{2026}";
 /// `(row, min, max)` for the rows that accept a typed number. Bounds are
 /// enforced, not suggested: these drive an animation, and a slide of
 /// 100000ms is not a preference, it is a bar that never arrives.
-const CUSTOM_BOUNDS: &[(&str, u64, u64)] = &[("bar_rate_ms", 15, 1000), ("bar_slide_ms", 60, 3000)];
+const CUSTOM_BOUNDS: &[(&str, u64, u64)] = &[
+    ("bar_rate_ms", 15, 1000),
+    ("bar_slide_ms", 60, 3000),
+    ("max_mb", 1, 100_000),
+    ("max_sessions", 1, 1_000_000),
+];
 
 /// Rows that take a typed value. Enter opens an empty field on the row;
 /// Enter again commits, an empty field means unchanged, Esc cancels.
@@ -458,6 +463,25 @@ const TERMINAL_ROWS: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// Session transcripts. A development instrument, off by default — no
+/// feature reads the files, and the one time it was on for everyone it
+/// quietly took 198 MB.
+const LOGGING_ROWS: &[(&str, &[&str])] = &[
+    ("record", &["off", "on"]),
+    ("raw_output", &["off", "on"]),
+    // Two limits because they fail differently, and both are listed
+    // rather than typed for the same reason as the bar dials: the
+    // useful range is narrow and you pick by looking.
+    (
+        "max_mb",
+        &["50", "100", "250", "500", "1000", "custom\u{2026}"],
+    ),
+    (
+        "max_sessions",
+        &["100", "250", "500", "1000", "5000", "custom\u{2026}"],
+    ),
+];
+
 const GROUPS: &[Group] = &[
     Group {
         name: "fast lane",
@@ -487,6 +511,14 @@ const GROUPS: &[Group] = &[
         name: "nerd stuff",
         what: "how goulash itself behaves; here be dragons, small ones",
         rows: TERMINAL_ROWS,
+        debug: true,
+    },
+    // Last, and expert-only: this is a tool for whoever is working ON
+    // goulash, not for anyone working IN it.
+    Group {
+        name: "logging",
+        what: "session transcripts, for debugging goulash itself",
+        rows: LOGGING_ROWS,
         debug: true,
     },
 ];
@@ -1535,6 +1567,7 @@ fn slash_command(
     stats: bool,
     caps: Option<&crate::models::Caps>,
     dbg: &crate::config::DebugConfig,
+    rec_cfg: &crate::config::RecordConfig,
     slow: &str,
     platform: bool,
     tools: bool,
@@ -1666,6 +1699,7 @@ fn slash_command(
                 slow_max_tokens,
                 debug: dbg_rows,
                 dbg,
+                rec: rec_cfg,
             });
             // The settings tree is a static list — nothing is being
             // fetched. Left unloaded, a filter that matched nothing said
@@ -1701,6 +1735,7 @@ fn slash_command(
                 slow_max_tokens,
                 debug: dbg_rows,
                 dbg,
+                rec: rec_cfg,
             });
             m.loaded = true;
             *menu = Some(m);
@@ -1790,6 +1825,7 @@ struct Live<'a> {
     slow_max_tokens: Option<&'a str>,
     debug: bool,
     dbg: &'a crate::config::DebugConfig,
+    rec: &'a crate::config::RecordConfig,
     slow: &'a str,
     thinking: &'a str,
     max_tokens: usize,
@@ -1866,6 +1902,10 @@ fn setting_help(slow: bool, name: &str, value: &str) -> &'static str {
         ("slow_via_fast", _) => "have fast re-voice slow's findings instead of showing them raw",
         ("quote_fast_to_slow", _) => "show slow what fast answered, instead of leaving it in the log",
         ("working_bar", _) => "the sweep that says the slot holds the PREVIOUS answer",
+        ("record", _) => "write a session transcript; for debugging goulash, not for you",
+        ("raw_output", _) => "also record every byte the terminal drew \u{2014} big, and rarely needed",
+        ("max_mb", _) => "megabytes of transcript to keep; the oldest go first",
+        ("max_sessions", _) => "how many sessions to keep, on the same rule",
         ("bar_rate_ms", _) => "ms the head spends on each cell; lower is faster, and writes more",
         ("bar_slide_ms", _) => "how long it takes to slide in — the part the eye reads",
         ("divulge_tools", _) => "list which common tools are installed (debug)",
@@ -1980,6 +2020,10 @@ fn settings_items(v: &Live) -> Vec<String> {
                     if v.dbg.quote_fast_to_slow { "on" } else { "off" }.to_string()
                 }
                 "working_bar" => if v.dbg.working_bar { "on" } else { "off" }.to_string(),
+                "record" => if v.rec.enabled { "on" } else { "off" }.to_string(),
+                "raw_output" => if v.rec.output { "on" } else { "off" }.to_string(),
+                "max_mb" => v.rec.max_mb.to_string(),
+                "max_sessions" => v.rec.max_sessions.to_string(),
                 "bar_rate_ms" => v.dbg.working_bar_step_ms.to_string(),
                 "bar_slide_ms" => v.dbg.working_bar_grow_ms.to_string(),
                 "idle_repaint" => if v.dbg.idle_repaint { "on" } else { "off" }.to_string(),
@@ -2681,6 +2725,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // Internal knobs, live-tunable from #/debug. Copied out of
     // cfg because the menu turns them mid-session.
     let mut dbg = cfg.debug.clone();
+    // Live, not next-launch. A toggle that persists and does nothing
+    // until you restart is the shape this project keeps getting bitten
+    // by, so turning recording on rebuilds the recorder then and there.
+    let mut rec_cfg = cfg.record.clone();
     // Input typed while the shell is being handed its rows back.
     //
     // Closing a menu shrinks the reserved area, which is a real winsize
@@ -3286,6 +3334,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             opt_stats,
                                             model_caps.as_ref(),
                                             &dbg,
+                                            &rec_cfg,
                                             &opt_slow,
                                             opt_platform,
                                             cfg.engine.divulge.tools,
@@ -3810,6 +3859,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 slow_max_tokens: opt_slow_max.as_deref(),
                                 debug: opt_dbg_rows,
                                 dbg: &dbg,
+                                rec: &rec_cfg,
                                 commentary,
                                 slow: &opt_slow,
                                 thinking: &opt_thinking,
@@ -3978,6 +4028,37 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         &(next == "on").to_string(),
                                     );
                                 }
+                                // Recording takes effect NOW, not next
+                                // launch: rebuilding the recorder opens
+                                // the file (and runs the sweep) on the
+                                // spot, and dropping it closes the old
+                                // one. A toggle that persists and does
+                                // nothing until restart is the exact
+                                // shape this project keeps shipping by
+                                // accident.
+                                "record" | "raw_output" => {
+                                    let on = next == "on";
+                                    let key = if name == "record" { "enabled" } else { "output" };
+                                    if name == "record" {
+                                        rec_cfg.enabled = on;
+                                    } else {
+                                        rec_cfg.output = on;
+                                    }
+                                    let mut c = cfg.clone();
+                                    c.record = rec_cfg.clone();
+                                    rec = Recorder::new(&c);
+                                    let _ = Config::persist_key("record", key, &on.to_string());
+                                }
+                                "max_mb" | "max_sessions" => {
+                                    let n: u64 = next.parse().unwrap_or(500);
+                                    if name == "max_mb" {
+                                        rec_cfg.max_mb = n;
+                                    } else {
+                                        rec_cfg.max_sessions = n as usize;
+                                    }
+                                    let _ =
+                                        Config::persist_key("record", &name, &n.to_string());
+                                }
                                 "bar_rate_ms" | "bar_slide_ms" => {
                                     let n: u64 = next.parse().unwrap_or(60);
                                     let key = if name == "bar_rate_ms" {
@@ -4145,6 +4226,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     slow_max_tokens: opt_slow_max.as_deref(),
                                     debug: opt_dbg_rows,
                                     dbg: &dbg,
+                                rec: &rec_cfg,
                                     commentary,
                                     slow: &opt_slow,
                                     thinking: &opt_thinking,
@@ -4339,6 +4421,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 slow_max_tokens: opt_slow_max.as_deref(),
                                 debug: opt_dbg_rows,
                                 dbg: &dbg,
+                                rec: &rec_cfg,
                                 commentary,
                                 slow: &opt_slow,
                                 thinking: &opt_thinking,
@@ -4493,6 +4576,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 opt_stats,
                                 model_caps.as_ref(),
                                 &dbg,
+                                &rec_cfg,
                                 &opt_slow,
                                 opt_platform,
                                 cfg.engine.divulge.tools,
@@ -4636,6 +4720,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     slow_max_tokens: opt_slow_max.as_deref(),
                                     debug: opt_dbg_rows,
                                     dbg: &dbg,
+                                rec: &rec_cfg,
                                 commentary,
                                 slow: &opt_slow,
                                 thinking: &opt_thinking,
@@ -5441,8 +5526,10 @@ mod root_tests {
     fn root(debug: bool) -> Vec<String> {
         let mem = MemoryStore::default();
         let dbg = DebugConfig::default();
+        let rec = crate::config::RecordConfig::default();
         settings_items(&Live {
             group: None,
+            rec: &rec,
             commentary: true,
             platform: true,
             tools: false,
