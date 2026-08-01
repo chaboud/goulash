@@ -4829,27 +4829,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         forgets,
                         pins,
                         pinclear,
-                        clearhead,
                     } => {
                         // The generation completed: the bound model earned
                         // its trust (ends probation, clears any distrust).
                         if let Some(m) = engine_model.as_ref() {
                             fuse.promote(m);
-                        }
-                        // The model was asked to forget the conversation.
-                        // Done FIRST, so this turn's own reply lands in a
-                        // fresh log rather than on top of the transcript
-                        // it just dropped. Never silent: an action taken
-                        // on the user's behalf has to be visible, and
-                        // this one deletes something.
-                        if clearhead {
-                            let (chars, turns) =
-                                clear_session(&mut ctx_log, &mut sug_hist, &mut band);
-                            browse = None;
-                            rec.aside(&format!("[cleared {chars} chars, {turns} slots]"));
-                            notice = Some(format!(
-                                "cleared the session log \u{2014} {chars} chars, {turns} slots"
-                            ));
                         }
                         // Working-context verbs. Clear first, for the same
                         // reason forgets precede remembers below: a

@@ -37,7 +37,13 @@ pub struct MemoryStore {
 impl Default for MemoryStore {
     fn default() -> Self {
         Self {
-            enabled: false,
+            // ON. It was off, and off is not neutral: the prompt said
+            // nothing about memory at all, so a model asked to remember
+            // something invented a file to write it to and said it had
+            // saved it. Either state costs stable-prefix tokens and
+            // either state is a rebuild to change; the one that is worth
+            // paying for is the one where the feature works.
+            enabled: true,
             // Sized for machine volume, not hand-curation: #/study writes
             // far more than a person would. Still the user's to set
             // (`#/memory limit N`, persisted).

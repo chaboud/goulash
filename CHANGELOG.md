@@ -91,6 +91,13 @@ where that is possible.
   now round-tripped through the real `Config` before anything reaches
   the disk, `on`/`off`/`yes`/`no` land as booleans, and a key serde has
   never heard of is refused with a suggestion instead of written.
+- **Memory is ON by default.** Off is not neutral: the prompt said
+  nothing about memory at all, so a model asked to remember something
+  invented a file to write it to and said it had saved it. Either state
+  costs stable-prefix tokens and either is a prefix rebuild to change;
+  the one worth paying for is the one where the feature works. Both
+  controls agree in both directions — `#/memory on|off` shows in
+  `#/settings ▸ memory`, the row toggles and persists to `memory.toml`.
 - **Asked to remember something with memory off, the model invented a
   file** — `echo "user likes cats" > ~/.goulash_memory.txt`, with "I
   saved your preference" underneath, which is a claim to have done
