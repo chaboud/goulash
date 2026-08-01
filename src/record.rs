@@ -48,7 +48,7 @@ fn sweep(dir: &std::path::Path, max_mb: u64, max_sessions: usize, keep: &std::pa
         .collect();
     // Newest first, so the walk keeps what is worth keeping and the
     // budget runs out on the old.
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|(t, ..)| std::cmp::Reverse(*t));
     let budget = max_mb.saturating_mul(1024 * 1024);
     let (mut kept_bytes, mut kept_n) = (0u64, 0usize);
     let (mut gone_n, mut gone_bytes) = (0usize, 0u64);

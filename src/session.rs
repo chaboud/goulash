@@ -4395,8 +4395,9 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                         // Fall through to the rebuild below, which fills
                         // the items for whichever group we landed in.
                     }
-                    if nav_into.is_some() || nav_up {
-                        if let Some(m) = menu.as_mut() {
+                    if (nav_into.is_some() || nav_up)
+                        && let Some(m) = menu.as_mut()
+                    {
                             // Where we are about to stand. Backing out
                             // of a group used to land on the first row of
                             // the parent, so leaving `nerd stuff` to
@@ -4439,7 +4440,6 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             {
                                 m.cursor = i;
                             }
-                        }
                     }
                     if close {
                         menu = None;
