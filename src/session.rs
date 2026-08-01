@@ -1866,7 +1866,7 @@ fn setting_help(slow: bool, name: &str, value: &str) -> &'static str {
         ("slow_via_fast", _) => "have fast re-voice slow's findings instead of showing them raw",
         ("quote_fast_to_slow", _) => "show slow what fast answered, instead of leaving it in the log",
         ("working_bar", _) => "the sweep that says the slot holds the PREVIOUS answer",
-        ("bar_rate_ms", _) => "how fast the sweep moves; lower is smoother and writes more",
+        ("bar_rate_ms", _) => "ms the head spends on each cell; lower is faster, and writes more",
         ("bar_slide_ms", _) => "how long it takes to slide in — the part the eye reads",
         ("divulge_tools", _) => "list which common tools are installed (debug)",
         ("divulge_path", _) => "every executable on PATH — ~3900 tokens (debug)",
@@ -4315,6 +4315,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     }
                     if nav_into.is_some() || nav_up {
                         if let Some(m) = menu.as_mut() {
+                            // Where we are about to stand. Backing out
+                            // of a group used to land on the first row of
+                            // the parent, so leaving `nerd stuff` to
+                            // check one thing and going back in meant
+                            // scrolling down to it again. Esc means
+                            // "back", and back is the row you came
+                            // through, not the top of the list.
+                            let came_from = nav_up.then(|| m.group.clone()).flatten();
                             m.group = if nav_up { None } else { nav_into.clone() };
                             m.filter.clear();
                             m.cursor = 0;
@@ -4340,6 +4348,14 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 memory: &memory,
                                 caps: model_caps.as_ref(),
                             });
+                            if let Some(g) = came_from
+                                && let Some(i) = m
+                                    .items
+                                    .iter()
+                                    .position(|r| r.trim_end_matches('\u{25b8}').trim() == g)
+                            {
+                                m.cursor = i;
+                            }
                         }
                     }
                     if close {

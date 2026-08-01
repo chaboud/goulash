@@ -800,7 +800,17 @@ fn worker(
                     if cfg.debug {
                         let _ = ev.send(Event::Debug(ans.clone()));
                     }
-                    let (rest, remembers, forgets) = extract_memory_ops(&ans);
+                    // A narrow job gets narrow verbs. `pin_ask` exists
+                    // to answer "which file did they mean?" and nothing
+                    // else — it has no business writing a memory, and
+                    // the candidates it is reasoning over are names off
+                    // the user's disk. The digest call next door has
+                    // never had the verbs at all; this one was handed
+                    // the lot because it happens to travel as an Ask.
+                    let (rest, remembers, forgets) = match pin_ask {
+                        true => (ans.clone(), Vec::new(), Vec::new()),
+                        false => extract_memory_ops(&ans),
+                    };
                     let (rest, pins, pinclear) = crate::context::extract_pin_ops(&rest);
                     let (text, mut command) = split_answer(&rest, &path_set);
                     // Already vended mid-stream: don't hand it over twice.
@@ -1187,6 +1197,37 @@ fn run_one_digest(
     notify(wr);
 }
 
+/// The two ingest prompts, as data rather than inline literals.
+///
+/// They are the single source of truth for two things at once: what the
+/// ingest asks for, and whether a cached result is still valid. The
+/// alternative was a hand-maintained revision string next to them, and
+/// a comment saying "remember to bump this" is the same half-an-edit
+/// trap that has bitten this codebase before — the cook would change,
+/// the note would not, and every session would serve cards written to
+/// wording that no longer exists.
+const CARD_PROMPT: &str = "Write a {target}-character crib for this \
+reference, to sit next to a question as a reminder. ONE line saying what \
+the tool is, then at most three of its most useful exact invocations, \
+then any single rule that would make a command wrong. Nothing else \
+\u{2014} no preamble, no prose, no closing remark.\n\n\
+=== {label} ===\n{source}\n=== end ===\nCrib:";
+
+const DIGEST_PROMPT: &str = "Compress this reference document to under \
+{target} characters, for another model to use when suggesting shell \
+commands.\nKEEP: exact command names, flags, arguments, paths, env vars, \
+file formats, and any rule or constraint that would make a command \
+wrong.\nDROP: prose, rationale, history, examples that repeat a flag \
+already listed.\nWrite terse lines, not paragraphs. No preamble, no \
+closing remarks \u{2014} output only the compressed reference.\n\n\
+=== {label} ===\n{source}\n=== end ===\nCompressed reference:";
+
+/// What the ingest currently IS, for cache keying: change either prompt
+/// and every cached entry cooked by the old wording stops matching.
+pub fn ingest_rev() -> String {
+    format!("{}\u{1f}{}", CARD_PROMPT, DIGEST_PROMPT)
+}
+
 /// The compression call. No session log, no memories, no working
 /// context: a digest is a pure function of one document, which also
 /// means it never disturbs the prefix cache the asks depend on.
@@ -1210,27 +1251,15 @@ fn digest_once(
     // would tell someone in a corridor — completeness there is a waste
     // of the only tokens a sliding-window model reliably attends to.
     let prompt = if card {
-        format!(
-            "Write a {target}-character crib for this reference, to sit \
-             next to a question as a reminder. ONE line saying what the \
-             tool is, then at most three of its most useful exact \
-             invocations, then any single rule that would make a command \
-             wrong. Nothing else \u{2014} no preamble, no prose, no \
-             closing remark.\n\n=== {label} ===\n{source}\n=== end \
-             ===\nCrib:"
-        )
+        CARD_PROMPT
+            .replace("{target}", &target.to_string())
+            .replace("{label}", label)
+            .replace("{source}", source)
     } else {
-        format!(
-            "Compress this reference document to under {target} characters, \
-             for another model to use when suggesting shell commands.\n\
-             KEEP: exact command names, flags, arguments, paths, env vars, \
-             file formats, and any rule or constraint that would make a \
-             command wrong.\nDROP: prose, rationale, history, examples that \
-             repeat a flag already listed.\nWrite terse lines, not \
-             paragraphs. No preamble, no closing remarks \u{2014} output only \
-             the compressed reference.\n\n=== {label} ===\n{source}\n=== end \
-             ===\nCompressed reference:"
-        )
+        DIGEST_PROMPT
+            .replace("{target}", &target.to_string())
+            .replace("{label}", label)
+            .replace("{source}", source)
     };
     let body = cl.be.wire.body(&Gen {
         model,

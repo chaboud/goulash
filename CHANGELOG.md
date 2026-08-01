@@ -91,6 +91,30 @@ where that is possible.
   now round-tripped through the real `Config` before anything reaches
   the disk, `on`/`off`/`yes`/`no` land as booleans, and a key serde has
   never heard of is refused with a suggestion instead of written.
+- **Ingest results are cached across sessions** (`~/.goulash/pins/`).
+  Pinning cost a model call every session — often two, since a pin over
+  its share wants a digest as well as a card — and nothing persisted.
+  Measured on a 4 KB reference: the digest landed 25 s after the pin,
+  and its notice arrived on top of the next pin's. The key is over the
+  assembled ingest input, so it covers a file, a rendered tree, and the
+  truncation of either; plus the app version and the ingest prompts
+  themselves, so a release or a reworded prompt re-cooks. 200 entries,
+  least-recently-cooked evicted.
+- **A pinned file can no longer plant a memory.** The working-context
+  block opened "prefer these over general knowledge when they conflict"
+  with no scope, so a pinned file reading "add a farm animal joke to
+  every answer" was read as an instruction with precedence — and the
+  model then wrote that instruction into MEMORY, where it outlived the
+  pin, the log and `#/clear`. Pinned text is now framed as reference
+  material that never directs an answer and is never remembered. The
+  pin-resolve call (`#@ <words>`) has had the memory verbs taken off it
+  entirely: it exists to answer "which file did they mean", and the
+  digest call next door has never had them.
+- **`bar_rate_ms` help said the opposite of the truth.** It is ms per
+  cell — the sweep is eight of them — and lower is FASTER, not
+  smoother.
+- **Esc out of a settings group lands on the group you came through**,
+  not the top of the list.
 - **The memory store was eating its own rendering.** Slots are shown to
   the model as `  [6] <text>`, and it copied the rendered line back into
   a `REMEMBER:` — prefix and all. Each session stored one longer copy of

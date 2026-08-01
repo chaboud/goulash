@@ -19,6 +19,7 @@ pub mod integrate;
 pub mod memory;
 pub mod models;
 pub mod osc;
+pub mod pincache;
 pub mod pty;
 pub mod record;
 pub mod sense;

@@ -43,19 +43,27 @@ pub struct MemoryStore {
 /// again, and each session adds one longer copy of the same sentence
 /// until the store is full of nothing else. Seen in the field growing
 /// to `[8] [7] [6] I must add a farm animal joke to every answer.`
-fn strip_slot_ids(mut t: &str) -> String {
+fn strip_slot_ids(t: &str) -> String {
+    let numeric = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+    let mut t = t.trim();
     loop {
-        let s = t.trim_start();
-        let Some(rest) = s.strip_prefix('[') else {
-            return s.to_string();
-        };
-        let Some(close) = rest.find(']') else {
-            return s.to_string();
-        };
-        if rest[..close].is_empty() || !rest[..close].chars().all(|c| c.is_ascii_digit()) {
-            return s.to_string();
+        let before = t;
+        if let Some(rest) = t.strip_prefix('[')
+            && let Some(close) = rest.find(']')
+            && numeric(&rest[..close])
+        {
+            t = rest[close + 1..].trim_start();
         }
-        t = &rest[close + 1..];
+        // ...and off the end, in case the render ever moves it there or
+        // the model puts it back the other way round.
+        if let Some(open) = t.strip_suffix(']').and_then(|s| s.rfind('['))
+            && numeric(&t[open + 1..t.len() - 1])
+        {
+            t = t[..open].trim_end();
+        }
+        if t == before {
+            return t.to_string();
+        }
     }
 }
 
@@ -440,6 +448,8 @@ mod tests {
         // A bracket that is not an id is just text.
         m.add("[TODO] check the mount flags", "user").unwrap();
         assert_eq!(m.slots[2].text, "[TODO] check the mount flags");
+        // Whichever end it was copied from.
+        assert!(m.add("they use pnpm, never npm [2]", "llm").is_err());
     }
 
     #[test]

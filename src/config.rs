@@ -481,8 +481,17 @@ pub struct DebugConfig {
     /// the engine is busy, and that is the right weight for work nobody
     /// is waiting on.
     pub working_bar_on_watch: bool,
-    /// How long the head takes to move one cell, in ms. Lower is
-    /// smoother and writes more.
+    /// How long the head spends on each cell, in ms.
+    ///
+    /// The head crosses the bar and comes back, so one full sweep is
+    /// `2 x (CELLS - 1)` of these — eight, at the current width. 150 ms
+    /// a cell is a 1.2 s sweep.
+    ///
+    /// Lower is FASTER, not smoother. Smoothness comes from the sub-cell
+    /// shading and the repaint cadence, which are independent of this:
+    /// dropping the rate moves the head further between frames, so the
+    /// sweep reads chunkier while also writing more. The menu said the
+    /// opposite for a release.
     pub working_bar_step_ms: u64,
     /// How long the bar takes to slide in, and (at ~70% of this) back
     /// out. The entrance and exit are what the eye actually reads, so
