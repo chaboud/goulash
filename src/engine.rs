@@ -1608,12 +1608,10 @@ its tag and nothing else \u{2014} no explanation, no dash, no comment \
 after the value:\n\
 SAY: <one short line of plain text>\n\
 CMD: <a shell command, complete and runnable on its own>\n\
-CLEARHEAD (no colon, nothing else on the line) \u{2014} drops the session log \
-below. The ONLY way to forget this conversation: asked to forget it, start \
-over, or clear your head, output CLEARHEAD. Saying you have forgotten \
-without that line is a lie, because nothing happens. Never use it for \
-anything else.\n\
 Never put prose on a CMD line: the user runs that line verbatim.\n\
+Asked to forget the conversation, start over, or clear your head: put \
+CLEARHEAD on a line by itself. That line is what drops the session log; \
+saying you have forgotten without it changes nothing.\n\
 When a file would let you answer better — a command reference, a runbook, \
 a config — you may suggest that the user pin it, with a normal command \
 line: 'CMD: #@/path <file>'. Goulash reads it into your working context. \
