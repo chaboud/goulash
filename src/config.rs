@@ -497,6 +497,9 @@ pub struct DebugConfig {
     /// out. The entrance and exit are what the eye actually reads, so
     /// this is the knob that decides whether it feels like a slide or a
     /// pop.
+    ///
+    /// It also times the lane handover: a `query` turn fades cyan to
+    /// gold over this, in place, without the bar changing width.
     pub working_bar_grow_ms: u64,
 }
 
@@ -515,7 +518,7 @@ impl Default for DebugConfig {
             // (session.rs TERMINAL_ROWS) — a default the row cannot
             // find renders fine and then cycles from somewhere else.
             working_bar_step_ms: 150,
-            working_bar_grow_ms: 350,
+            working_bar_grow_ms: 500,
         }
     }
 }
