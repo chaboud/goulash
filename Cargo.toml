@@ -14,7 +14,21 @@ categories = ["command-line-utilities"]
 # docs/ holds a 6.4 MB demo GIF. crates.io cannot render a relative
 # image path anyway, so shipping it made every `cargo install` pay for a
 # file nobody could see — the README points at the raw GitHub URL.
-exclude = ["wiki/", "tests/", ".github/", "Formula/", "scripts/", "bench/", "docs/"]
+# What does NOT ship to crates.io. The wiki, the bench, the tests and
+# the scripts are how goulash is built and reasoned about; CLAUDE.md
+# is instructions to a coding agent working ON it. None of that is
+# any use to someone installing the binary, and shipping it invites
+# the reader to mistake internal notes for documentation.
+exclude = [
+    "wiki/",
+    "tests/",
+    ".github/",
+    "Formula/",
+    "scripts/",
+    "bench/",
+    "docs/",
+    "CLAUDE.md",
+]
 
 # The characterization harness. Kept out of the published package and out
 # of goulash's dependency tree, but built against the real lib so it
