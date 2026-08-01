@@ -10,6 +10,66 @@ where that is possible.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.4.0] — 2026-08-01
+
+Two lines of work merged: a lane/context/interaction release driven by
+daily use, and a measurement release that replaced guessed engine
+defaults with ones traceable to ~5,500 generations across 24 model cells
+and two engines ([`bench/`](bench/)).
+
+
+### Added
+- **Two lanes.** `#` answers fast; `#?` sends the slow lane to research
+  the same turn and amend underneath it. `#?/model` binds the research
+  lane, `#?/cancel` stops it, and `engine.slow` is a ladder — `manual`
+  (default), `query`, `waldorf` — saying when the lane speaks up
+  *unasked*. There is no `off` rung: `#?` **is** the request for this
+  lane and a pin always goes to it, so a setting able to refuse either
+  would make the key silently dead.
+- **Per-lane provider, model, thinking and token budget.**
+  `[engine.slow_lane]` overrides any of them, so research can run on a
+  bigger box or a hosted model while `#` stays local. Anything left
+  `auto` follows the fast lane by being **absent** from the file, never
+  a frozen copy of what fast happens to say today — so improving a fast
+  default improves slow with it. Slow thinking defaults to `medium`,
+  because a research pass that does not think is just a slower copy of
+  the answer you already have.
+- **`#@` working context.** Pin a file or directory into the prompt's
+  stable prefix; a vendor's command reference makes the model correct
+  about a CLI it has never seen. Read-only, performed by goulash, never
+  the shell. Pins carry a *card* — a few lines restated next to the
+  question, where a sliding-window model actually attends.
+- **Menus.** `#/settings`, `#/help`, `#/debug`, `#/memory` and the `#@`
+  pin browser, all on one primitive: scroll, type to filter, Enter acts.
+- **Per-model capability dialects** (`models.rs`). Thinking is not one
+  dial: `gemma3n` rejects the request, `gpt-oss` takes named levels,
+  `qwen3` a boolean, `deepseek-r1` reasons whether asked or not.
+- **OpenAI-compatible provider** (`wire.rs`) — LM Studio, llama.cpp,
+  vLLM, and any hosted `/v1`. Targets `/v1/chat/completions`, because
+  that is the endpoint that applies the model's own template. The raw
+  `/v1/completions` endpoint applies none, and an instruction sent
+  there is *continued* rather than followed — Gemma degenerates into a
+  repetition loop, qwen3 answers a question nobody asked. Available as
+  `provider = "openai-raw"` for measuring prefix caching, which is the
+  one thing it is genuinely better at.
+- **Machine facts** (`engine.divulge.platform`, on by default). The
+  prompt now names the OS, shell and userland: *"BSD differs from GNU:
+  `du -d N` not `--max-depth`…"*. Measured over 4355 vended commands, 91
+  used GNU-only syntax on a Darwin box and **70 of the 91 were that one
+  flag** — suggested, watched to fail, and suggested again.
+- **`--config print | path | set K V | reset [K]`**, handled before the
+  tty check so it works over ssh and in scripts. `reset` removes a key
+  rather than writing today's value, so improved defaults still arrive.
+- **Lane activity dots** in the status chip — cyan for fast, amber for
+  slow, one per lane because both run at once.
+- **Runaway stats row** (`#/settings stats`) — queue depths and counters,
+  because every bug found in review was something whose growth was
+  unconditional while its clearing was not.
+- **A library target**, so the characterization bench drives the real
+  prompt builder, wire format and answer parser instead of a copy.
+
 ### Changed
 - **The `terminal` settings group is now `nerd stuff`.** It stopped
   being about the emulator once the working bar and `slow_via_fast`
@@ -64,6 +124,24 @@ where that is possible.
   absent from it is a setting nobody can write.
 - **`--help` and `--config --help` say what the commands do**, with
   worked examples, and `--config --help` exits 0 instead of 2.
+- **`num_ctx` is negotiated, not demanded.** It is part of a model's load
+  identity, so asking for a size evicts anything loaded at a different
+  one. goulash asks the server what is resident and requests **exactly
+  that** when it is large enough, falling back to `num_ctx_min` only
+  when the loaded window is genuinely too small to hold a session log.
+  Staying silent is not an option that means what it looks like: an
+  absent `num_ctx` is a request for the model's own default, not a
+  request to keep what is loaded.
+- **One token budget, generous** (`max_tokens`, 512 → 8192), covering
+  reasoning and answer together. The separate thinking budget is gone:
+  reasoning is not ours to ration — a chat template reasons whatever we
+  send, and `deepseek-r1` reasons through `think:false` — so splitting
+  the meter only ever produced empty answers. Brevity comes from the
+  directive and the band clamp; answers that arrive use a median of 32
+  tokens.
+- The prompt asks for the command **before** the prose. Vend rate on `#`
+  asks 52% → 77%, with no detectable quality change (paired blind
+  grading, n=112).
 
 ### Fixed
 - **The slow lane's `PASS` was vended as a command.** The amending prompt
@@ -143,85 +221,6 @@ where that is possible.
 - **Slow's reasoning never reached fast's context on a `#?` turn** —
   only on amendments. Fast had the command and no idea where it came
   from, which is exactly what it gets asked about.
-
-## [0.4.0] — unreleased
-
-Two lines of work merged: a lane/context/interaction release driven by
-daily use, and a measurement release that replaced guessed engine
-defaults with ones traceable to ~5,500 generations across 24 model cells
-and two engines ([`bench/`](bench/)).
-
-### Added
-- **Two lanes.** `#` answers fast; `#?` sends the slow lane to research
-  the same turn and amend underneath it. `#?/model` binds the research
-  lane, `#?/cancel` stops it, and `engine.slow` is a ladder — `manual`
-  (default), `query`, `waldorf` — saying when the lane speaks up
-  *unasked*. There is no `off` rung: `#?` **is** the request for this
-  lane and a pin always goes to it, so a setting able to refuse either
-  would make the key silently dead.
-- **Per-lane provider, model, thinking and token budget.**
-  `[engine.slow_lane]` overrides any of them, so research can run on a
-  bigger box or a hosted model while `#` stays local. Anything left
-  `auto` follows the fast lane by being **absent** from the file, never
-  a frozen copy of what fast happens to say today — so improving a fast
-  default improves slow with it. Slow thinking defaults to `medium`,
-  because a research pass that does not think is just a slower copy of
-  the answer you already have.
-- **`#@` working context.** Pin a file or directory into the prompt's
-  stable prefix; a vendor's command reference makes the model correct
-  about a CLI it has never seen. Read-only, performed by goulash, never
-  the shell. Pins carry a *card* — a few lines restated next to the
-  question, where a sliding-window model actually attends.
-- **Menus.** `#/settings`, `#/help`, `#/debug`, `#/memory` and the `#@`
-  pin browser, all on one primitive: scroll, type to filter, Enter acts.
-- **Per-model capability dialects** (`models.rs`). Thinking is not one
-  dial: `gemma3n` rejects the request, `gpt-oss` takes named levels,
-  `qwen3` a boolean, `deepseek-r1` reasons whether asked or not.
-- **OpenAI-compatible provider** (`wire.rs`) — LM Studio, llama.cpp,
-  vLLM, and any hosted `/v1`. Targets `/v1/chat/completions`, because
-  that is the endpoint that applies the model's own template. The raw
-  `/v1/completions` endpoint applies none, and an instruction sent
-  there is *continued* rather than followed — Gemma degenerates into a
-  repetition loop, qwen3 answers a question nobody asked. Available as
-  `provider = "openai-raw"` for measuring prefix caching, which is the
-  one thing it is genuinely better at.
-- **Machine facts** (`engine.divulge.platform`, on by default). The
-  prompt now names the OS, shell and userland: *"BSD differs from GNU:
-  `du -d N` not `--max-depth`…"*. Measured over 4355 vended commands, 91
-  used GNU-only syntax on a Darwin box and **70 of the 91 were that one
-  flag** — suggested, watched to fail, and suggested again.
-- **`--config print | path | set K V | reset [K]`**, handled before the
-  tty check so it works over ssh and in scripts. `reset` removes a key
-  rather than writing today's value, so improved defaults still arrive.
-- **Lane activity dots** in the status chip — cyan for fast, amber for
-  slow, one per lane because both run at once.
-- **Runaway stats row** (`#/settings stats`) — queue depths and counters,
-  because every bug found in review was something whose growth was
-  unconditional while its clearing was not.
-- **A library target**, so the characterization bench drives the real
-  prompt builder, wire format and answer parser instead of a copy.
-
-### Changed
-- **`num_ctx` is negotiated, not demanded.** It is part of a model's load
-  identity, so asking for a size evicts anything loaded at a different
-  one. goulash asks the server what is resident and requests **exactly
-  that** when it is large enough, falling back to `num_ctx_min` only
-  when the loaded window is genuinely too small to hold a session log.
-  Staying silent is not an option that means what it looks like: an
-  absent `num_ctx` is a request for the model's own default, not a
-  request to keep what is loaded.
-- **One token budget, generous** (`max_tokens`, 512 → 8192), covering
-  reasoning and answer together. The separate thinking budget is gone:
-  reasoning is not ours to ration — a chat template reasons whatever we
-  send, and `deepseek-r1` reasons through `think:false` — so splitting
-  the meter only ever produced empty answers. Brevity comes from the
-  directive and the band clamp; answers that arrive use a median of 32
-  tokens.
-- The prompt asks for the command **before** the prose. Vend rate on `#`
-  asks 52% → 77%, with no detectable quality change (paired blind
-  grading, n=112).
-
-### Fixed
 - **The stop sequence on the main answer path.** `["\n\n"]` survived on
   `generate()` after the newer paths had dropped it. Removing it lifts
   the answer rate 81% → 94%, and with reasoning on it was a wall rather
