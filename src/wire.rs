@@ -363,10 +363,32 @@ impl Wire {
                         as u64,
                 })
             }
-            // An OpenAI-compatible stream omits usage unless asked, and
-            // goulash does not ask: the numbers would arrive for one
-            // wire and not the other, which is worse than none.
-            Wire::OpenAi | Wire::OpenAiChat => None,
+            // The spec's own mechanism: with `stream_options.include_usage`
+            // an extra chunk arrives before `data: [DONE]` carrying usage
+            // for the whole request, with `choices` empty. We ask for it
+            // in `body()`, so the stats row works on a hosted endpoint
+            // too — this used to return None with a comment saying we
+            // "do not ask", which was true and did not have to be.
+            Wire::OpenAi | Wire::OpenAiChat => {
+                let u = &v["usage"];
+                if !u.is_object() {
+                    return None;
+                }
+                let out = u["completion_tokens"].as_u64().unwrap_or(0);
+                Some(GenStats {
+                    out_tokens: out,
+                    // Where a server reports it; absent is not zero, but
+                    // the row shows reasoning only when non-zero anyway.
+                    reasoning_tokens: u["completion_tokens_details"]["reasoning_tokens"]
+                        .as_u64()
+                        .unwrap_or(0),
+                    // Not in the spec's usage block. Left at zero rather
+                    // than timed client-side, which would measure our own
+                    // scheduling as much as the server's.
+                    tokens_per_second: 0.0,
+                    ttft_ms: 0,
+                })
+            }
         }
     }
 
@@ -428,6 +450,10 @@ impl Wire {
                 }
                 if let Some(e) = g.effort {
                     b["reasoning_effort"] = json!(e);
+                }
+                // Spec: the usage chunk only arrives if asked for.
+                if g.stream {
+                    b["stream_options"] = json!({"include_usage": true});
                 }
                 b
             }
@@ -495,6 +521,10 @@ impl Wire {
                 }
                 if let Some(e) = g.effort {
                     b["reasoning_effort"] = json!(e);
+                }
+                // Spec: the usage chunk only arrives if asked for.
+                if g.stream {
+                    b["stream_options"] = json!({"include_usage": true});
                 }
                 // Deliberately NOT sending chat_template_kwargs
                 // {enable_thinking: false}. Measured against LM Studio +
@@ -719,9 +749,37 @@ mod tests {
         assert_eq!(g.reasoning_tokens, 0);
         assert_eq!(Wire::Ollama.gen_stats(r#"{"done":false,"response":"x"}"#), None);
 
-        // The OpenAI wires omit usage unless asked, and goulash does not
-        // ask — better nothing than a number for one wire only.
-        assert_eq!(Wire::OpenAiChat.gen_stats(r#"data: {"usage":{}}"#), None);
+        // The OpenAI wires: usage arrives in its own chunk before
+        // `data: [DONE]`, with `choices` empty — the shape the spec
+        // describes for `stream_options.include_usage`, which body()
+        // now asks for.
+        let oai = r#"data: {"choices":[],"usage":{"completion_tokens":128,
+            "completion_tokens_details":{"reasoning_tokens":96}}}"#;
+        let g = Wire::OpenAiChat.gen_stats(oai).expect("usage chunk parses");
+        assert_eq!(g.out_tokens, 128);
+        assert_eq!(g.reasoning_tokens, 96);
+        // An ordinary content chunk carries no usage and must stay quiet
+        // rather than reporting a confident zero.
+        assert_eq!(
+            Wire::OpenAiChat.gen_stats(r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#),
+            None
+        );
+    }
+
+    /// Asked for explicitly, because the spec says usage is withheld
+    /// unless you do — and without it the stats row is blank on exactly
+    /// the wires a hosted provider uses.
+    #[test]
+    fn streaming_openai_requests_its_usage_chunk() {
+        let mut g = req("p", &[]);
+        g.stream = true;
+        for w in [Wire::OpenAi, Wire::OpenAiChat] {
+            assert_eq!(w.body(&g)["stream_options"]["include_usage"], true, "{w:?}");
+        }
+        g.stream = false;
+        for w in [Wire::OpenAi, Wire::OpenAiChat] {
+            assert!(w.body(&g).get("stream_options").is_none(), "{w:?} not streaming");
+        }
     }
 
     #[test]

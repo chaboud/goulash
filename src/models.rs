@@ -121,9 +121,15 @@ impl Caps {
         //   reasoning_effort=none  1.6s    27 tokens, none of it reasoning
         //
         // That 10x was never LM Studio being slow. It was us never
-        // asking it to stop. `none` is honoured; the named levels are
-        // ignored by a model that only has on/off, which is harmless —
-        // asking such a model for `high` means "reason", and it does.
+        // asking it to stop.
+        //
+        // `none` is in the spec, not a local quirk: OpenAI's
+        // `ReasoningEffort` is
+        // `none | minimal | low | medium | high | xhigh | max`,
+        // default `medium`. So this travels to a hosted endpoint
+        // unchanged. The named levels are ignored by a model that only
+        // has on/off, which is harmless — asking such a model for
+        // `high` means "reason", and it does.
         if self.think == Think::None {
             return None;
         }

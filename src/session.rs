@@ -2706,6 +2706,21 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                         notice = None;
                                         band = None;
                                         browse = None;
+                                        // "If the user has moved on, we
+                                        // move on" (wiki:
+                                        // two-lane-engagement). Running a
+                                        // command is moving on, and a
+                                        // research call is the longest
+                                        // thing here — letting it run is
+                                        // GPU spent on a question that
+                                        // has been superseded, and it
+                                        // blocks the one worker while it
+                                        // does.
+                                        if researching.is_some()
+                                            && let Some(eng) = engine.as_ref()
+                                        {
+                                            eng.cancel_research();
+                                        }
                                     }
                                     cur_cmd = Some(cmd);
                                     block_tail.clear();

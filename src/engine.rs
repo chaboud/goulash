@@ -387,7 +387,16 @@ impl Engine {
         });
     }
 
+    /// Abandon research: the queued job AND the one in flight.
+    ///
+    /// The queue clear alone was only half of it — a research call is
+    /// the longest thing goulash does, and clearing a queue while the
+    /// GPU keeps working on a superseded question is not cancelling, it
+    /// is bookkeeping. `interrupt` closes the transport, which is the
+    /// only cancellation either engine offers: neither exposes a
+    /// cancel-by-id endpoint, so hanging up IS the protocol.
     pub fn cancel_research(&self) {
+        self.interrupt();
         let _ = self.job_tx.send(Job::CancelResearch);
     }
 }
@@ -516,6 +525,7 @@ fn worker(
                 &mut backfill,
                 &ev,
                 &wr,
+            &preempt,
             ) {
                 continue;
             }
@@ -813,7 +823,8 @@ fn worker(
             &mut backfill,
             &ev,
             &wr,
-        ) {
+        &preempt,
+            ) {
             continue;
         }
         run_one_digest(
@@ -869,6 +880,7 @@ fn run_research(
     backfill: &mut std::collections::VecDeque<Job>,
     ev: &mpsc::Sender<Event>,
     wr: &OwnedFd,
+    preempt: &AtomicBool,
 ) -> bool {
     let job = pending.take().or_else(|| backfill.pop_front());
     let Some(Job::Research {
@@ -895,7 +907,7 @@ fn run_research(
     });
     notify(wr);
     let out = research_once(
-        cl, cfg, caps, model, &question, &context, &memories, &pinned, direct,
+        cl, cfg, caps, model, &question, &context, &memories, &pinned, direct, preempt,
     );
     let _ = ev.send(Event::Idle { kind: Work::Research });
     let _ = ev.send(Event::Researching(None));
@@ -928,6 +940,7 @@ fn research_once(
     memories: &str,
     pinned: &str,
     direct: bool,
+    preempt: &AtomicBool,
 ) -> Result<(String, Option<String>, String), String> {
     // The slow lane's own ceiling, not an inflated one. This used to be
     // `(max_tokens * 4).clamp(512, 4096)` and then `.max(slow_max_tokens)`
@@ -967,7 +980,14 @@ fn research_once(
     let body = cl.be.wire.body(&Gen {
         model,
         prompt: &prompt,
-        stream: false,
+        // Streamed, though nothing here shows a partial: it is the ONLY
+        // way to cancel. A blocking POST is un-abortable from the read
+        // side — we are parked inside it — and `#?` is the longest call
+        // goulash makes, so it is exactly the one a user needs to be
+        // able to walk away from. Neither engine offers a cancel-by-id
+        // endpoint; closing the connection IS the protocol, and that
+        // needs a loop to break out of.
+        stream: true,
         temperature: 0.3,
         max_tokens: budget,
         num_ctx: ctx_for(cl, cfg, model),
@@ -987,10 +1007,24 @@ fn research_once(
         .timeout(Duration::from_secs(cfg.slow_max_secs))
         .send_string(&body.to_string())
         .map_err(|e| e.to_string())?;
-    let text = resp.into_string().map_err(|e| e.to_string())?;
-    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let raw = cl.be.wire.text(&v).unwrap_or_default();
-    let raw = raw.trim();
+    // Accumulate. Dropping the reader closes the socket, which is what
+    // actually stops the model — verified against a server that reports
+    // when its client goes away: 22 chunks written, not 120.
+    let reader = std::io::BufReader::new(resp.into_reader());
+    let mut acc = String::new();
+    for line in reader.lines() {
+        if preempt.load(Ordering::Relaxed) {
+            return Err(String::new()); // the user moved on; say nothing
+        }
+        let line = line.map_err(|e| e.to_string())?;
+        if let Some(chunk) = cl.be.wire.chunk(&line) {
+            acc.push_str(&chunk.text);
+            if chunk.done {
+                break;
+            }
+        }
+    }
+    let raw = acc.trim();
     if raw.is_empty() || raw.trim_end_matches(['.', '!']) == "PASS" {
         return Err("nothing better".to_string());
     }
