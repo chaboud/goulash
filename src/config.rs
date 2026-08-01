@@ -64,30 +64,38 @@ impl Default for DivulgeConfig {
 /// "Behaves" is a narrow claim: answers in one line, puts the command on
 /// a `CMD:` line and nothing else on it, and does it fast enough that a
 /// status bar is the right place for the answer. It is NOT a ranking of
-/// the models in general.
+/// the models in general — and two that a size table would have put
+/// here are deliberately absent, `gemma3:4b` and `llama3.1:8b`, because
+/// they were tried in this job and were not good at it.
 ///
 /// Ordered by quality-per-second rather than by size. The answer lands
 /// in a status bar while someone is mid-thought, so a 12B that is twice
 /// as slow has to be more than twice as good to be worth picking over a
 /// 4B, and mostly is not. Heavyweights stay opt-in.
 ///
-/// Both spellings of the same weights appear, because the same list
-/// serves an ollama listing (`gemma4:e4b`) and an OpenAI-compatible one
-/// (`google/gemma-4-e4b`), and only one of them will ever match.
+/// Several spellings of the same weights appear, because the same list
+/// serves an ollama listing (`gemma4:e4b`), its MLX build
+/// (`gemma4:e4b-mlx`) and an OpenAI-compatible one
+/// (`google/gemma-4-e4b`). Only one of them will ever match, and a name
+/// that is not installed costs a string compare.
+///
+/// GGUF is listed ahead of MLX in each pair. That is a preference, not
+/// a measurement: on Apple silicon the MLX build is usually the faster
+/// of the two, so anyone holding both may want the order flipped —
+/// `engine.favorites` is one `--config set` away.
 ///
 /// A name matches exactly, or up to the `:tag` — so `gemma4` alone
 /// would match every gemma4 tag. Entries here are explicit on purpose:
 /// a family name would happily select a variant nobody has measured.
 pub const DEFAULT_FAVORITES: &[&str] = &[
     "gemma4:e4b",
+    "gemma4:e4b-mlx",
     "google/gemma-4-e4b",
     "qwen3.5:4b",
+    "qwen3.5:4b-mlx",
     "qwen/qwen3-4b",
-    "gemma3:4b",
-    "llama3.1:8b",
-    "qwen3.5:9b",
-    "qwen/qwen3-8b",
     "gemma4:12b",
+    "gemma4:12b-mlx",
     "google/gemma-4-12b-qat",
 ];
 
