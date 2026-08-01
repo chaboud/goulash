@@ -1110,20 +1110,23 @@ def test_engine_ollama():
           visible(out).count(b"command_first: off") >= 2, out[-400:])
     os.write(mfd, b"\r")            # back on, so later checks stand
     read_until(mfd, rb"command_first: on", 4.0)
-    for _ in range(len("command_first")):
-        os.write(mfd, b"\x7f")
-        time.sleep(0.04)
-    time.sleep(0.3)
-    # Two Escs to leave: one out of the group, one out of the menu. That
-    # is the point of the tree — Esc means "back", not "abandon". Assert
-    # it actually closed, or the next command is typed into the filter
-    # and the failure lands somewhere unrelated.
-    os.write(mfd, b"\x1b")
-    out = read_until(mfd, "fast lane \u25b8".encode(), 4.0)
-    check("esc leaves the group, not the menu",
-          saw(out, "fast lane \u25b8".encode()), out[-200:])
-    os.write(mfd, b"\x1b")
-    time.sleep(0.3)
+    # Esc means "back", and it clears a typed filter on its way — so how
+    # many it takes to get out depends on whether one is still there.
+    # Assert what each step SHOWS rather than counting keys, and read the
+    # position off the BREADCRUMB's own end: "fast lane ▸" is printed
+    # both inside the group and in the trail on the way out, so a bare
+    # substring test cannot tell you which side of the boundary you are
+    # on. The root is `settings ▸` with the filter caret straight after.
+    root = "settings \u25b8 \u258f".encode()
+    at_root = False
+    for _ in range(6):
+        os.write(mfd, b"\x1b")
+        out = read_until(mfd, rb"80x20\+4", 1.2)
+        at_root = at_root or saw(out, root)
+        if saw(out, b"80x20+4"):
+            break
+    check("esc walks back out of the group before it closes the menu",
+          at_root, "never showed the root breadcrumb")
     os.write(mfd, b"\r")            # settle ZLE's meta prefix (dismiss_and_exit)
     time.sleep(0.3)
     # "Closed" means keys reach the SHELL again. The old check waited for
@@ -1136,10 +1139,17 @@ def test_engine_ollama():
     # filter is drawn on screen -- so `echo MENU-CLOSED` "appeared"
     # either way and the check passed while the menu was wide open. The
     # reserved-row count cannot be faked that way.
+    # It RAN if the text appears twice: once as the line the shell echoed
+    # back, once as the output. A menu that was still open would show it
+    # exactly once, in its filter — which is how this check passed for a
+    # release while the menu stayed wide open and every command after it
+    # was typed into the filter instead of the shell.
     os.write(mfd, b"echo MENU-CLOSED\r")
-    out = read_until(mfd, rb"80x20\+4", 4.0)
+    out = read_until(mfd, rb"MENU-CLOSED", 4.0)
+    time.sleep(0.4)
+    out += read_until(mfd, rb"NOTHING-EXPECTED", 0.8)
     check("a second esc closes the menu",
-          saw(out, b"80x20+4") and saw(out, b"MENU-CLOSED"), out[-260:])
+          visible(out).count(b"MENU-CLOSED") >= 2, out[-260:])
     # #/debug: the nerd-stuff drawer. It is a shortcut straight into the
     # `nerd stuff` group of the same tree — so it leads with `..`, and
     # the knob is one Down away.
