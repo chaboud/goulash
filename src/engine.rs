@@ -300,15 +300,32 @@ impl Engine {
 
     /// Unprompted per-turn review; coalescing lets a user ask supersede it.
     pub fn ask_proactive(&self, context: String, memories: String, pinned: String, cards: String) {
+        // "Add a CMD: line ONLY when... most observations need no
+        // command" made it withhold the very thing it had worked out.
+        // Measured over 1114 recorded turns: a command that failed got a
+        // suggestion 2% of the time against 13% for one that worked —
+        // six times less likely to help at the moment help was wanted.
+        // And not because it did not know: after `find -h` failed it
+        // said "use ls -lh instead" in prose and vended nothing. It
+        // named the fix and kept it.
+        //
+        // The exit code is NOT the signal. Plenty of commands exit 0 and
+        // still do the wrong thing — `du -b` on BSD, a flag that means
+        // something else here — and the model is the only thing in the
+        // loop that can tell. So this asks for judgement rather than
+        // branching on a number: if it has a command, it should offer
+        // it. The busywork guard stays, because that is a different
+        // failure and a real one.
         let question = "Without being asked, briefly review the most recent \
                         command and its result — one short observation, \
-                        tip, or wry aside is always welcome. Add a CMD: \
-                        line ONLY when there is a genuinely useful command \
-                        the user would plausibly run next: most \
-                        observations need no command, and inventing \
-                        busywork (logging, note-taking, echo) is worse \
-                        than none. Only if you truly have nothing worth \
-                        saying, reply exactly: PASS"
+                        tip, or wry aside is always welcome. If a command \
+                        would help — a fix, a correction, the thing they \
+                        were reaching for — put it on a CMD: line. Naming \
+                        it in prose and withholding the line is the one \
+                        unhelpful thing you can do here. Do not invent \
+                        busywork to have something to offer: no logging, \
+                        note-taking or echo. Only if you truly have \
+                        nothing worth saying, reply exactly: PASS"
             .to_string();
         let _ = self.job_tx.send(Job::Ask {
             question,
