@@ -1,10 +1,26 @@
 name: Release
 
-# Tag-driven (`git push origin v0.2.0`) or button-driven
-# (workflow_dispatch: the tag is CREATED on main if it doesn't exist —
-# no push-capable local git required). Builds per-target archives,
-# publishes a GitHub Release, then refreshes the in-repo Homebrew
-# formula to point at the new source tarball.
+# Tag-driven (`git push origin v0.4.1`) or button-driven (workflow_dispatch,
+# which CREATES the tag on main if it does not exist — no push-capable local
+# git required, and the tag name can be left blank to take it from
+# Cargo.toml). Builds per-target archives, publishes a GitHub Release, then
+# refreshes the in-repo Homebrew formula.
+#
+# RELEASE CANDIDATES. A tag with a hyphen in it — `v0.4.1-rc.1`, `v0.5.0-dev.2`
+# — is a prerelease: it builds and publishes binaries you can hand out, and it
+# does NOT touch the Homebrew formula or take the "Latest release" banner. Ride
+# as many of those as you need while you shake bugs out, then push the bare
+# `v0.4.1` once to fire the whole party. Stable tags are write-once by
+# convention: moving one changes the tarball under a version brew has already
+# pinned a sha256 for, and the cheap fix for a bad release is the next patch
+# number, not a moved tag.
+#
+# EVERY JOB THAT MATTERS IS GUARDED AND VERIFIED. Skipped jobs do not fail a
+# run, so this workflow spent three tag pushes building four platforms,
+# throwing them away, and reporting success — `release` and `formula` inherited
+# the skip from `tag`, which is skipped by design on a tag push. Hence the
+# `!cancelled()` guards below, and hence `verify`, which fails the run if the
+# release it was supposed to publish is not actually there.
 
 on:
   push:
@@ -12,19 +28,62 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to create (on main) and release, e.g. v0.2.0"
-        required: true
+        description: "Tag to release, e.g. v0.4.1 (blank = v + the version in Cargo.toml on main; a hyphen makes it a prerelease)"
+        required: false
 
 permissions:
   contents: write
 
-env:
-  TAG: ${{ inputs.tag || github.ref_name }}
-
 jobs:
-  tag:
-    if: github.event_name == 'workflow_dispatch'
+  # One place decides what we are releasing and whether it is a candidate,
+  # so no downstream job has to re-derive it and none of them can disagree.
+  plan:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+      prerelease: ${{ steps.pick.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - id: pick
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG}"
+          if [ -z "$tag" ]; then
+            if [ "$EVENT" = "push" ]; then
+              tag="$REF_NAME"
+            else
+              # Blank dispatch: take the version the code claims to be.
+              v=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -1)
+              [ -n "$v" ] || { echo "::error::no version in Cargo.toml"; exit 1; }
+              tag="v$v"
+            fi
+          fi
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "::error::tag '$tag' does not look like vN.N.N"; exit 1 ;;
+          esac
+          # Semver prerelease: anything with a hyphen. rc, dev, beta, alpha —
+          # the shape is the signal, so no new vocabulary to remember.
+          case "$tag" in
+            *-*) pre=true ;;
+            *)   pre=false ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$pre" >> "$GITHUB_OUTPUT"
+          echo "releasing $tag (prerelease=$pre)" >> "$GITHUB_STEP_SUMMARY"
+
+  tag:
+    needs: plan
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,9 +100,10 @@ jobs:
           fi
 
   build:
-    needs: tag
-    # Run whether `tag` ran (dispatch) or was skipped (tag push).
-    if: ${{ !cancelled() && (needs.tag.result == 'success' || needs.tag.result == 'skipped') }}
+    needs: [plan, tag]
+    # Run whether `tag` ran (dispatch) or was skipped (tag push). Without
+    # this the whole chain below inherits the skip.
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.tag.result == 'success' || needs.tag.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
@@ -60,10 +120,23 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.plan.outputs.tag }}
+      # Before the toolchain, before the compile: does the code at this
+      # tag agree it is this version? Catches a tag on the wrong commit
+      # while it still costs seconds, rather than after four platforms
+      # have been built and published under a name they do not carry.
+      - name: The tag and Cargo.toml must agree
+        run: |
+          set -euo pipefail
+          want="${TAG#v}"; want="${want%%-*}"   # v0.4.1-rc.1 -> 0.4.1
+          have=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -1)
+          [ "$want" = "$have" ] || {
+            echo "::error::tag ${TAG} but Cargo.toml says ${have}"; exit 1; }
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -84,7 +157,8 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [plan, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -92,13 +166,22 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.TAG }}
+          tag_name: ${{ needs.plan.outputs.tag }}
           files: goulash-*.tar.gz*
           generate_release_notes: true
+          prerelease: ${{ needs.plan.outputs.prerelease }}
+          # A candidate must not displace the stable release people land
+          # on from the repo page.
+          make_latest: ${{ needs.plan.outputs.prerelease == 'false' }}
 
   formula:
-    needs: release
+    needs: [plan, release]
+    # Stable only. brew pins a sha256 per version, so pointing it at a
+    # candidate would hand every `brew upgrade` an unfinished build.
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.plan.outputs.prerelease == 'false' }}
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -116,3 +199,56 @@ jobs:
           git add Formula/goulash.rb
           git diff --cached --quiet || git commit -m "brew: goulash ${TAG#v}"
           git push
+
+  # The point of this job is to fail. A skipped job does not fail a run,
+  # so "success" has meant nothing here — three tag pushes reported green
+  # having published exactly nothing. This asserts the outcome from the
+  # outside, against the API, and is guarded so it cannot itself be
+  # skipped by an upstream skip.
+  verify:
+    needs: [plan, release, formula]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      WANT_PRE: ${{ needs.plan.outputs.prerelease }}
+    steps:
+      - name: The release exists, and is what we said it would be
+        run: |
+          set -euo pipefail
+          json=$(gh release view "$TAG" --repo "${{ github.repository }}" \
+                   --json tagName,isPrerelease,assets 2>/dev/null) || {
+            echo "::error::no release for ${TAG} — the publish step did not run"
+            exit 1; }
+          pre=$(echo "$json" | jq -r .isPrerelease)
+          n=$(echo "$json" | jq '.assets | length')
+          echo "$TAG: prerelease=$pre, $n assets"
+          [ "$pre" = "$WANT_PRE" ] || {
+            echo "::error::prerelease is ${pre}, expected ${WANT_PRE}"; exit 1; }
+          # Four targets, each a tarball plus its checksum.
+          [ "$n" -eq 8 ] || {
+            echo "::error::${n} assets, expected 8"; exit 1; }
+      - name: A stable release moved the formula; a candidate did not
+        run: |
+          set -euo pipefail
+          url="https://raw.githubusercontent.com/${{ github.repository }}/main/Formula/goulash.rb"
+          f=$(curl -fsSL "$url")
+          if [ "$WANT_PRE" = "false" ]; then
+            echo "$f" | grep -q "tags/${TAG}.tar.gz" || {
+              echo "::error::formula on main does not point at ${TAG}"; exit 1; }
+            echo "formula points at ${TAG}"
+          else
+            # `if`, not `grep && { }`: under `set -e` a failing grep is the
+            # PASSING case here, and an && list that short-circuits returns
+            # non-zero — which would fail the step for succeeding.
+            if echo "$f" | grep -q "tags/${TAG}.tar.gz"; then
+              echo "::error::formula was moved to candidate ${TAG}"; exit 1
+            fi
+            echo "formula untouched by candidate ${TAG}"
+          fi
+      - name: Summary
+        run: |
+          echo "### ${TAG} released" >> "$GITHUB_STEP_SUMMARY"
+          echo "- prerelease: ${WANT_PRE}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- formula: $([ "$WANT_PRE" = false ] && echo updated || echo untouched)" >> "$GITHUB_STEP_SUMMARY"
