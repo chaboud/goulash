@@ -100,7 +100,7 @@ zsh. Some Linux and bash over ssh.
 **Engines.** Mostly ollama, a fair amount of LM Studio, nothing yet with
 a paid hosted provider. The OpenAI-compatible wire is there and works
 against llama.cpp and vLLM, but keeping your session on your own machine
-is the, like... the point.
+is, like... the point.
 
 **Still moving.** Config keys, setting names and interaction details
 change between releases. The CHANGELOG says what moved and settings that
