@@ -34,6 +34,51 @@ Tags drive releases (`v0.2.0`); note this session's git access can't
 push tags, so cutting a release is a from-the-mac action (or a
 one-line workflow_dispatch).
 
+### Cutting a release, as actually built
+
+`.github/workflows/release.yml`, not cargo-dist (yet). Two entry
+points and one convention:
+
+```
+git push origin v0.4.1        # tag push: the whole party
+git push origin v0.4.1-rc.1   # candidate: binaries only
+                              # or press Run, leave the tag box blank
+```
+
+**A hyphen makes it a candidate.** `v0.4.1-rc.1`, `v0.5.0-dev.2` —
+anything semver calls a prerelease builds all four targets and
+publishes them so you can hand them out, and does **not** touch the
+Homebrew formula or take the "Latest release" banner. Ride as many as
+you need while the bugs shake out, then push the bare tag once.
+
+**Stable tags are write-once.** brew pins a sha256 per version, so
+moving a released tag changes the tarball under a checksum users have
+already resolved. The cheap fix for a bad release is the next patch
+number.
+
+**Dispatch with the tag box blank** takes `v` + the version in
+`Cargo.toml` on main, so bumping the version *is* naming the release.
+A tag on the wrong commit is caught before the toolchain is fetched:
+`build` asserts the tag and `Cargo.toml` agree.
+
+**The workflow is read from the tag**, so a fix to it only takes
+effect for tags cut *after* it lands on main.
+
+#### Why there is a `verify` job
+
+Three v0.4.0 tag pushes built four platforms each, threw the binaries
+away, published nothing, and reported **success**. `tag` is skipped by
+design on a tag push; skipped-ness propagates down a `needs:` chain;
+`build` carried a `!cancelled()` guard and `release`/`formula` did
+not, so they inherited the skip — and a skipped job does not fail a
+run.
+
+That is this codebase's oldest failure shape wearing CI clothes: *it
+looked like it worked*. So `verify` asserts the outcome from outside —
+the release exists, carries eight assets, has the right prerelease
+flag, and moved the formula only if it should have — and is itself
+guarded so an upstream skip cannot skip it.
+
 ### The mac signing reality check
 
 Signing is **channel-dependent**, not a blanket requirement:

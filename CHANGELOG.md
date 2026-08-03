@@ -10,7 +10,26 @@ where that is possible.
 
 ## [Unreleased]
 
-Nothing yet.
+### Release process
+
+- **Release candidates.** A tag with a hyphen — `v0.4.1-rc.1`,
+  `v0.5.0-dev.2` — publishes binaries as a GitHub prerelease without
+  touching the Homebrew formula or the "Latest release" banner. Ride as
+  many as you need, then push the bare tag once. Stable tags stay
+  write-once: brew pins a sha256 per version, so a bad release is fixed
+  by the next patch number, not a moved tag.
+- **A tag push actually publishes again.** `release` and `formula` were
+  inheriting a skip from the dispatch-only `tag` job, so three v0.4.0
+  tag pushes built four platforms, discarded them, and reported success.
+  Both jobs are guarded now, and a new `verify` job fails the run if the
+  release it was meant to publish is not there — a skipped job does not
+  fail a run, which is why "success" had stopped meaning anything.
+- **The tag can name itself.** Dispatch with the tag box blank and it
+  takes `v` + the version in `Cargo.toml`. `build` asserts the two agree
+  before fetching a toolchain, so a tag on the wrong commit costs
+  seconds rather than four published archives.
+
+Unreleased and untested against a real tag; v0.4.1 exercises it.
 
 ## [0.4.0] — 2026-08-01
 
