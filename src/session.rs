@@ -294,6 +294,24 @@ fn slot_cmd(hist: &[SugTurn], (i, is_alt): (usize, bool)) -> Option<String> {
     }
 }
 
+/// Config to budgets. One function so a new dial is added in one place
+/// rather than three, which is how `num_ctx_min` outlived the code that
+/// used it.
+fn budgets_from(e: &crate::config::EngineConfig) -> crate::context::Budgets {
+    crate::context::Budgets {
+        files_max_chars: e.context_files_max_chars,
+        read_cap: e.context_read_cap,
+        digest_max_chars: e.context_digest_max_chars,
+        digest_attempts: e.context_digest_attempts,
+        card_budget: e.context_card_budget,
+        card_max: e.context_card_max,
+        card_attempts: e.context_card_attempts,
+        walk_files: e.context_tree_max_files,
+        walk_depth: e.context_tree_max_depth,
+        cache_keep: e.context_cache_keep,
+    }
+}
+
 /// Rows of shell the menu will never take: below this the overlay is
 /// eating the terminal rather than annotating it.
 const MENU_MIN_INNER: u16 = 10;
@@ -384,6 +402,15 @@ const CUSTOM_BOUNDS: &[(&str, u64, u64)] = &[
     ("bar_slide_ms", 60, 3000),
     ("max_mb", 1, 100_000),
     ("max_sessions", 1, 1_000_000),
+    // Floors are not taste: a card budget under ~40 chars cannot hold a
+    // command, and a read cap under a few KB truncates every real file.
+    ("files_max_chars", 200, 200_000),
+    ("card_budget", 40, 20_000),
+    ("card_max", 40, 20_000),
+    ("read_cap", 4096, 64 * 1024 * 1024),
+    ("digest_max_chars", 1000, 200_000),
+    ("tree_files", 1, 100_000),
+    ("cache_keep", 0, 100_000),
 ];
 
 /// Rows that take a typed value. Enter opens an empty field on the row;
@@ -496,6 +523,43 @@ const LOGGING_ROWS: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// The working-context dials. Expert-only, because the costs are not
+/// symmetric and nothing on screen would say which is which:
+/// `files_max_chars` rides in the cached prefix and is paid once per pin
+/// change, while `card_budget` rides beside the question and is paid on
+/// every ask, forever. Raising both because "more context is better"
+/// makes one cheap change and one expensive one.
+const PIN_ROWS: &[(&str, &[&str])] = &[
+    (
+        "files_max_chars",
+        &["2000", "4000", "6000", "10000", "20000", "custom\u{2026}"],
+    ),
+    (
+        "card_budget",
+        &["200", "400", "800", "1600", "custom\u{2026}"],
+    ),
+    ("card_max", &["120", "240", "480", "960", "custom\u{2026}"]),
+    (
+        "read_cap",
+        &["65536", "262144", "524288", "1048576", "custom\u{2026}"],
+    ),
+    (
+        "digest_max_chars",
+        &["6000", "12000", "24000", "48000", "custom\u{2026}"],
+    ),
+    ("digest_attempts", &["1", "2", "3", "5"]),
+    ("card_attempts", &["1", "2", "3", "5"]),
+    (
+        "tree_files",
+        &["64", "128", "256", "512", "1024", "custom\u{2026}"],
+    ),
+    ("tree_depth", &["2", "3", "4", "6", "8"]),
+    (
+        "cache_keep",
+        &["50", "100", "200", "500", "1000", "custom\u{2026}"],
+    ),
+];
+
 const GROUPS: &[Group] = &[
     Group {
         name: "fast lane",
@@ -525,6 +589,12 @@ const GROUPS: &[Group] = &[
         name: "nerd stuff",
         what: "how goulash itself behaves; here be dragons, small ones",
         rows: TERMINAL_ROWS,
+        debug: true,
+    },
+    Group {
+        name: "working context",
+        what: "what a `#@` pin costs, and where it costs it",
+        rows: PIN_ROWS,
         debug: true,
     },
     // Last, and expert-only: this is a tool for whoever is working ON
@@ -1586,6 +1656,7 @@ fn slash_command(
     caps: Option<&crate::models::Caps>,
     dbg: &crate::config::DebugConfig,
     rec_cfg: &crate::config::RecordConfig,
+    budgets: crate::context::Budgets,
     slow: &str,
     platform: bool,
     tools: bool,
@@ -1718,6 +1789,7 @@ fn slash_command(
                 debug: dbg_rows,
                 dbg,
                 rec: rec_cfg,
+                budgets,
             });
             // The settings tree is a static list — nothing is being
             // fetched. Left unloaded, a filter that matched nothing said
@@ -1754,6 +1826,7 @@ fn slash_command(
                 debug: dbg_rows,
                 dbg,
                 rec: rec_cfg,
+                budgets,
             });
             m.loaded = true;
             *menu = Some(m);
@@ -1844,6 +1917,7 @@ struct Live<'a> {
     debug: bool,
     dbg: &'a crate::config::DebugConfig,
     rec: &'a crate::config::RecordConfig,
+    budgets: crate::context::Budgets,
     slow: &'a str,
     thinking: &'a str,
     max_tokens: usize,
@@ -1924,6 +1998,18 @@ fn setting_help(slow: bool, name: &str, value: &str) -> &'static str {
             "show slow what fast answered, instead of leaving it in the log"
         }
         ("working_bar", _) => "the sweep that says the slot holds the PREVIOUS answer",
+        ("files_max_chars", _) => {
+            "pinned text in the CACHED prefix \u{2014} paid once per pin change"
+        }
+        ("card_budget", _) => "pin cribs beside the question \u{2014} paid on EVERY ask, forever",
+        ("card_max", _) => "ceiling on one crib, so a verbose pin cannot take the lot",
+        ("read_cap", _) => "bytes read from one file before any budgeting",
+        ("digest_max_chars", _) => "most we hand a model to compress in one go",
+        ("digest_attempts", _) => "tries before settling for the deterministic outline",
+        ("card_attempts", _) => "same, for the crib",
+        ("tree_files", _) => "files a directory pin will read; the prompt is bounded separately",
+        ("tree_depth", _) => "how deep a directory pin walks",
+        ("cache_keep", _) => "cooked ingests kept on disk; the oldest go first",
         ("record", _) => "write a session transcript; for debugging goulash, not for you",
         ("raw_output", _) => {
             "also record every byte the terminal drew \u{2014} big, and rarely needed"
@@ -2049,6 +2135,16 @@ fn settings_items(v: &Live) -> Vec<String> {
                         }
                         .to_string(),
                         "working_bar" => if v.dbg.working_bar { "on" } else { "off" }.to_string(),
+                        "files_max_chars" => v.budgets.files_max_chars.to_string(),
+                        "card_budget" => v.budgets.card_budget.to_string(),
+                        "card_max" => v.budgets.card_max.to_string(),
+                        "read_cap" => v.budgets.read_cap.to_string(),
+                        "digest_max_chars" => v.budgets.digest_max_chars.to_string(),
+                        "digest_attempts" => v.budgets.digest_attempts.to_string(),
+                        "card_attempts" => v.budgets.card_attempts.to_string(),
+                        "tree_files" => v.budgets.walk_files.to_string(),
+                        "tree_depth" => v.budgets.walk_depth.to_string(),
+                        "cache_keep" => v.budgets.cache_keep.to_string(),
                         "record" => if v.rec.enabled { "on" } else { "off" }.to_string(),
                         "raw_output" => if v.rec.output { "on" } else { "off" }.to_string(),
                         "max_mb" => v.rec.max_mb.to_string(),
@@ -2691,10 +2787,12 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // `#@` working context: session-scoped for v1. Pins are deliberate
     // and cheap to re-make; persisting them raises the per-cwd vs global
     // scope question, which is still open (wiki: working-context.md).
-    let mut work = crate::context::WorkContext::new(cfg.engine.context_files_max_chars).with_walk(
-        cfg.engine.context_tree_max_files,
-        cfg.engine.context_tree_max_depth,
-    );
+    // Every working-context dial, from config in one place. `with_walk`
+    // took two of them and the rest were constants; they are all the
+    // same kind of thing and they all move together now.
+    let mut budgets = budgets_from(&cfg.engine);
+    let mut work =
+        crate::context::WorkContext::new(cfg.engine.context_files_max_chars).with_budgets(budgets);
     let mut band: Option<Band> = None;
     let mut menu: Option<Menu> = None;
     let mut chat: Option<Chat> = None;
@@ -3364,6 +3462,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                             model_caps.as_ref(),
                                             &dbg,
                                             &rec_cfg,
+                                            budgets,
                                             &opt_slow,
                                             opt_platform,
                                             cfg.engine.divulge.tools,
@@ -3895,6 +3994,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 debug: opt_dbg_rows,
                                 dbg: &dbg,
                                 rec: &rec_cfg,
+                                budgets,
                                 commentary,
                                 slow: &opt_slow,
                                 thinking: &opt_thinking,
@@ -4086,6 +4186,37 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     rec = Recorder::new(&c);
                                     let _ = Config::persist_key("record", key, &on.to_string());
                                 }
+                                // Live, and applied to the running work
+                                // context. Persisted under the same name
+                                // the config uses, which is not always
+                                // the menu's: the row says `tree_files`
+                                // because the band is narrow, the key is
+                                // `context_tree_max_files` because that
+                                // is what it has always been called.
+                                "files_max_chars" | "card_budget" | "card_max" | "read_cap"
+                                | "digest_max_chars" | "digest_attempts" | "card_attempts"
+                                | "tree_files" | "tree_depth" | "cache_keep" => {
+                                    let n: u64 = next.parse().unwrap_or(0);
+                                    let key: String = match name.as_str() {
+                                        "tree_files" => "context_tree_max_files".into(),
+                                        "tree_depth" => "context_tree_max_depth".into(),
+                                        other => format!("context_{other}"),
+                                    };
+                                    match name.as_str() {
+                                        "files_max_chars" => budgets.files_max_chars = n as usize,
+                                        "card_budget" => budgets.card_budget = n as usize,
+                                        "card_max" => budgets.card_max = n as usize,
+                                        "read_cap" => budgets.read_cap = n as usize,
+                                        "digest_max_chars" => budgets.digest_max_chars = n as usize,
+                                        "digest_attempts" => budgets.digest_attempts = n as u8,
+                                        "card_attempts" => budgets.card_attempts = n as u8,
+                                        "tree_files" => budgets.walk_files = n as usize,
+                                        "tree_depth" => budgets.walk_depth = n as usize,
+                                        _ => budgets.cache_keep = n as usize,
+                                    }
+                                    work.budgets = budgets;
+                                    let _ = Config::persist_key("engine", &key, &n.to_string());
+                                }
                                 "max_mb" | "max_sessions" => {
                                     let n: u64 = next.parse().unwrap_or(500);
                                     if name == "max_mb" {
@@ -4263,6 +4394,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                     debug: opt_dbg_rows,
                                     dbg: &dbg,
                                     rec: &rec_cfg,
+                                    budgets,
                                     commentary,
                                     slow: &opt_slow,
                                     thinking: &opt_thinking,
@@ -4461,6 +4593,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             debug: opt_dbg_rows,
                             dbg: &dbg,
                             rec: &rec_cfg,
+                            budgets,
                             commentary,
                             slow: &opt_slow,
                             thinking: &opt_thinking,
@@ -4615,6 +4748,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 model_caps.as_ref(),
                                 &dbg,
                                 &rec_cfg,
+                                budgets,
                                 &opt_slow,
                                 opt_platform,
                                 cfg.engine.divulge.tools,
@@ -4759,6 +4893,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                                 debug: opt_dbg_rows,
                                 dbg: &dbg,
                                 rec: &rec_cfg,
+                                budgets,
                                 commentary,
                                 slow: &opt_slow,
                                 thinking: &opt_thinking,
@@ -5568,6 +5703,7 @@ mod root_tests {
         settings_items(&Live {
             group: None,
             rec: &rec,
+            budgets: crate::context::Budgets::default(),
             commentary: true,
             platform: true,
             tools: false,
@@ -5683,13 +5819,18 @@ mod row_tests {
     /// with no list entry is a range nobody can reach.
     #[test]
     fn custom_rows_and_their_bounds_agree() {
-        let with_custom: Vec<&str> = GROUPS
+        // Sorted: the requirement is that the two SETS match. Menu
+        // order is a reading decision and the bounds table is grouped by
+        // subject, so comparing them in order asserts a coincidence.
+        let mut with_custom: Vec<&str> = GROUPS
             .iter()
             .flat_map(|g| g.rows)
             .filter(|(_, vals)| vals.contains(&CUSTOM))
             .map(|(n, _)| *n)
             .collect();
-        let bounded: Vec<&str> = CUSTOM_BOUNDS.iter().map(|(n, ..)| *n).collect();
+        let mut bounded: Vec<&str> = CUSTOM_BOUNDS.iter().map(|(n, ..)| *n).collect();
+        with_custom.sort_unstable();
+        bounded.sort_unstable();
         assert_eq!(
             with_custom, bounded,
             "custom rows must be exactly the bounded ones"

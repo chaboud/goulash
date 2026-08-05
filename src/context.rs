@@ -17,43 +17,6 @@
 
 use std::path::{Path, PathBuf};
 
-/// Hard ceiling on bytes read from any one file, before any budgeting.
-/// Stops `#@ /var/log/everything` from becoming a memory problem while
-/// we are still deciding whether it is a context problem.
-const READ_CAP: usize = 512 * 1024;
-
-/// Ceiling on what we will hand a model to compress in one call. Local
-/// context windows are small (`num_ctx` defaults to 8192 tokens); a
-/// digest request that overflows one is worse than no digest, because it
-/// silently truncates at the wrong end.
-const DIGEST_SOURCE_CAP: usize = 12_000;
-
-/// Digest attempts per pin before settling for the outline. A model that
-/// ignores the target length would otherwise be re-asked on every emit.
-const MAX_DIGEST_ATTEMPTS: u8 = 2;
-
-/// Total characters all **cards** together may spend, across every pin.
-///
-/// The card rides in the *volatile suffix*, right next to the question,
-/// which is the only place a pin lands inside a sliding-window model's
-/// attention. That position is re-sent on every ask and re-prefilled
-/// every time, so it has to stay tiny — a few hundred characters is
-/// noise against the prompt, five pins' worth of full digests is not.
-/// (wiki: architecture/two-lane-engagement.md)
-const CARD_BUDGET: usize = 400;
-
-/// Per-card ceiling, so one verbose pin cannot eat the whole budget.
-const CARD_MAX: usize = 240;
-
-/// Card attempts per pin, same reasoning as MAX_DIGEST_ATTEMPTS.
-const MAX_CARD_ATTEMPTS: u8 = 2;
-
-/// Directory walk limits when nothing says otherwise — see
-/// `context_tree_max_files` / `..._depth` for the live values. A tree
-/// pin is bounded because it is a convenience, not a crawler; the
-/// bound's *size* is a matter of taste, so it is configurable.
-const WALK_MAX_FILES: usize = 256;
-const WALK_MAX_DEPTH: usize = 4;
 const SKIP_DIRS: &[&str] = &[
     ".git",
     "target",
@@ -149,8 +112,8 @@ impl Pin {
     /// The few lines that ride next to the question. Written by a model
     /// when one has answered; otherwise pulled out of the text
     /// deterministically, so a card exists from the instant a pin does.
-    pub fn card_text(&self, budget: usize) -> String {
-        let budget = budget.min(CARD_MAX);
+    pub fn card_text(&self, budget: usize, card_max: usize) -> String {
+        let budget = budget.min(card_max);
         match &self.card {
             Some(c) if c.chars().count() <= budget => c.clone(),
             _ => deterministic_card(&self.raw, budget),
@@ -163,8 +126,8 @@ impl Pin {
     /// bounded by construction and has already thrown away the least
     /// useful material, so the model spends its window on the parts
     /// worth keeping.
-    pub fn digest_source(&self, target: usize) -> String {
-        let room = (target * 4).min(DIGEST_SOURCE_CAP);
+    pub fn digest_source(&self, target: usize, cap: usize) -> String {
+        let room = (target * 4).min(cap);
         if self.raw.chars().count() <= room {
             return self.raw.clone();
         }
@@ -175,11 +138,9 @@ impl Pin {
 #[derive(Debug)]
 pub struct WorkContext {
     pub pins: Vec<Pin>,
-    /// Total characters all pins together may spend in the prefix.
-    pub max_chars: usize,
-    /// Live directory-walk bounds (config; defaults above).
-    walk_files: usize,
-    walk_depth: usize,
+    /// Every dial, live. `max_chars` was a field of its own and the walk
+    /// bounds were two more; they are all the same kind of thing.
+    pub budgets: Budgets,
     next_id: u64,
     /// What the ingest currently IS, for cache keying. Carried rather
     /// than reached for, so this module never has to know how a cook is
@@ -196,19 +157,68 @@ pub struct WorkContext {
 /// cache keyed by content grows one entry per distinct thing ever
 /// pinned, and small text files are cheap right up until there are
 /// thousands of them.
-const CACHE_KEEP: usize = 200;
+/// Every dial on the working context, in one value.
+///
+/// These were constants. Each is a real judgement call with a real cost
+/// on the other side of it, and the right number depends on the machine,
+/// the model and what someone pins — which is the definition of a
+/// setting rather than a constant. `Default` is what they were.
+///
+/// They are expert-gated in the menu because the costs are not
+/// symmetric and not obvious. `files_max_chars` lives in the cached
+/// prefix and is paid once per pin change; `card_budget` lives beside
+/// the question and is paid on every single ask, forever. Someone
+/// raising both because "more context is better" has made one cheap
+/// change and one expensive one, and nothing on screen would say which.
+#[derive(Debug, Clone, Copy)]
+pub struct Budgets {
+    pub files_max_chars: usize,
+    pub read_cap: usize,
+    pub digest_max_chars: usize,
+    pub digest_attempts: u8,
+    pub card_budget: usize,
+    pub card_max: usize,
+    pub card_attempts: u8,
+    pub walk_files: usize,
+    pub walk_depth: usize,
+    pub cache_keep: usize,
+}
+
+impl Default for Budgets {
+    fn default() -> Self {
+        Self {
+            files_max_chars: 6000,
+            read_cap: 512 * 1024,
+            digest_max_chars: 12_000,
+            digest_attempts: 2,
+            card_budget: 400,
+            card_max: 240,
+            walk_files: 256,
+            walk_depth: 4,
+            card_attempts: 2,
+            cache_keep: 200,
+        }
+    }
+}
 
 impl WorkContext {
     pub fn new(max_chars: usize) -> WorkContext {
         WorkContext {
             pins: Vec::new(),
-            max_chars,
-            walk_files: WALK_MAX_FILES,
-            walk_depth: WALK_MAX_DEPTH,
+            budgets: Budgets {
+                files_max_chars: max_chars,
+                ..Budgets::default()
+            },
             next_id: 1,
             ingest_rev: crate::engine::ingest_rev(),
             cache_dir: crate::pincache::default_dir(),
         }
+    }
+
+    /// Take every dial from config in one go.
+    pub fn with_budgets(mut self, b: Budgets) -> WorkContext {
+        self.budgets = b;
+        self
     }
 
     /// Point the ingest cache somewhere else, or nowhere.
@@ -221,10 +231,10 @@ impl WorkContext {
     /// so an unset config key cannot silently pin nothing.
     pub fn with_walk(mut self, files: usize, depth: usize) -> WorkContext {
         if files > 0 {
-            self.walk_files = files;
+            self.budgets.walk_files = files;
         }
         if depth > 0 {
-            self.walk_depth = depth;
+            self.budgets.walk_depth = depth;
         }
         self
     }
@@ -235,9 +245,9 @@ impl WorkContext {
     /// outlines both.
     fn share(&self) -> usize {
         if self.pins.is_empty() {
-            return self.max_chars;
+            return self.budgets.files_max_chars;
         }
-        self.max_chars / self.pins.len()
+        self.budgets.files_max_chars / self.pins.len()
     }
 
     /// Pin a path, replacing any existing pin on the same path (that is
@@ -247,9 +257,14 @@ impl WorkContext {
         let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let is_dir = meta.is_dir();
         let (raw, note) = if is_dir {
-            read_tree(&path, self.walk_files, self.walk_depth)?
+            read_tree(
+                &path,
+                self.budgets.walk_files,
+                self.budgets.walk_depth,
+                self.budgets.read_cap,
+            )?
         } else {
-            (read_text(&path)?, String::new())
+            (read_text(&path, self.budgets.read_cap)?, String::new())
         };
         let label = label_for(&path, is_dir);
         let id = match self.pins.iter().position(|p| p.path == path) {
@@ -373,6 +388,7 @@ impl WorkContext {
     /// the caller is a poll, not an event, and polls repeat.
     pub fn digest_wanted(&mut self) -> Vec<(u64, String, String, usize)> {
         let share = self.share();
+        let cap = self.budgets.digest_max_chars;
         let mut out = Vec::new();
         for pin in &mut self.pins {
             let too_big = pin.raw.chars().count() > share;
@@ -380,10 +396,19 @@ impl WorkContext {
                 .digest
                 .as_ref()
                 .is_some_and(|d| d.chars().count() <= share);
-            if too_big && !digest_fits && !pin.cooking && pin.attempts < MAX_DIGEST_ATTEMPTS {
+            if too_big
+                && !digest_fits
+                && !pin.cooking
+                && pin.attempts < self.budgets.digest_attempts
+            {
                 pin.cooking = true;
                 pin.attempts += 1;
-                out.push((pin.id, pin.label.clone(), pin.digest_source(share), share));
+                out.push((
+                    pin.id,
+                    pin.label.clone(),
+                    pin.digest_source(share, cap),
+                    share,
+                ));
             }
         }
         out
@@ -395,6 +420,7 @@ impl WorkContext {
         let share = self.share();
         let rev = self.ingest_rev.clone();
         let cache = self.cache_dir.clone();
+        let keep = self.budgets.cache_keep;
         let pin = self.pins.iter_mut().find(|p| p.id == id)?;
         pin.cooking = false;
         let text = text.filter(|t| !t.trim().is_empty())?;
@@ -407,7 +433,7 @@ impl WorkContext {
                 Some(&text),
                 None,
             );
-            crate::pincache::evict(d, CACHE_KEEP);
+            crate::pincache::evict(d, keep);
         }
         pin.digest = Some(text);
         Some(format!(
@@ -427,8 +453,8 @@ impl WorkContext {
                 pin.card_cooking = false;
                 // A cancel is a decision, not a failure: don't spend the
                 // attempt, but don't immediately re-queue it either.
-                pin.attempts = MAX_DIGEST_ATTEMPTS;
-                pin.card_attempts = MAX_CARD_ATTEMPTS;
+                pin.attempts = self.budgets.digest_attempts;
+                pin.card_attempts = self.budgets.card_attempts;
                 n += 1;
             }
         }
@@ -455,7 +481,8 @@ impl WorkContext {
         if self.pins.is_empty() {
             return String::new();
         }
-        let mut left = CARD_BUDGET;
+        let mut left = self.budgets.card_budget;
+        let card_max = self.budgets.card_max;
         let mut body = String::new();
         for pin in self.pins.iter().rev() {
             if left == 0 {
@@ -470,7 +497,7 @@ impl WorkContext {
             if head_len >= left {
                 break; // no room for anything but the label
             }
-            let card = pin.card_text(left - head_len);
+            let card = pin.card_text(left - head_len, card_max);
             if card.trim().is_empty() {
                 continue;
             }
@@ -502,14 +529,17 @@ impl WorkContext {
     pub fn card_wanted(&mut self) -> Vec<(u64, String, String, usize)> {
         let mut out = Vec::new();
         for pin in &mut self.pins {
-            if pin.card.is_none() && !pin.card_cooking && pin.card_attempts < MAX_CARD_ATTEMPTS {
+            if pin.card.is_none()
+                && !pin.card_cooking
+                && pin.card_attempts < self.budgets.card_attempts
+            {
                 pin.card_cooking = true;
                 pin.card_attempts += 1;
                 out.push((
                     pin.id,
                     pin.label.clone(),
-                    pin.digest_source(CARD_MAX),
-                    CARD_MAX,
+                    pin.digest_source(self.budgets.card_max, self.budgets.digest_max_chars),
+                    self.budgets.card_max,
                 ));
             }
         }
@@ -519,10 +549,12 @@ impl WorkContext {
     pub fn set_card(&mut self, id: u64, text: Option<String>) -> Option<String> {
         let rev = self.ingest_rev.clone();
         let cache = self.cache_dir.clone();
+        let keep = self.budgets.cache_keep;
+        let card_max = self.budgets.card_max;
         let pin = self.pins.iter_mut().find(|p| p.id == id)?;
         pin.card_cooking = false;
         let text = text.filter(|t| !t.trim().is_empty())?;
-        let card: String = text.chars().take(CARD_MAX).collect();
+        let card: String = text.chars().take(card_max).collect();
         if let Some(d) = &cache {
             crate::pincache::store(
                 d,
@@ -531,7 +563,7 @@ impl WorkContext {
                 None,
                 Some(&card),
             );
-            crate::pincache::evict(d, CACHE_KEEP);
+            crate::pincache::evict(d, keep);
         }
         pin.card = Some(card);
         Some(format!("@ {} carded", pin.label))
@@ -626,7 +658,11 @@ impl WorkContext {
             String::new(),
             "\u{2014} card (rides next to the question) \u{2014}".to_string(),
         ];
-        lines.extend(pin.card_text(CARD_MAX).lines().map(|l| l.to_string()));
+        lines.extend(
+            pin.card_text(self.budgets.card_max, self.budgets.card_max)
+                .lines()
+                .map(|l| l.to_string()),
+        );
         lines.push(String::new());
         lines.push(format!(
             "\u{2014} {} (in the prefix) \u{2014}",
@@ -679,9 +715,9 @@ fn label_for(path: &Path, is_dir: bool) -> String {
 
 /// Read a file as text, refusing what is obviously not. A binary in the
 /// prompt is a hundred wasted tokens and a confused model.
-fn read_text(path: &Path) -> Result<String, String> {
+fn read_text(path: &Path, read_cap: usize) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let bytes = &bytes[..bytes.len().min(READ_CAP)];
+    let bytes = &bytes[..bytes.len().min(read_cap)];
     if bytes.iter().take(8192).any(|b| *b == 0) {
         return Err(format!("{}: looks binary", path.display()));
     }
@@ -691,7 +727,12 @@ fn read_text(path: &Path) -> Result<String, String> {
 /// Walk a tree into one text: a file list, then each readable file's
 /// content. Bounded hard — this is a convenience, not a crawler, and the
 /// budget will outline it anyway.
-fn read_tree(root: &Path, max_files: usize, max_depth: usize) -> Result<(String, String), String> {
+fn read_tree(
+    root: &Path,
+    max_files: usize,
+    max_depth: usize,
+    read_cap: usize,
+) -> Result<(String, String), String> {
     let mut files: Vec<PathBuf> = Vec::new();
     collect(root, 0, max_files, max_depth, &mut files);
     let hit_cap = files.len() >= max_files;
@@ -704,7 +745,7 @@ fn read_tree(root: &Path, max_files: usize, max_depth: usize) -> Result<(String,
         ));
     }
     for f in &files {
-        if let Ok(text) = read_text(f) {
+        if let Ok(text) = read_text(f, read_cap) {
             s.push_str(&format!(
                 "\n== {} ==\n{}\n",
                 f.strip_prefix(root).unwrap_or(f).display(),
@@ -1033,7 +1074,7 @@ mod tests {
         let want = wc.digest_wanted();
         let source_len = want[0].2.chars().count();
         assert!(
-            source_len <= DIGEST_SOURCE_CAP,
+            source_len <= Budgets::default().digest_max_chars,
             "no local context window would take {source_len} chars"
         );
     }
@@ -1129,7 +1170,7 @@ mod tests {
         }
         let block = wc.cards_block();
         assert!(
-            block.chars().count() <= CARD_BUDGET + 120,
+            block.chars().count() <= Budgets::default().card_budget + 120,
             "cards blew the budget: {} chars",
             block.chars().count()
         );
@@ -1197,8 +1238,8 @@ mod tests {
 
         let unset = WorkContext::new(40_000).with_walk(0, 0);
         let dflt = WorkContext::new(40_000);
-        assert_eq!(unset.walk_files, dflt.walk_files);
-        assert_eq!(unset.walk_depth, dflt.walk_depth);
+        assert_eq!(unset.budgets.walk_files, dflt.budgets.walk_files);
+        assert_eq!(unset.budgets.walk_depth, dflt.budgets.walk_depth);
     }
 
     #[test]

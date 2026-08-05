@@ -228,6 +228,38 @@ pub struct EngineConfig {
     /// by `context_files_max_chars` regardless; this bounds the READ.
     pub context_tree_max_files: usize,
     pub context_tree_max_depth: usize,
+    /// Hard ceiling on bytes read from any one pinned file, before any
+    /// budgeting. Stops `#@ /var/log/everything` becoming a memory
+    /// problem while we are still deciding whether it is a context one.
+    pub context_read_cap: usize,
+    /// Most we will hand a model to compress in one ingest call. A
+    /// digest request that overflows the window is worse than no digest:
+    /// it truncates silently, at the wrong end.
+    pub context_digest_max_chars: usize,
+    /// Ingest attempts per pin before settling for the deterministic
+    /// outline. A model that ignores the target length would otherwise
+    /// be re-asked on every emit, forever.
+    pub context_digest_attempts: u8,
+    /// Total characters all **cards** together may spend.
+    ///
+    /// The expensive budget, and the one to be careful with. Cards ride
+    /// in the volatile suffix beside the question — the only place a
+    /// pin lands inside a sliding-window model's attention, and the
+    /// only part of the prompt that is re-prefilled on **every ask**.
+    /// `context_files_max_chars` above is nearly free by comparison: it
+    /// sits in the cached prefix and is paid for once per pin change
+    /// (measured: 5.95s cold, 0.31s warm, on a 1050-token prompt).
+    /// Raising this one is a per-turn tax forever.
+    pub context_card_budget: usize,
+    /// Per-card ceiling, so one verbose pin cannot eat the whole card
+    /// budget and leave the others with nothing.
+    pub context_card_max: usize,
+    /// Card attempts per pin, same reasoning as the digest attempts.
+    pub context_card_attempts: u8,
+    /// How many cooked ingests to keep in `~/.goulash/pins/`. The cache
+    /// is keyed by content, so it grows one entry per distinct thing
+    /// ever pinned; small text files are cheap right up until thousands.
+    pub context_cache_keep: usize,
     /// Context window to request, in tokens. Zero — the default — sends
     /// nothing at all, so the service loads the model however it would
     /// have on its own.
@@ -391,6 +423,13 @@ impl Default for EngineConfig {
             context_files_max_chars: 6000,
             context_tree_max_files: 256,
             context_tree_max_depth: 4,
+            context_read_cap: 512 * 1024,
+            context_digest_max_chars: 12_000,
+            context_digest_attempts: 2,
+            context_card_budget: 400,
+            context_card_max: 240,
+            context_card_attempts: 2,
+            context_cache_keep: 200,
             // Zero: negotiate rather than demand. This used to be a
             // flat 8192 sent on every request, which silently reloaded
             // any model the user had loaded at a different size.

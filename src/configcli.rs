@@ -162,6 +162,34 @@ fn rows(c: &Config) -> Vec<(String, String)> {
             e.context_tree_max_depth.to_string(),
         ),
         (
+            "engine.context_read_cap".into(),
+            e.context_read_cap.to_string(),
+        ),
+        (
+            "engine.context_digest_max_chars".into(),
+            e.context_digest_max_chars.to_string(),
+        ),
+        (
+            "engine.context_digest_attempts".into(),
+            e.context_digest_attempts.to_string(),
+        ),
+        (
+            "engine.context_card_budget".into(),
+            e.context_card_budget.to_string(),
+        ),
+        (
+            "engine.context_card_max".into(),
+            e.context_card_max.to_string(),
+        ),
+        (
+            "engine.context_card_attempts".into(),
+            e.context_card_attempts.to_string(),
+        ),
+        (
+            "engine.context_cache_keep".into(),
+            e.context_cache_keep.to_string(),
+        ),
+        (
             "engine.slow_lane.provider".into(),
             e.slow_lane
                 .provider
