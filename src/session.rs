@@ -294,6 +294,64 @@ fn slot_cmd(hist: &[SugTurn], (i, is_alt): (usize, bool)) -> Option<String> {
     }
 }
 
+/// What an arrow means on a shell whose line editor cannot be asked.
+#[derive(Debug, PartialEq, Eq)]
+enum Walk {
+    /// Erase anything of ours on the line and type this slot.
+    Show(usize),
+    /// Erase ours and stop there: the empty line is the neutral rung,
+    /// and the next Up is the shell's own history again.
+    Clear,
+    /// Consume the key and do nothing.
+    Hold,
+    /// Not ours. Hand it to the shell untouched.
+    PassThrough,
+}
+
+/// Down/Up over the slot stack for a shell that cannot tell us where
+/// its own history cursor sits.
+///
+/// The claim is deliberately the narrowest one that still works: only a
+/// prompt where the user has typed nothing and pressed no Up. Readline's
+/// Down does nothing in that exact state, so taking it takes nothing
+/// away — and the moment anything else happens, `touched` latches and
+/// the arrows belong to the shell for the rest of the line.
+fn walk_blind(slots: usize, at: Option<usize>, touched: bool, down: bool) -> Walk {
+    match (at, down) {
+        (None, true) if !touched && slots > 0 => Walk::Show(0),
+        (None, _) => Walk::PassThrough,
+        (Some(i), true) if i + 1 < slots => Walk::Show(i + 1),
+        // Already at the oldest: swallow it rather than let the shell
+        // walk its own history and wipe what we are holding.
+        (Some(_), true) => Walk::Hold,
+        (Some(0), false) => Walk::Clear,
+        (Some(i), false) => Walk::Show(i - 1),
+    }
+}
+
+/// The bytes that TYPE `cmd` onto the shell's line — and can never run
+/// it.
+///
+/// goulash suggests; the user runs. In injected input a newline IS the
+/// Enter key, so a command carrying one would execute itself the moment
+/// it landed, which is the single thing this program must never do. A
+/// suggestion is one line by construction (the prompt asks for exactly
+/// that), so a newline here means something upstream is wrong: refuse
+/// the whole thing rather than trim it, because running the first half
+/// of a command is worse than offering nothing. Long lines simply wrap.
+///
+/// Typing beats pasting. `ESC[200~` is bracketed paste, and readline
+/// only learned it in 8.1 — on the bash 3.2 that every mac still ships,
+/// the terminal swallows `ESC[2` as a meta sequence and leaves `00~` in
+/// front of the command. Measured; that is the whole of the "Down does
+/// nothing on bash for mac" report.
+fn type_line(cmd: &str) -> Option<Vec<u8>> {
+    if cmd.contains('\n') || cmd.contains('\r') {
+        return None;
+    }
+    Some(cmd.as_bytes().to_vec())
+}
+
 /// Config to budgets. One function so a new dial is added in one place
 /// rather than three, which is how `num_ctx_min` outlived the code that
 /// used it.
@@ -2737,6 +2795,22 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     // `Answer`. Slow amends THAT slot, so it has to be the same id.
     let mut vend_id: Option<u64> = None;
     let mut browse: Option<usize> = None;
+    // Down on a shell whose line editor cannot answer us.
+    //
+    // zsh's adapter answers authoritatively — `HISTNO < HISTCMD` says
+    // whether Down means "older suggestion" or "forward through shell
+    // history" — and readline offers nothing equivalent: on the bash 3.2
+    // that ships with macOS a key handler cannot even READ the line
+    // being edited (`READLINE_LINE` arrived in bash 4.0; measured).
+    //
+    // So for those shells goulash answers it from the outside, and keeps
+    // the claim as narrow as it can be: a fresh prompt, nothing typed
+    // yet, no Up pressed. In exactly that state readline's own Down is a
+    // no-op, so taking it costs the user nothing. `own_line` is what
+    // goulash typed there — proof it may erase it again — and the first
+    // keystroke that is not this walk hands the line straight back.
+    let mut own_line: Option<String> = None;
+    let mut line_touched = false;
     let mut next_sid: u64 = 1;
     let mut cur_cmd: Option<String> = None;
     let mut block_tail: Vec<u8> = Vec::new();
@@ -3117,6 +3191,11 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                             Seg::Mark(m) => match m {
                                 Mark::Prompt => {
                                     hook = Some(HookPhase::Prompt);
+                                    // A fresh line: goulash owns nothing
+                                    // on it and the user has typed
+                                    // nothing yet.
+                                    own_line = None;
+                                    line_touched = false;
 
                                     rec.prompt();
                                     // A cheap stat per pin. Goulash does
@@ -4805,11 +4884,17 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     // intercepted at a hook-confirmed prompt with a live
                     // suggestion; everything else passes through verbatim.
                     const ALT_DOWN: &[u8] = b"\x1b[1;3B";
+                    // Both encodings of each arrow: a terminal in
+                    // application-cursor mode sends SS3, and readline
+                    // flips modes as it pleases.
+                    const DOWN: [&[u8]; 2] = [b"\x1b[B", b"\x1bOB"];
+                    const UP: [&[u8]; 2] = [b"\x1b[A", b"\x1bOA"];
                     let chunk = &buf[..len];
+                    let flat = flat_slots(&sug_hist);
                     // Same head the band draws and Down walks — a shell
                     // without hooks gets the same suggestion, not a
                     // second opinion from a second list.
-                    let head = flat_slots(&sug_hist)
+                    let head = flat
                         .first()
                         .and_then(|&s| slot_cmd(&sug_hist, s).map(|c| (sug_hist[s.0].id, c)));
                     let pos = if hook == Some(HookPhase::Prompt) && head.is_some() {
@@ -4817,19 +4902,95 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     } else {
                         None
                     };
-                    if let (Some(p), Some((id, cmdtext))) = (pos, head) {
+                    // zsh answers for its own arrows through the adapter,
+                    // and answers better; only the shells that cannot are
+                    // read from out here.
+                    let blind = shell_name != "zsh" && hook == Some(HookPhase::Prompt);
+                    let arrow = if blind && pos.is_none() {
+                        if DOWN.contains(&chunk) {
+                            Some(true)
+                        } else if UP.contains(&chunk) {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(down) = arrow {
+                        let at = own_line.as_ref().and(browse);
+                        match walk_blind(flat.len(), at, line_touched, down) {
+                            Walk::Show(i) => {
+                                let (ti, _) = flat[i];
+                                let cmd = slot_cmd(&sug_hist, flat[i])
+                                    .unwrap_or_else(|| sug_hist[ti].cmd.clone());
+                                match type_line(&cmd) {
+                                    Some(text) => {
+                                        let mut out = Vec::new();
+                                        if own_line.is_some() {
+                                            out.push(0x15); // ^U: take back our own text
+                                        }
+                                        out.extend_from_slice(&text);
+                                        write_all(master, &out)?;
+                                        rec.accept(sug_hist[ti].id);
+                                        own_line = Some(cmd);
+                                        browse = Some(i);
+                                    }
+                                    // Refusing in silence is the bug this
+                                    // codebase keeps re-learning.
+                                    None => {
+                                        notice = Some(
+                                            "that suggestion spans lines \u{2014} not typing it"
+                                                .to_string(),
+                                        );
+                                    }
+                                }
+                            }
+                            Walk::Clear => {
+                                write_all(master, b"\x15")?;
+                                own_line = None;
+                                browse = None;
+                            }
+                            // At the oldest. Consume it: handing Down to
+                            // the shell here would walk ITS history and
+                            // wipe the line we are holding.
+                            Walk::Hold => {}
+                            Walk::PassThrough => {
+                                line_touched = true;
+                                own_line = None;
+                                if let Some(held) = handback.as_mut() {
+                                    held.extend_from_slice(chunk);
+                                } else {
+                                    write_all(master, chunk)?;
+                                }
+                            }
+                        }
+                        dirty = true;
+                    } else if let (Some(p), Some((id, cmdtext))) = (pos, head) {
                         write_all(master, &chunk[..p])?;
                         rec.accept(id);
-                        let mut paste = Vec::new();
-                        paste.extend_from_slice(b"\x1b[200~");
-                        paste.extend_from_slice(cmdtext.as_bytes());
-                        paste.extend_from_slice(b"\x1b[201~");
-                        write_all(master, &paste)?;
+                        match type_line(&cmdtext) {
+                            Some(text) => write_all(master, &text)?,
+                            None => {
+                                notice = Some(
+                                    "that suggestion spans lines \u{2014} not typing it"
+                                        .to_string(),
+                                )
+                            }
+                        }
                         write_all(master, &chunk[p + ALT_DOWN.len()..])?;
+                        own_line = Some(cmdtext);
                         dirty = true;
                     } else if let Some(held) = handback.as_mut() {
+                        // Anything else at the line means the user has it
+                        // back: goulash stops claiming the arrows until
+                        // the next prompt.
+                        line_touched = true;
+                        own_line = None;
                         held.extend_from_slice(chunk);
                     } else {
+                        line_touched = true;
+                        own_line = None;
                         write_all(master, chunk)?;
                     }
                 }
@@ -5635,6 +5796,46 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
     let code = st.code().unwrap_or_else(|| 128 + st.signal().unwrap_or(0));
     rec.end(code);
     Ok(code)
+}
+
+#[cfg(test)]
+mod blind_walk_tests {
+    use super::{Walk, type_line, walk_blind};
+
+    #[test]
+    fn a_newline_is_never_typed() {
+        // The whole safety property: goulash suggests, the user runs.
+        assert_eq!(type_line("ls -la"), Some(b"ls -la".to_vec()));
+        assert_eq!(type_line("echo one\necho two"), None);
+        assert_eq!(type_line("rm -rf /\r"), None);
+        // Long is fine — it just wraps.
+        let long = "echo ".to_string() + &"x".repeat(500);
+        assert_eq!(type_line(&long), Some(long.as_bytes().to_vec()));
+    }
+
+    #[test]
+    fn down_claims_only_an_untouched_prompt() {
+        assert_eq!(walk_blind(3, None, false, true), Walk::Show(0));
+        // Typed something, or already walked the shell's own history:
+        // the arrows are the shell's for the rest of this line.
+        assert_eq!(walk_blind(3, None, true, true), Walk::PassThrough);
+        // Nothing to offer.
+        assert_eq!(walk_blind(0, None, false, true), Walk::PassThrough);
+        // Up at an untouched prompt is plain shell history.
+        assert_eq!(walk_blind(3, None, false, false), Walk::PassThrough);
+    }
+
+    #[test]
+    fn the_walk_is_one_axis_and_ends_at_the_empty_line() {
+        assert_eq!(walk_blind(3, Some(0), true, true), Walk::Show(1));
+        assert_eq!(walk_blind(3, Some(1), true, true), Walk::Show(2));
+        // Oldest: swallow it. Handing Down on would let the shell walk
+        // its own history and wipe the line we are holding.
+        assert_eq!(walk_blind(3, Some(2), true, true), Walk::Hold);
+        // Back up the same axis, to the neutral empty line.
+        assert_eq!(walk_blind(3, Some(2), true, false), Walk::Show(1));
+        assert_eq!(walk_blind(3, Some(0), true, false), Walk::Clear);
+    }
 }
 
 #[cfg(test)]

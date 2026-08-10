@@ -25,6 +25,7 @@ import time
 BIN = os.path.join(os.path.dirname(__file__), "..", "target", "debug", "goulash")
 ROWS, COLS = 24, 80
 failures = []
+skipped = []
 
 
 def set_winsize(fd, rows, cols):
@@ -164,6 +165,19 @@ def check(name, cond, detail=""):
     print(f"  [{tag}] {name}" + ("" if cond else f"  -- {detail}"))
     if not cond:
         failures.append(name)
+
+
+def skip(name, why):
+    """Nothing was asserted, and that is said out loud.
+
+    Only for a differential whose REFERENCE could not run: comparing
+    goulash against a control that produced nothing proves nothing, so
+    the honest report is 'not tested', not a green and not a red. It is
+    still counted and printed at the end -- a suite quietly skipping
+    half itself is the same silence this suite exists to catch.
+    """
+    print(f"  [SKIP] {name}  -- {why}")
+    skipped.append(name)
 
 
 def dismiss_and_exit(mfd):
@@ -352,12 +366,19 @@ def test_suggestions():
     out = read_until(mfd, "suggestion: ls".encode())  # bar redraw with the suggestion arrow
     check("suggestion shown in bar", saw(out, "suggestion: ls".encode()), out[-200:])
 
-    if sys.platform.startswith("linux"):  # bracketed paste needs readline >= 8.1
-        os.write(mfd, b"\x1b[1;3B")  # Alt-Down: pull suggestion into the line
-        time.sleep(0.5)
-        os.write(mfd, b"\r")
-        out = read_until(mfd, rb"Cargo\.toml")
-        check("accepted suggestion executed", b"Cargo.toml" in out, out[-200:])
+    # Plain Down, the gesture the README actually promises, on the shell
+    # that cannot help us make it work. This ran on Linux only and only
+    # for Alt-Down, which is exactly why macOS shipped a Down that did
+    # nothing and an Alt-Down that pasted `00~ls` onto the line: bash 3.2
+    # predates bracketed paste, and no test ever pressed either key here.
+    os.write(mfd, b"\x1b[B")
+    time.sleep(0.5)
+    os.write(mfd, b"\r")
+    out = read_until(mfd, rb"Cargo\.toml")
+    check("plain Down pulled the suggestion and ran it",
+          b"Cargo.toml" in out, out[-200:])
+    check("nothing of the paste wrapper reached the line",
+          b"00~" not in out, out[-200:])
 
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
@@ -367,8 +388,7 @@ def test_suggestions():
     sugg = [e for e in events if e["ev"] == "suggest"]
     check("suggest event recorded", any(s["cmd"] == "ls" for s in sugg), f"{sugg}")
     check("suggestion has a why", any("PATH" in s["why"] for s in sugg))
-    if sys.platform.startswith("linux"):
-        check("accept event recorded", any(e["ev"] == "accept" for e in events))
+    check("accept event recorded", any(e["ev"] == "accept" for e in events))
 
 
 def test_zsh_auto_integration():
@@ -622,6 +642,87 @@ def settle(fd, seconds):
                 return
 
 
+def wait_asks(fd, seen, want, timeout=15.0):
+    """Wait until the fake engine has taken `want` asks, draining the pty.
+
+    The arrival of the request is the fact; the screen is a rendering of
+    an OLDER one. Waiting for answer text instead matches the PREVIOUS
+    turn's reply, still sitting on the band, and returns instantly --
+    so the assertion reads a stale request and reports a bug that is
+    really the test getting ahead of the engine.
+    """
+    end = time.time() + timeout
+    while time.time() < end and len(seen) < want:
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if fd in r:
+            try:
+                if not os.read(fd, 65536):
+                    break
+            except OSError:
+                break
+    return len(seen) >= want
+
+
+def wait_text(fd, needle, timeout=20.0):
+    """Drain the pty until `needle` arrives. A real signal, not a nap.
+
+    Used to prove ZLE is actually live before typing at it. The probe is
+    written so the ECHO of the command cannot match — only its output
+    can — because on a slow machine the tty echoes the line long before
+    the shell is in a position to run it, and matching the echo would be
+    the same false green a fixed sleep gives.
+    """
+    acc = b""
+    end = time.time() + timeout
+    while time.time() < end:
+        if needle in acc:
+            return True
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if fd in r:
+            try:
+                data = os.read(fd, 65536)
+            except OSError:
+                break
+            if not data:
+                break
+            acc += data
+    return needle in acc
+
+
+def zle_ready(fd, timeout=20.0):
+    """`Z"S"H-UP` echoes with the quotes and prints without them."""
+    os.write(fd, b'print -r -- Z"S"H-UP\r')
+    return wait_text(fd, b"ZSH-UP", timeout)
+
+
+def wait_buf(fd, log, timeout=20.0):
+    """Wait for the ZLE dump to land, draining the pty as we go.
+
+    The buffer file is the signal that the widget actually ran. Timing
+    this with a sleep is what made the reference shell come back empty
+    on a slow machine, turning the differential into empty-vs-empty --
+    the exact failure the comment in `settle` records.
+    """
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            if os.path.getsize(log) > 0:
+                return True
+        except OSError:
+            pass
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if fd in r:
+            try:
+                if not os.read(fd, 65536):
+                    break
+            except OSError:
+                break
+    try:
+        return os.path.getsize(log) > 0
+    except OSError:
+        return False
+
+
 def tab_buffer(keys, home, via_goulash):
     """Type `keys` at a real zsh, then dump $BUFFER. The only honest way
     to ask what Tab did — the screen is a rendering, the buffer is the
@@ -630,15 +731,14 @@ def tab_buffer(keys, home, via_goulash):
     open(log, "w").close()
     if via_goulash:
         proc, mfd = spawn(["zsh"], home=home)
-        time.sleep(2.0)
+        zle_ready(mfd)
         # goulash's child inherits the RUNNER's cwd; the bare shell below
         # starts in $HOME. Completion is cwd-relative, so pin both.
         os.write(mfd, b'cd "$HOME"\r')
-        settle(mfd, 1.0)
+        settle(mfd, 0.4)
         os.write(mfd, keys)
-        settle(mfd, 1.2)
         os.write(mfd, b"\x18")          # ^X: dump and break
-        settle(mfd, 0.8)
+        wait_buf(mfd, log)
         os.write(mfd, b"\x03")
         settle(mfd, 0.3)
         os.write(mfd, b"exit\r")
@@ -651,11 +751,10 @@ def tab_buffer(keys, home, via_goulash):
             os.chdir(home)
             os.execv(shutil.which("zsh"), ["zsh", "-i"])
         set_winsize(fd, ROWS, COLS)
-        settle(fd, 1.2)
+        zle_ready(fd)
         os.write(fd, keys)
-        settle(fd, 1.2)
         os.write(fd, b"\x18")
-        settle(fd, 0.8)
+        wait_buf(fd, log)
         os.write(fd, b"\x03exit\n")
         settle(fd, 0.4)
         try:
@@ -701,14 +800,17 @@ def test_tab_completion():
         # first, and the comparison is only claimed when it means
         # something.
         usable = "miniconda3" in want
-        check(f"Tab after '{label}' actually completed in bare zsh",
-              usable, f"reference buffer: {want!r}")
         if usable:
             check(f"Tab after '{label}' behaves as bare zsh", want == got,
                   f"bare={want!r} goulash={got!r}")
         else:
-            check(f"Tab after '{label}' behaves as bare zsh — NOT TESTED",
-                  False, "reference never completed, so nothing was compared")
+            # Bare zsh could not complete here at all, so there is no
+            # reference to compare against. That is the environment's
+            # doing, not goulash's -- observed on GitHub's ubuntu runner
+            # -- and failing on it would be reporting a verdict we did
+            # not reach.
+            skip(f"Tab after '{label}' behaves as bare zsh",
+                 f"bare zsh never completed; reference buffer: {want!r}")
 
 
 def test_engine_openai():
@@ -1399,7 +1501,7 @@ def test_model_capabilities():
     check("dial admits it does nothing here",
           "doesn't reason".encode() in out, out[-300:])
     os.write(mfd, b"#is this on\r")
-    read_until(mfd, rb"PASS", 8.0)
+    wait_asks(mfd, seen, 1)
     check("no think field sent to a non-reasoning model",
           seen and "think" not in seen[-1], seen[-1:] )
     check("no reasoning allowance either",
@@ -1409,9 +1511,8 @@ def test_model_capabilities():
     # qwen3 does, in boolean: same dial, different wire, bigger budget.
     os.write(mfd, b"#/model qwen3:1.7b\r")
     read_until(mfd, rb"qwen3:1.7b ready", 8.0)
-    time.sleep(0.5)
     os.write(mfd, b"#and now\r")
-    read_until(mfd, rb"PASS", 8.0)
+    wait_asks(mfd, seen, 2)
     check("boolean reasoner gets think:true",
           seen and seen[-1].get("think") is True, seen[-1:])
     # The budget is ONE ceiling now, sent as configured. There is no
@@ -2546,10 +2647,12 @@ def main():
         except Exception as e:  # noqa: BLE001
             check(t.__name__ + " (no exception)", False, repr(e))
     print()
+    if skipped:
+        print(f"{len(skipped)} NOT TESTED: {skipped}")
     if failures:
         print(f"{len(failures)} FAILED: {failures}")
         sys.exit(1)
-    print("all tests passed")
+    print("all tests passed" + (f" ({len(skipped)} not tested)" if skipped else ""))
 
 
 if __name__ == "__main__":

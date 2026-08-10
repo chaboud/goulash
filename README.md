@@ -97,6 +97,15 @@ you — `CMD: #@/path commandRef.md` arrives as a normal pullable chip.
 **Platforms.** Developed and used daily on macOS, in Terminal, under
 zsh. Some Linux and bash over ssh.
 
+**bash.** Down works, but goulash has to infer more there than under
+zsh. ZLE tells the zsh adapter whether history has anywhere left to go;
+readline tells nobody anything — on the bash 3.2 macOS still ships, a
+key handler cannot even read the line being edited. So under bash,
+goulash only claims Down at a prompt where you have typed nothing and
+pressed no Up, which is exactly where bash's own Down does nothing.
+Touch any other key and the arrows are the shell's again until the next
+prompt. Alt-Down pulls the suggestion regardless.
+
 **Engines.** Mostly ollama, a fair amount of LM Studio, nothing yet with
 a paid hosted provider. The OpenAI-compatible wire is there and works
 against llama.cpp and vLLM, but keeping your session on your own machine

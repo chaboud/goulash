@@ -84,20 +84,33 @@ back to untouched passthrough plus the manual one-line source.
 
 ### bash — first-class, more work
 - `PROMPT_COMMAND` runs before PS1 display → prompt-active signal.
-- Readline integration for the Down-arrow widget. A simple `bind -x`
-  implementation may work initially but will have edge cases; perfect
-  history-position awareness (gate 3) may require deeper Readline
-  integration.
+- **No Readline widget, and there cannot be one on macOS.** `bind -x`
+  runs a function on a key as far back as 3.2, but the line being
+  edited was not exposed until bash **4.0** (`READLINE_LINE`,
+  `READLINE_POINT`), and macOS ships **3.2.57**. Measured on both: the
+  3.2 handler fires and sees an unset `READLINE_LINE`; 5.2 reads and
+  rewrites the line. So gate 3 is simply unavailable on Apple's bash,
+  and the adapter keeps its no-bindings contract.
+- Down is therefore answered in the overlay, under the narrow proxy
+  described in [input-ownership.md](input-ownership.md): a prompt with
+  nothing typed and no Up pressed, which is exactly the state where
+  readline's Down does nothing anyway. A bash ≥ 4.0 adapter path could
+  answer gate 3 properly later; it would be an upgrade, not a fix.
 
 ### fish
 - Prompt/event functions plus reader integration.
 
 ### Unknown / unsupported shells — generic PTY mode
 - Full recording and [opaque-block](opaque-blocks.md) tracking still work.
-- **No Down-Arrow magic.** Instead, unambiguous bindings:
+- Down works if the shell declares a prompt (gate 2); without that
+  declaration goulash never claims a key, so an unknown shell keeps
+  every one of them.
+- Alt-Down stays as the unambiguous chord, for a shell that reports a
+  prompt but whose Down genuinely belongs to something else:
 
 ```
-Alt-Down       show suggestion
+Down           pull the suggestion (empty, untouched prompt only)
+Alt-Down       pull it regardless
 # question     message LLM
 ```
 

@@ -43,14 +43,53 @@ the shell's line editor as a widget
 first tries ordinary history-forward and only offers the suggestion when
 history is exhausted.
 
+That is zsh. ZLE hands the widget `HISTNO` and `HISTCMD`, so it can
+answer "is there history left?" exactly.
+
+### When the line editor cannot answer
+
+Readline cannot. A `bind -x` handler can run on a key, but bash only
+began exposing the line being edited — `READLINE_LINE`, `READLINE_POINT`
+— in **4.0**, and macOS still ships **3.2.57**, where a handler can see
+nothing and change nothing. Measured, not inferred: on 3.2 the handler
+fires and `READLINE_LINE` is unset; on 5.2 it reads and rewrites the
+line. There is no version of gate 3 available on Apple's bash.
+
+So for shells whose editor cannot be asked, goulash answers gate 3 from
+the overlay, with the narrowest proxy that is still honest:
+
+```
+nothing typed since the prompt, and no Up pressed yet
+```
+
+In exactly that state readline's own Down is a **no-op** — it is already
+at the end of history, with nothing to move to. Claiming it therefore
+takes nothing from anyone. The moment any other key arrives, ownership
+latches back to the shell for the rest of that line, and a fresh prompt
+resets it. goulash also tracks what it typed, so Down again replaces it
+with the next slot and Up walks back to the empty line — the same single
+axis zsh gets, kept honest by the fact that goulash put every one of
+those characters there itself.
+
 ## The cardinal rule
 
-**Do not intercept Down at the raw PTY layer.** Plugins — completion
-selectors, fuzzy finders, ZLE widgets, Readline menus, vi mode — may want
-Down Arrow even while the shell is technically active. Interception
-belongs in the editor layer, where the shell can arbitrate. For shells
-without integration, use an unambiguous chord instead (Alt-Down) — see
-[shell-integration.md](shell-integration.md).
+**Do not intercept Down at the raw PTY layer while anything else could
+want it.** Gates 1 and 2 are not negotiable: an interactive program owns
+the PTY, and no prompt means no claim. Where the shell's editor can
+arbitrate, it must — that is zsh, and the widget stays the mechanism.
+
+The rule was originally absolute, and answered shells with no editor
+arbitration by giving them a chord instead (Alt-Down). That was wrong in
+one direction: the chord is undiscoverable, the README promises plain
+Down to everyone, and bash users got a key that did nothing. The rule is
+now scoped to its actual intent — never take Down from a legitimate
+claimant — and an empty, untouched, prompt-active line has none.
+
+The residual risk is a Readline plugin that binds Down at an empty fresh
+prompt. It is a much smaller surface than ZLE's (where autosuggest,
+fzf-tab and menu selection all live, and where goulash still refuses to
+intercept), and it is the price of the gesture working at all on the
+bash people actually have.
 
 ## See also
 - [opaque-blocks.md](opaque-blocks.md) — what happens while gate 1 fails

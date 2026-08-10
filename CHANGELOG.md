@@ -10,6 +10,54 @@ where that is possible.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Down works on bash.** It never had. zsh's adapter answers Down
+  through a ZLE widget that knows whether history has anywhere left to
+  go (`HISTNO < HISTCMD`); readline exposes no such thing — on the bash
+  3.2 that macOS still ships, a key handler cannot even *read* the line
+  being edited, since `READLINE_LINE` arrived in bash 4.0. bash was
+  therefore given Alt-Down instead, and the README went on promising
+  plain Down to everyone. goulash now answers Down from the overlay for
+  any shell whose line editor cannot be asked, claiming it only at a
+  prompt where nothing has been typed and no Up has been pressed — the
+  exact state where readline's own Down does nothing, so nothing is
+  taken away. The first keystroke that is not this walk hands the line
+  straight back.
+- **…and it no longer corrupts the line on macOS.** The pull was sent as
+  a bracketed paste, which readline only understood from 8.1: bash 3.2
+  ate `ESC[2` as a meta sequence and left `00~ls -la` sitting at the
+  prompt. Suggestions are now *typed*, which every line editor
+  understands. A newline is never injected and never will be — in typed
+  input it is the Enter key, and goulash suggests rather than runs — so
+  a multi-line suggestion is refused out loud instead of trimmed. Long
+  commands simply wrap.
+- **The typo rule was dead on Ubuntu and Debian.** It matched bash's and
+  zsh's English wording for a missing command, but those distributions
+  ship `command-not-found`, whose handler says "Command 'lls' not found,
+  but there are 16 similar ones." — and says it in the user's language.
+  So `#`-less typo suggestions silently never appeared on the most
+  common Linux desktop there is. The rule now keys on what every shell
+  and every locale agrees about: exit 127, a bare name, and nothing on
+  PATH answering to it. A typed path is not a typo, and 127 out of
+  something that *is* installed stays that program's own business.
+
+### Tests
+
+- The suite skipped acceptance entirely on macOS and only ever pressed
+  Alt-Down on Linux, which is how a Down that did nothing and a paste
+  that mangled the line both shipped. Plain Down is now exercised under
+  bash on every platform.
+- Three timing fixtures stopped guessing. Tab completion waited out
+  fixed sleeps and compared goulash against a reference shell that had
+  not finished starting; it now waits for ZLE to answer and for the
+  buffer dump to land. The capability test waited for answer *text* and
+  matched the previous turn's reply still on screen, then asserted
+  against a stale request; it now waits for the engine to receive one.
+- A differential whose reference cannot run reports `[SKIP]`, counted
+  and printed, rather than a failure — there is no verdict to give when
+  the control never produced anything to compare against.
+
 ### Release process
 
 - **Release candidates.** A tag with a hyphen — `v0.4.1-rc.1`,
