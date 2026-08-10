@@ -142,10 +142,13 @@ enabled = true
 rows = 1
 
 [engine]
-provider   = "auto"    # auto | ollama | openai | openai-raw | none
-                       # "openai" covers LM Studio, llama.cpp, vLLM and
-                       # hosted /v1 endpoints; openai-raw skips the
-                       # server's chat template and is for measurement
+provider   = "auto"    # auto | ollama | openai | lmstudio | openai-raw | none
+                       # "openai" covers llama.cpp, vLLM, LM Studio's
+                       # compatibility endpoint and hosted /v1; the
+                       # separate "lmstudio" speaks LM Studio's OWN
+                       # /api/v1 wire, which is its default and reports
+                       # better stats; openai-raw skips the server's
+                       # chat template and is for measurement
 thinking   = "off"     # off | low | medium | high
 max_tokens = 8192      # ONE cap over reasoning and answer together
 slow = "manual"        # when slow volunteers: manual | query | waldorf

@@ -740,7 +740,12 @@ def tab_buffer(keys, home, via_goulash):
         os.write(mfd, b"\x18")          # ^X: dump and break
         wait_buf(mfd, log)
         os.write(mfd, b"\x03")
-        settle(mfd, 0.3)
+        # The dump WRITES the file and only then calls `zle send-break`,
+        # so the file appearing does not mean the widget has finished.
+        # Prove ZLE is back and idle before typing `exit` at it —
+        # otherwise `exit` lands inside the widget, zsh never leaves, and
+        # the whole test dies on drain_exit's timeout instead.
+        zle_ready(mfd)
         os.write(mfd, b"exit\r")
         drain_exit(proc, mfd)
     else:
@@ -755,7 +760,9 @@ def tab_buffer(keys, home, via_goulash):
         os.write(fd, keys)
         os.write(fd, b"\x18")
         wait_buf(fd, log)
-        os.write(fd, b"\x03exit\n")
+        os.write(fd, b"\x03")
+        zle_ready(fd)                   # same reason as the goulash path
+        os.write(fd, b"exit\n")
         settle(fd, 0.4)
         try:
             os.close(fd)
@@ -992,7 +999,15 @@ def test_per_lane_providers():
         def log_message(self, *a):
             pass
 
-    class SlowOpenAI(http.server.BaseHTTPRequestHandler):
+    class SlowLmStudio(http.server.BaseHTTPRequestHandler):
+        """LM Studio's OWN wire, which is what `provider = "lmstudio"`
+        selects — `/api/v1/models` and `/api/v1/chat`, a prompt sent as
+        `input`, and answers as typed `output` blocks. Not the
+        OpenAI-compatible endpoint: that is `provider = "openai"`, and
+        `test_engine_openai` covers it. This fake spoke OpenAI while the
+        config said lmstudio, so the probe 404'd, the lane bound no
+        model at all, and four checks failed for one stale word."""
+
         def _send(self, obj):
             body = json.dumps(obj).encode()
             self.send_response(200)
@@ -1001,8 +1016,8 @@ def test_per_lane_providers():
             self.wfile.write(body)
 
         def do_GET(self):
-            if self.path == "/v1/models":
-                self._send({"data": [{"id": "slowmodel"}]})
+            if self.path == "/api/v1/models":
+                self._send({"models": [{"key": "slowmodel"}]})
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -1010,19 +1025,29 @@ def test_per_lane_providers():
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
-            if not req.get("prompt"):
-                self._send({"choices": [{"text": ""}]})
+            if self.path != "/api/v1/chat" or not req.get("input"):
+                self._send({"output": []})
                 return
             hits["slow"] += 1
             hits["slow_model"] = req.get("model")
-            self._send({"choices": [{"text":
-                        "SLOW-SAYS\nCMD: echo slow\nREASON: because"}]})
+            # SSE, because the research lane always streams and always
+            # will: a blocking POST cannot be aborted from the read side,
+            # and `#?` is the longest call goulash makes, so it is the
+            # one that most needs `#?/cancel` to work (engine.rs).
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for ev in ({"type": "message.delta",
+                        "content": "SLOW-SAYS\nCMD: echo slow\nREASON: because"},
+                       {"type": "chat.end", "stats": {}}):
+                self.wfile.write(f"data: {json.dumps(ev)}\n\n".encode())
+            self.wfile.flush()
 
         def log_message(self, *a):
             pass
 
     fast_srv = http.server.HTTPServer(("127.0.0.1", 0), FastOllama)
-    slow_srv = http.server.HTTPServer(("127.0.0.1", 0), SlowOpenAI)
+    slow_srv = http.server.HTTPServer(("127.0.0.1", 0), SlowLmStudio)
     fport, sport = fast_srv.server_address[1], slow_srv.server_address[1]
     for srv in (fast_srv, slow_srv):
         threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -1034,32 +1059,58 @@ def test_per_lane_providers():
             'provider = "ollama"\n'
             f'host = "http://127.0.0.1:{fport}"\n'
             'slow = "manual"\n'
+            'stream = false\n'
             '[engine.slow_lane]\n'
             'provider = "lmstudio"\n'
             f'openai_host = "http://127.0.0.1:{sport}"\n'
         )
-    proc, mfd = spawn(["zsh"], home=home)
+    # Wider than the usual 80 on purpose. `#/status` names both lanes on
+    # one rule and elides what will not fit, and at 80 columns
+    # "slowmodel@lmstudio" is exactly what falls off the end -- so the
+    # check was reading a truncation, not a binding. What is under test
+    # here is which server each lane talks to; the 80-column rendering
+    # has its own tests.
+    proc, mfd = spawn(["zsh"], cols=120, home=home)
     time.sleep(1.5)
-    os.write(mfd, b"#? which way\r")
-    out = read_until(mfd, rb"FAST-SAYS", 8.0)
-    check("fast lane answered from its own server", b"FAST-SAYS" in out, out[-300:])
-    # Research is async and lands on the turn it came from.
-    deadline = time.time() + 10
-    while time.time() < deadline and hits["slow"] == 0:
-        read_until(mfd, rb"__never__", 1.0)
-    check("slow lane reached the OTHER server", hits["slow"] > 0, str(hits))
-    check("each lane bound its own server's model",
-          hits["fast_model"] == "fastmodel" and hits["slow_model"] == "slowmodel",
-          str(hits))
+    # Ask for status BEFORE anything is vended. Both lanes bind at
+    # startup, so this is the same fact either way -- but the status
+    # notice and the suggestion chip share the rule, and once a chip is
+    # up it holds the row, so asking afterwards was testing render
+    # priority rather than binding and reading a chip as a failure.
     os.write(mfd, b"#/status\r")
-    out = read_until(mfd, rb"slowmodel@openai", 6.0)
+    # `@lmstudio`, not `@openai`: the lane reports the wire it actually
+    # speaks, and those became two different wires when LM Studio's own
+    # endpoint was added.
+    out = read_until(mfd, rb"slowmodel@lmstudio", 8.0)
     check("#/status names both lanes",
-          b"fastmodel@ollama" in out and b"slowmodel@openai" in out, out[-400:])
+          b"fastmodel@ollama" in out and b"slowmodel@lmstudio" in out, out[-400:])
     # Both fakes are on loopback, so `trusted = "auto"` trusts both and
     # the warning stays silent. A marker beside every lane would train
     # people to stop reading it.
     check("no untrusted marker when both lanes are local",
           b"untrusted" not in out, out[-400:])
+    close_menu(mfd)
+    # One key per lane. `slow = "manual"` means exactly that: `#` is the
+    # fast lane's and `#?` is the slow lane's, and neither borrows the
+    # other — test_slow_lane asserts the same thing from the other side
+    # ("...and fast was never asked"). Asking `#?` and expecting FAST to
+    # answer was this test contradicting that one.
+    os.write(mfd, b"# which way\r")
+    out = read_until(mfd, rb"FAST-SAYS", 8.0)
+    check("fast lane answered from its own server", b"FAST-SAYS" in out, out[-300:])
+    os.write(mfd, b"#? and the considered way\r")
+    # Wait for the ANSWER on the band, not for the request to arrive at
+    # the server. `hits["slow"]` ticks the moment the POST lands, while
+    # the response is still streaming -- so asking for `#/status` on that
+    # signal typed it mid-flight, and the answer then redrew the band
+    # over the status notice.
+    out = read_until(mfd, rb"SLOW-SAYS", 12.0)
+    check("slow lane reached the OTHER server", hits["slow"] > 0, str(hits))
+    check("the researched answer came back off that wire",
+          b"SLOW-SAYS" in visible(out), out[-300:])
+    check("each lane bound its own server's model",
+          hits["fast_model"] == "fastmodel" and hits["slow_model"] == "slowmodel",
+          str(hits))
     dismiss_and_exit(mfd)
     drain_exit(proc, mfd)
 
@@ -1621,25 +1672,31 @@ def test_chat_mode():
     os.write(mfd, b"\r")
     out = read_until(mfd, rb"p2-48", 6.0)  # newest = second turn's command
     check("handed-off command ran in the shell", b"p2-48" in out, out[-300:])
-    time.sleep(0.5)
     # Reopen and browse the slot stack IN chat: Down Down selects the
     # older turn's command; Enter hands that one off.
+    #
+    # Every wait below is a signal, not a nap. The scroll region IS the
+    # focus: 16 rows means chat has it, 20 means the shell got it back.
+    # Sleeping instead is what made this block fail most runs -- the
+    # second Enter arrived before the handoff had put anything on the
+    # line, so it ran an empty one and nothing ever printed p1-42.
     os.write(mfd, b"## \r")
-    time.sleep(0.8)
+    out = read_until(mfd, rb"\x1b\[1;16r", 6.0)
+    check("chat reopens on the running conversation",
+          b"\x1b[1;16r" in out, out[-300:])
     os.write(mfd, b"\x1b[B")
-    time.sleep(0.3)
+    out = read_until(mfd, rb"1/2", 4.0)
     os.write(mfd, b"\x1bOB")  # SS3 form: what real zle sessions send
-    out = read_until(mfd, rb"2/2", 4.0)
+    out = read_until(mfd, rb"2/2", 4.0, out)
     check("Down browses older slots in chat (incl. SS3 arrows)",
           b"2/2" in out, out[-300:])
     os.write(mfd, b"\r")  # Enter on the selection: handoff the OLDER cmd
-    time.sleep(0.6)
+    out = read_until(mfd, rb"\x1b\[1;20r", 5.0)
     os.write(mfd, b"\r")
     out = read_until(mfd, rb"p1-42", 6.0)
     check("Enter hands off the selected older command", b"p1-42" in out, out[-300:])
-    time.sleep(0.5)
     os.write(mfd, b"## \r")  # reopen ...
-    time.sleep(0.8)
+    read_until(mfd, rb"\x1b\[1;16r", 6.0)
     # goulash's own controls keep their sigils inside chat: "pin that
     # file" is a thing you say mid-conversation. Bare @ opens the pin
     # browser over the chat panel...
@@ -1653,9 +1710,8 @@ def test_chat_mode():
     out = read_until(mfd, "## chat".encode(), 4.0)
     check("esc returns to chat, not to the shell",
           "## chat".encode() in out, out[-300:])
-    time.sleep(0.4)
     os.write(mfd, b"\x1b")  # ... and Esc backs out
-    time.sleep(0.4)
+    read_until(mfd, rb"\x1b\[1;20r", 5.0)
     os.write(mfd, b"echo bye-$((2*2))\r")
     out = read_until(mfd, rb"bye-4", 5.0)
     check("esc exits chat, shell keys flow again", b"bye-4" in out, out[-300:])

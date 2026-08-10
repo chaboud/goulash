@@ -113,9 +113,20 @@ pub const MIN_AUTO_PARAMS_B: f32 = 2.0;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct EngineConfig {
-    /// "auto" probes each known local engine in turn; "ollama",
-    /// "openai" (also spelled lmstudio / llamacpp / vllm — one wire,
-    /// several servers) pin one; "none" disables LLM features entirely.
+    /// "auto" probes each known local engine in turn; "none" disables
+    /// LLM features entirely; anything else pins one wire:
+    ///
+    /// - `ollama` — `/api/tags`, `/api/generate`
+    /// - `openai` (also `llamacpp`, `vllm`) — `/v1/models`,
+    ///   `/v1/chat/completions`; one wire, several servers
+    /// - `openai-raw` — `/v1/completions`, no chat template, for
+    ///   measurement
+    /// - `lmstudio` — LM Studio's OWN `/api/v1/models` + `/api/v1/chat`,
+    ///   which is its default and is NOT the `/v1` wire above. It used
+    ///   to be a spelling of `openai` and this comment went on saying so
+    ///   after it stopped being true, which cost an e2e test four
+    ///   failing checks: the config named one dialect and the fake
+    ///   server spoke the other.
     pub provider: String,
     /// Where ollama answers.
     pub host: String,
