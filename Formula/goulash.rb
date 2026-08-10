@@ -5,8 +5,8 @@
 class Goulash < Formula
   desc "Your shell, with a coach — LLM overlay for zsh and bash"
   homepage "https://goulash.dev"
-  url "https://github.com/chaboud/goulash/archive/refs/tags/v0.4.0.tar.gz"
-  sha256 "ef3c080915009d9f9444c9bf9cbdd40607e7e65c6e1b4052bba43e46b12d90c6"
+  url "https://github.com/chaboud/goulash/archive/refs/tags/v0.4.1.tar.gz"
+  sha256 "f97a873fcfcfcc9a71acf033f34b42d1fe19a8e24287e36c5f95bd761a8a874d"
   license any_of: ["MIT", "Apache-2.0"]
   head "https://github.com/chaboud/goulash.git", branch: "main"
 
