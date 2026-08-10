@@ -71,8 +71,21 @@ impl RulesVendor {
     }
 
     /// `lls: command not found` → closest PATH executable.
+    ///
+    /// The shell's *wording* is not a signal worth trusting. Debian and
+    /// Ubuntu ship `command-not-found`, whose handler replaces bash's
+    /// and zsh's message with its own — "Command 'lls' not found, but
+    /// there are 16 similar ones." — and translates it per locale.
+    /// Matching English text left this rule silently dead on the most
+    /// common Linux desktop there is; it was measured doing exactly
+    /// that on an Ubuntu runner while passing on macOS.
+    ///
+    /// What every shell and every locale does agree on is the exit
+    /// code and the command line: 127, a bare name, and nothing on
+    /// PATH answering to it. The message is kept as a second way in,
+    /// for a failure that reports some other code.
     fn rule_command_not_found(&mut self, b: &CmdBlock) -> Option<Vended> {
-        let missing = b.output_tail.lines().find_map(|l| {
+        let named = b.output_tail.lines().find_map(|l| {
             // bash/sh: "bash: lls: command not found"
             if let Some(pre) = l.strip_suffix(": command not found") {
                 return Some(pre.rsplit(':').next().unwrap_or(pre).trim().to_string());
@@ -81,15 +94,25 @@ impl RulesVendor {
             l.split("command not found:")
                 .nth(1)
                 .map(|s| s.trim().to_string())
-        })?;
+        });
         let first = b.cmd.split_whitespace().next()?;
-        if first != missing {
+        // A path was typed, not a name: a missing `./build.sh` is not a
+        // typo of anything on PATH.
+        if first.contains('/') {
             return None;
         }
-        let best = closest(&missing, self.path_executables().iter(), 2)?;
+        if b.exit_code != 127 && named.as_deref() != Some(first) {
+            return None;
+        }
+        // A shell function or a script can exit 127 from the inside.
+        // Only a name the shell itself could not resolve is a typo.
+        if self.path_executables().contains(first) {
+            return None;
+        }
+        let best = closest(first, self.path_executables().iter(), 2)?;
         let fixed = b.cmd.replacen(first, &best, 1);
         Some(Vended {
-            why: format!("`{missing}` isn't installed or is a typo; `{best}` is in PATH"),
+            why: format!("`{first}` isn't installed or is a typo; `{best}` is in PATH"),
             command: fixed,
             vendor: "rules",
         })
@@ -287,6 +310,43 @@ mod tests {
             assert!(!s.is_empty(), "no suggestion for {tail:?}");
             assert_eq!(s[0].command, "ls -la");
         }
+    }
+
+    /// Debian/Ubuntu's `command-not-found` handler says something else
+    /// entirely, and says it in the user's language. The rule has to
+    /// work off the exit code, not the prose.
+    #[test]
+    fn command_not_found_ubuntu_handler() {
+        let mut v = RulesVendor::with_path(&["ls", "llc", "lld", "git", "less"]);
+        for tail in [
+            // Verbatim from an ubuntu-latest runner.
+            "Command 'lls' not found, but there are 16 similar ones.\n",
+            "Command 'lls' not found, did you mean:\n  command 'ls' from deb coreutils\n",
+            // Translated, because that handler is localised.
+            "Befehl 'lls' nicht gefunden, meinten Sie vielleicht:\n",
+            // And a shell that says nothing at all.
+            "",
+        ] {
+            let s = v.suggest(&block("lls -la", 127, tail));
+            assert!(!s.is_empty(), "no suggestion for {tail:?}");
+            assert_eq!(s[0].command, "ls -la", "for {tail:?}");
+        }
+    }
+
+    /// 127 out of something that *is* installed is that program's own
+    /// business — a script whose innards failed, not a typo.
+    #[test]
+    fn command_not_found_ignores_real_commands_and_paths() {
+        let mut v = RulesVendor::with_path(&["ls", "make", "git"]);
+        assert!(
+            v.suggest(&block("make release", 127, "sh: cc: not found\n"))
+                .is_empty(),
+            "`make` is on PATH; its exit 127 is not a typo"
+        );
+        assert!(
+            v.suggest(&block("./deploy.sh", 127, "")).is_empty(),
+            "a path is not a typo of a PATH name"
+        );
     }
 
     #[test]
