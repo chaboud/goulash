@@ -10,12 +10,20 @@ const BASH_SCRIPT: &str = include_str!("../shell/goulash.bash");
 pub struct Integration {
     pub argv: Vec<String>,
     pub envs: Vec<(String, String)>,
+    /// Did we actually put an adapter in? The answer changes what
+    /// silence from the shell MEANS: with an adapter installed, no marks
+    /// is something being wrong; without one it is the designed
+    /// degraded mode for a shell goulash has no adapter for. Discarding
+    /// this was why goulash could not tell those apart, and said
+    /// "prompt" in both.
+    pub injected: bool,
 }
 
 fn passthrough(argv: Vec<String>) -> Integration {
     Integration {
         argv,
         envs: Vec::new(),
+        injected: false,
     }
 }
 
@@ -42,7 +50,11 @@ pub fn prepare(argv: Vec<String>, auto: bool) -> Integration {
     };
     match shell.as_str() {
         "zsh" => match zsh_envs(&dir) {
-            Some(envs) => Integration { argv, envs },
+            Some(envs) => Integration {
+                argv,
+                envs,
+                injected: true,
+            },
             None => passthrough(argv),
         },
         "bash" => prepare_bash(argv, &dir),
@@ -172,6 +184,7 @@ fn prepare_bash(argv: Vec<String>, dir: &Path) -> Integration {
     Integration {
         argv: new_argv,
         envs: Vec::new(),
+        injected: true,
     }
 }
 

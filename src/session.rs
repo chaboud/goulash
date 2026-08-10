@@ -1039,6 +1039,8 @@ fn compose_rows(
     shell_name: &str,
     st: &State,
     hook: Option<HookPhase>,
+    // Was an adapter installed? Decides what silence means.
+    hooked: bool,
     notice: &Option<String>,
     band: &Option<Band>,
     browse: Option<usize>,
@@ -1137,7 +1139,7 @@ fn compose_rows(
             inner,
             reserved,
             shell_name,
-            sense::label(st, hook),
+            sense::label(st, hook, hooked),
             pin,
             stats,
             dots,
@@ -1211,7 +1213,7 @@ fn compose_rows(
                 inner,
                 reserved,
                 shell_name,
-                sense::label(st, hook),
+                sense::label(st, hook, hooked),
                 pin,
                 stats,
                 dots,
@@ -1344,7 +1346,7 @@ fn compose_rows(
             inner,
             reserved,
             shell_name,
-            sense::label(st, hook),
+            sense::label(st, hook, hooked),
             pin,
             stats,
             dots,
@@ -1395,7 +1397,7 @@ fn compose_rows(
     let notice_text = notice.clone().map(|n| format!(" {n} "));
     let reserved = cfg.reserved_rows();
     let inner_rows = layout.real.rows.saturating_sub(reserved).max(1);
-    let label = sense::label(st, hook);
+    let label = sense::label(st, hook, hooked);
 
     if !cfg.status.band {
         // Minimal mode: a single chrome row.
@@ -2718,6 +2720,10 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
         .unwrap_or_else(|| argv[0].clone());
 
     let integ = crate::integrate::prepare(argv.clone(), cfg.shell.auto_integrate);
+    // Whether marks are EXPECTED. Silence means different things with an
+    // adapter installed and without one, and the status row is the only
+    // place that difference is visible to the user.
+    let hooked = integ.injected;
     let mut p = pty::spawn(&integ.argv, &integ.envs, layout.inner())?;
     let master = p.master.as_raw_fd();
 
@@ -2982,6 +2988,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     &shell_name,
                     &cur_state,
                     hook,
+                    hooked,
                     &notice,
                     &band,
                     browse,
@@ -5704,6 +5711,7 @@ pub fn run(cfg: &Config, argv: Vec<String>) -> io::Result<i32> {
                     &shell_name,
                     &cur_state,
                     hook,
+                    hooked,
                     &notice,
                     &band,
                     browse,
@@ -6360,6 +6368,7 @@ mod band_tests {
                 alt_screen: false,
             },
             Some(super::HookPhase::Prompt),
+            true,
             &None,
             &None,
             browse,
