@@ -513,7 +513,8 @@ def test_adapter_fidelity():
             f.write(plugin)
         log = os.path.join(home, "plug.log")
         proc, mfd = spawn([shell], home=home)
-        time.sleep(1.5)
+        check(f"{shell}: the shell reached a prompt", shell_ready(mfd),
+              "shell never spoke; everything below is untested")
         os.write(mfd, b"echo mark-$((2*2)) # trailing\r")
         out = read_until(mfd, rb"mark-4", 6.0)
         tail = out[out.rfind(b"mark-4"):][:40]
