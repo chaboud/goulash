@@ -41,6 +41,32 @@ def closed_port():
     return port
 
 
+def quiet_home(home):
+    """Make the throwaway HOME look like a home somebody lives in.
+
+    Tests run the shell against a brand-new empty directory, which is a
+    state almost no real user is in -- and several shells treat it as a
+    cue to say something. Ubuntu's /etc/bash.bashrc prints a three-line
+    sudo hint and forks `groups` on every interactive bash whose HOME
+    lacks .sudo_as_admin_successful, so `--rcfile` tests get three
+    unexpected lines injected into their capture while their `--norc`
+    neighbours do not. That asymmetry is a flake generator.
+
+    These files are inert everywhere they are not needed -- no per-OS
+    branching, just an empty file a real home would already have. What
+    they do NOT do is silence the system rc files: goulash still has to
+    work next to whatever the machine ships, so /etc/zsh/zshrc and
+    /etc/bash.bashrc keep running. Anything they ask on the way up is
+    `shell_ready`'s problem, which is where a question belongs.
+    """
+    for name in (".hushlogin", ".sudo_as_admin_successful"):
+        try:
+            open(os.path.join(home, name), "a").close()
+        except OSError:
+            pass
+    return home
+
+
 def pin_engine(home):
     """Point a test's goulash at an engine that cannot answer.
 
@@ -95,7 +121,7 @@ def close_menu(mfd, tries=6):
 def spawn(argv, rows=ROWS, cols=COLS, home=None):
     mfd, sfd = pty.openpty()
     set_winsize(mfd, rows, cols)
-    home = pin_engine(home or tempfile.mkdtemp(prefix="goulash-test-"))
+    home = pin_engine(quiet_home(home or tempfile.mkdtemp(prefix="goulash-test-")))
     env = dict(os.environ, GOULASH_HOME=home, HOME=home, TERM="xterm-256color")
     proc = subprocess.Popen(
         [BIN] + argv, stdin=sfd, stdout=sfd, stderr=sfd,
@@ -398,7 +424,8 @@ def test_zsh_auto_integration():
         return
     home = tempfile.mkdtemp(prefix="goulash-test-")
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.5)
+    check("the shell reached a prompt", shell_ready(mfd),
+          "shell never spoke; everything below is untested")
     os.write(mfd, b"lls\r")
     out = read_until(mfd, "suggestion: ls".encode())
     check("suggestion vended under zsh", saw(out, "suggestion: ls".encode()), out[-300:])
@@ -552,7 +579,7 @@ def bare_startup(shell, args, home):
         os.environ.pop("ZDOTDIR", None)
         os.execv(shell, [os.path.basename(shell)] + args)
     set_winsize(fd, ROWS, COLS)
-    time.sleep(1.2)
+    zle_ready(fd)
     os.write(fd, b"exit\n")
     time.sleep(0.5)
     try:
@@ -569,7 +596,7 @@ def bare_startup(shell, args, home):
 def goulash_startup(shell, args, home):
     open(os.path.join(home, "rc.log"), "w").close()
     proc, mfd = spawn([shell] + args, home=home)
-    time.sleep(2.0)
+    shell_ready(mfd)
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
     return open(os.path.join(home, "rc.log")).read().strip().splitlines()
@@ -606,7 +633,8 @@ def test_rc_loading():
         # a profile), so prove the adapter actually arrives.
         home = rc_log_home()
         proc, mfd = spawn(["bash", "-l"], home=home)
-        time.sleep(1.5)
+        check("the shell reached a prompt", shell_ready(mfd),
+              "shell never spoke; everything below is untested")
         os.write(mfd, b'echo ADAPT=$__goulash_loaded\r')
         out = read_until(mfd, rb"ADAPT=1", 6.0)
         check("login bash gets the adapter", b"ADAPT=1" in out, out[-300:])
@@ -663,6 +691,31 @@ def wait_asks(fd, seen, want, timeout=15.0):
     return len(seen) >= want
 
 
+def wait_for(fd, pred, timeout=15.0):
+    """Drain the pty until `pred()` is true -- the fact, not its picture.
+
+    The recurring bug this kills: waiting for the ANSWER TEXT of a turn
+    with `read_until(mfd, rb"PASS")`, when the previous turn's PASS is
+    still sitting on the band. The regex matches instantly, the harness
+    runs on, and the assertion reads the request list before the new
+    request has arrived -- so the test reports a product failure that is
+    really the harness getting ahead of the engine. The fake server's
+    own list is the fact; the screen is a rendering of an older one.
+    """
+    end = time.time() + timeout
+    while time.time() < end:
+        if pred():
+            return True
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if fd in r:
+            try:
+                if not os.read(fd, 65536):
+                    break
+            except OSError:
+                break
+    return pred()
+
+
 def wait_text(fd, needle, timeout=20.0):
     """Drain the pty until `needle` arrives. A real signal, not a nap.
 
@@ -690,8 +743,16 @@ def wait_text(fd, needle, timeout=20.0):
 
 
 def zle_ready(fd, timeout=20.0):
-    """`Z"S"H-UP` echoes with the quotes and prints without them."""
-    os.write(fd, b'print -r -- Z"S"H-UP\r')
+    """Prove the shell is executing, not just connected.
+
+    `echo` rather than zsh's `print`, so the same probe works for bash;
+    and the marker is written Z"S"H-UP so the tty's ECHO of the typed
+    line cannot match it -- only the shell's own OUTPUT can. On a slow
+    machine the echo appears long before the shell is in a position to
+    run anything, and matching that would be the same false green a
+    fixed sleep gives.
+    """
+    os.write(fd, b'echo Z"S"H-UP\r')
     return wait_text(fd, b"ZSH-UP", timeout)
 
 
@@ -721,6 +782,88 @@ def wait_buf(fd, log, timeout=20.0):
         return os.path.getsize(log) > 0
     except OSError:
         return False
+
+
+CHROME_STATE = re.compile("│ (\\w+) #")
+
+
+def chrome_state(buf):
+    """The state word goulash prints in its own chrome, or None."""
+    hits = CHROME_STATE.findall(visible(buf).decode("utf-8", "replace"))
+    return hits[-1] if hits else None
+
+
+def shell_ready(mfd, tries=3, each=8.0):
+    """Wait until the shell has actually spoken, the way a person would.
+
+    A shell may ask something on its way up -- zsh's compinit wanting a
+    yes/no about insecure directories, a first-run wizard, a plugin
+    manager offering to install itself. That is how shells extend
+    themselves, it is the SHELL's call, and goulash's job is only to
+    pass it through; a person reads it and answers. A harness that
+    instead types its first test keystroke into that question gets the
+    keystroke eaten as the ANSWER -- which is exactly how one blocking
+    question on one machine became fifty failures, plus two tests that
+    reported green against a shell that had never started.
+
+    So: watch, and only then type. goulash's chrome says `starting`
+    until its adapter reports its first mark, so this is passive -- it
+    sends nothing and cannot disturb history or the line being edited.
+    If the shell stays silent it is waiting on an answer, so give it one
+    and look again. Bounded, and returns False rather than hanging, so
+    the caller can say "the shell never reached a prompt" ONCE instead
+    of failing every assertion downstream of it.
+
+    Nothing here knows about compinit, zsh, or any distribution.
+    """
+    acc = b""
+    for _ in range(tries):
+        end = time.time() + each
+        while time.time() < end:
+            st = chrome_state(acc)
+            if st is not None and st != "starting":
+                return True
+            r, _, _ = select.select([mfd], [], [], 0.2)
+            if mfd in r:
+                try:
+                    d = os.read(mfd, 65536)
+                except OSError:
+                    return False
+                if not d:
+                    return False
+                acc += d
+        # Still nothing. Something is asking; answer it and look again.
+        os.write(mfd, b"y\r")
+    return False
+
+
+def wait_meter_clear(mfd, marker=rb"@commandRef\.md\+2", timeout=20.0):
+    """Wait for the cook meter to leave the chrome.
+
+    Absence is not something read_until can match, so watch the LAST
+    paint of the marker instead: while an ingest runs it carries ` NN%`,
+    and when the digest lands it is drawn plain. The sleep this replaces
+    was 2.0s for a round trip whose server half alone holds 1.2s -- so
+    on a loaded machine the digest had not landed, and two checks blamed
+    the product for the harness being early.
+    """
+    rx = re.compile(marker + rb"\*?( \d+%)?")
+    end, acc = time.time() + timeout, b""
+    while time.time() < end:
+        hits = rx.findall(visible(acc))
+        if hits and hits[-1] == b"":
+            return True
+        r, _, _ = select.select([mfd], [], [], 0.2)
+        if mfd in r:
+            try:
+                d = os.read(mfd, 65536)
+            except OSError:
+                break
+            if not d:
+                break
+            acc += d
+    hits = rx.findall(visible(acc))
+    return bool(hits) and hits[-1] == b""
 
 
 def tab_buffer(keys, home, via_goulash):
@@ -927,7 +1070,8 @@ def test_engine_openai():
                 f'openai_host = "http://127.0.0.1:{port}"\n'
                 'api_key_env = "GOULASH_TEST_KEY"\n')
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.5)
+    check("the shell reached a prompt", shell_ready(mfd),
+          "shell never spoke; everything below is untested")
     os.write(mfd, b"# what is the answer\r")
     out = read_until(mfd, rb"OAI-openai-model", 8.0)
     check("model picked from /v1/models and answered",
@@ -1071,7 +1215,8 @@ def test_per_lane_providers():
     # here is which server each lane talks to; the 80-column rendering
     # has its own tests.
     proc, mfd = spawn(["zsh"], cols=120, home=home)
-    time.sleep(1.5)
+    check("the shell reached a prompt", shell_ready(mfd),
+          "shell never spoke; everything below is untested")
     # Ask for status BEFORE anything is vended. Both lanes bind at
     # startup, so this is the same fact either way -- but the status
     # notice and the suggestion chip share the rule, and once a chip is
@@ -1130,7 +1275,8 @@ def test_per_lane_providers():
             'trusted = "no"\n'
         )
     proc, mfd = spawn(["zsh"], home=home2)
-    time.sleep(1.5)
+    check("the shell reached a prompt", shell_ready(mfd),
+          "shell never spoke; everything below is untested")
     os.write(mfd, b"#/status\r")
     out = read_until(mfd, rb"untrusted", 6.0)
     check("stated distrust overrides what auto would infer",
@@ -1212,7 +1358,8 @@ def test_engine_ollama():
     with open(os.path.join(home, "config.toml"), "w") as f:
         f.write(f'[engine]\nprovider = "ollama"\nhost = "http://127.0.0.1:{port}"\n')
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.5)
+    check("the shell reached a prompt", shell_ready(mfd),
+          "shell never spoke; everything below is untested")
     os.write(mfd, b"# what is the answer\r")
     out = read_until(mfd, rb"ANS-fakemodel", 8.0)
     check("smallest model auto-picked, answer shown", b"ANS-fakemodel" in out, out[-300:])
@@ -1342,10 +1489,13 @@ def test_engine_ollama():
     # exactly once, in its filter — which is how this check passed for a
     # release while the menu stayed wide open and every command after it
     # was typed into the filter instead of the shell.
+    # Wait for BOTH occurrences, which is the thing being asserted. The
+    # old form stopped at the first -- the shell's echo of the typed
+    # line -- and then allowed a fixed 1.2s for the second, the output,
+    # which is the half that proves it ran. On a loaded machine that ran
+    # out and the test blamed the menu.
     os.write(mfd, b"echo MENU-CLOSED\r")
-    out = read_until(mfd, rb"MENU-CLOSED", 4.0)
-    time.sleep(0.4)
-    out += read_until(mfd, rb"NOTHING-EXPECTED", 0.8)
+    out = read_until(mfd, rb"MENU-CLOSED[\s\S]*?MENU-CLOSED", 8.0)
     check("a second esc closes the menu",
           visible(out).count(b"MENU-CLOSED") >= 2, out[-260:])
     # #/debug: the nerd-stuff drawer. It is a shortcut straight into the
@@ -1459,7 +1609,8 @@ def test_model_menu():
         f.write("# keep me\n[engine]\nprovider = \"ollama\"\n"
                 f"host = \"http://127.0.0.1:{port}\"\nstream = false\n")
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.5)
+    check("the shell reached a prompt", shell_ready(mfd),
+          "shell never spoke; everything below is untested")
     os.write(mfd, b"#/model\r")
     out = read_until(mfd, rb"model \xe2\x96\xb8", 6.0)  # title chip "model ▸"
     check("menu opened", "model ▸".encode() in out, out[-300:])
@@ -1544,7 +1695,8 @@ def test_model_capabilities():
                 "model = \"gemma3:4b\"\nmax_tokens = 256\n"
                 "thinking_tokens = 400\ncommentary = false\n")
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.5)
+    check("the shell reached a prompt", shell_ready(mfd),
+          "shell never spoke; everything below is untested")
 
     # gemma cannot reason: the dial must say so rather than pretend.
     os.write(mfd, b"#/thinking high\r")
@@ -1644,7 +1796,8 @@ def test_chat_mode():
         f.write(f'[engine]\nprovider = "ollama"\nhost = "http://127.0.0.1:{port}"\n'
                 'stream = false\n')
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.5)
+    check("the shell reached a prompt", shell_ready(mfd),
+          "shell never spoke; everything below is untested")
     os.write(mfd, b"## first question\r")
     # Chat grows the area: reserved 4 -> 8 on a 24-row term, inner 16.
     out = read_until(mfd, rb"\x1b\[1;16r", 6.0)
@@ -1793,7 +1946,8 @@ def test_slow_lane():
                 f"host = \"http://127.0.0.1:{port}\"\nstream = false\n"
                 "commentary = false\nslow = \"manual\"\n")
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.5)
+    check("the shell reached a prompt", shell_ready(mfd),
+          "shell never spoke; everything below is untested")
 
     # `#?` goes STRAIGHT to slow. It used to dispatch fast as well --
     # "fast answers first and keeps the microphone" -- but that answers a
@@ -1834,7 +1988,8 @@ def test_slow_lane():
                 f"host = \"http://127.0.0.1:{port}\"\nstream = false\n"
                 "commentary = false\nslow = \"query\"\n")
     proc, mfd = spawn(["zsh"], home=home2)
-    time.sleep(1.5)
+    check("the shell reached a prompt", shell_ready(mfd),
+          "shell never spoke; everything below is untested")
     before = len(prompts)
     os.write(mfd, b"# how do i clear old logs\r")
     out = read_until(mfd, rb"the quick way", 10.0)
@@ -2005,7 +2160,22 @@ def test_working_context():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
     home = tempfile.mkdtemp(prefix="goulash-test-")
-    work = tempfile.mkdtemp(prefix="goulash-work-")
+    # Short on purpose, and NOT under the default temp root. The pin
+    # browser prints "[id] <path> · N chars · <tier> · changed *" with
+    # the dirty marker LAST, so it is the first thing lost off the right
+    # edge. macOS hands out
+    # /private/var/folders/q9/r1w2q0qx63nfm48k0k_d6djm0000gn/T/goulash-work-xxxx
+    # -- 80-odd characters before the filename -- so at 80 columns the
+    # marker never appeared and the check was reading the terminal's
+    # width. It passed on Linux only because /tmp is short.
+    #
+    # Widening the terminal instead looked tidier and was wrong: at 160
+    # columns the menu paginates differently, a later arm-then-confirm
+    # drop lands on a different row, and a pin survives `#@/unset` --
+    # measured, one failure traded for another. Keep every test at the
+    # same width and shorten the path.
+    short_root = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
+    work = tempfile.mkdtemp(prefix="gw-", dir=short_root)
     with open(os.path.join(work, "commandRef.md"), "w") as f:
         f.write("# widgetctl\n\nRun `widgetctl sync --all` to sync.\n")
     with open(os.path.join(work, "OTHER.md"), "w") as f:
@@ -2014,8 +2184,18 @@ def test_working_context():
         f.write("[engine]\nprovider = \"ollama\"\n"
                 f"host = \"http://127.0.0.1:{port}\"\nstream = false\n"
                 "commentary = false\ncontext_files_max_chars = 900\n")
+    # Wider than the default 80 on purpose. The pin browser prints
+    # "[id] <path> · N chars · <tier> · changed *" and the dirty marker
+    # is the LAST thing on the row, so a long temp path -- macOS hands
+    # out /private/var/folders/q9/r1w2.../T/goulash-work-xxxx, 80-odd
+    # characters before the filename -- pushes it clean off the right
+    # edge. The check was reading the terminal's width, not whether the
+    # browser names the change; it passed on Linux only because /tmp is
+    # short. (That the marker is last, and so the first thing lost, is a
+    # real if minor wrinkle in the browser: noted, not fixed here.)
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.2)
+    check("the shell reached a prompt", shell_ready(mfd),
+          "shell never spoke; everything below is untested")
     os.write(mfd, f"cd {work}\r".encode())
     read_until(mfd, rb"\$", 4.0)
 
@@ -2056,7 +2236,7 @@ def test_working_context():
           any("crib for this reference" in p and "commandRef.md" in p for p in prompts),
           str(len(prompts)))
     os.write(mfd, b"#how do i sync\r")
-    read_until(mfd, rb"PASS", 8.0)
+    wait_for(mfd, lambda: any("how do i sync" in p for p in prompts))
     asked = [p for p in prompts if "how do i sync" in p]
     check("pinned text reaches the prompt",
           asked and "widgetctl sync --all" in asked[-1], "")
@@ -2086,7 +2266,7 @@ def test_working_context():
     check("#@ <words> resolves through the model",
           b"@commandRef.md+1" in out, out[-300:])
     os.write(mfd, b"#and now\r")
-    read_until(mfd, rb"PASS", 8.0)
+    wait_for(mfd, lambda: any("and now" in p for p in prompts))
     asked = [p for p in prompts if "and now" in p]
     check("model-chosen pin reaches the prompt too",
           asked and "MENTIONS-OTHER" in asked[-1], "")
@@ -2104,14 +2284,17 @@ def test_working_context():
     out = read_until(mfd, rb"@commandRef.md\+1\*", 5.0, out)
     check("a changed pin is marked in the chrome",
           b"@commandRef.md+1*" in out, out[-300:])
-    # ...and the browser says which one, in words.
+    # ...and the browser says which one, in words. Wait for the browser
+    # to BE there before reading its contents: goulash paints once, so a
+    # read that goes straight for the word can start before the pane
+    # exists and time out against a blank band.
     os.write(mfd, b"#@\r")
-    out = read_until(mfd, rb"changed", 5.0)
-    check("the browser names the changed pin", b"changed" in out, out[-400:])
-    os.write(mfd, b"\x1b")
-    time.sleep(0.4)
+    out = read_until(mfd, "@ pinned ▸".encode(), 5.0)
+    out = read_until(mfd, rb"changed", 4.0, out)
+    check("the browser names the changed pin", b"changed" in visible(out), out[-400:])
+    close_menu(mfd)
     os.write(mfd, b"#still here\r")
-    read_until(mfd, rb"PASS", 8.0)
+    wait_for(mfd, lambda: any("still here" in p for p in prompts))
     asked = [p for p in prompts if "still here" in p]
     check("stale text keeps serving until asked to re-cook",
           asked and "NEW LINE ADDED LATER" not in asked[-1], "")
@@ -2130,7 +2313,7 @@ def test_working_context():
     # Asked WHILE the digest is still cooking: the pin has to be useful
     # already, which is the whole reason the outline is computed first.
     os.write(mfd, b"#during the cook\r")
-    read_until(mfd, rb"PASS", 12.0)
+    wait_for(mfd, lambda: any("during the cook" in p for p in prompts))
     asked = [p for p in prompts if "during the cook" in p]
     check("an over-budget pin is useful before its digest lands",
           asked and "[outline: prose omitted]" in asked[-1], "")
@@ -2138,13 +2321,13 @@ def test_working_context():
           asked and "widgetctl sync --all" in asked[-1], "")
 
     # ...and when it lands the meter collapses back to a plain marker.
-    time.sleep(2.0)
-    os.write(mfd, b"true\r")
-    out = read_until(mfd, rb"goulash", 5.0)
+    # That collapse IS the signal the digest arrived; the old form slept,
+    # then read until "goulash", which every chrome paint contains and so
+    # matched instantly whatever the cook was doing.
     check("the meter collapses when the cook finishes",
-          re.search(rb"@commandRef.md\+2\*? \d+%", out) is None, out[-300:])
+          wait_meter_clear(mfd), "meter never cleared")
     os.write(mfd, b"#after the cook\r")
-    read_until(mfd, rb"PASS", 8.0)
+    wait_for(mfd, lambda: any("after the cook" in p for p in prompts))
     asked = [p for p in prompts if "after the cook" in p]
     check("the digest is what reaches the prompt afterwards",
           asked and "DIGESTED" in asked[-1], "")
@@ -2172,13 +2355,27 @@ def test_working_context():
     os.write(mfd, b"\r")
     out = read_until(mfd, "esc back".encode(), 4.0)
     check("Enter reads the pin", "esc back".encode() in out, out[-500:])
+    # The pane really does print the path -- it just does not print it on
+    # one line. A temp dir on macOS is
+    # /private/var/folders/q9/r1w2.../T/goulash-work-xxxx, which is longer
+    # than the pane is wide, so it wraps and each continuation row starts
+    # with the pane's own left padding. Comparing a contiguous string
+    # against a wrapped rendering was testing the width of the terminal.
+    # Spaces cannot occur inside these paths, so dropping them makes the
+    # wrap irrelevant while still requiring every character in order.
+    # realpath because macOS resolves /var to /private/var and goulash
+    # reports what it actually opened.
+    want = os.path.realpath(os.path.join(work, "big.md")).replace(" ", "")
+    shown = visible(out).decode("utf-8", "replace").replace(" ", "")
     check("the pane names the real path, not just the label",
-          os.path.join(work, "big.md").encode() in out, out[-800:])
+          want in shown, f"want {want!r} in {shown[-400:]!r}")
     check("the pane reports what tier is being sent",
           b"DIGESTED" in out or b"digest" in out, out[-800:])
     # The pane takes every row it can — but never the shell's floor.
     # Chrome geometry is `colsxinner+reserved`, so this reads it back.
-    geom = re.findall(rb"80x(\d+)\+(\d+)", out)
+    # Width-agnostic: the chrome prints `colsxinner+reserved`, and this
+    # test deliberately does not run at the default width.
+    geom = re.findall(rb"\d+x(\d+)\+(\d+)", out)
     check("the pane grows the band", geom and int(geom[-1][1]) > 6, str(geom[-3:]))
     check("...but never squeezes the shell below its floor",
           geom and int(geom[-1][0]) >= 10, str(geom[-3:]))
@@ -2224,10 +2421,13 @@ def test_working_context():
     check("#@/unset clears the chrome marker",
           b"@" not in chrome, chrome[:200])
     os.write(mfd, b"#gone now\r")
-    read_until(mfd, rb"PASS", 8.0)
+    wait_for(mfd, lambda: any("gone now" in p for p in prompts))
     asked = [p for p in prompts if "gone now" in p]
     check("an empty context costs zero prompt bytes",
-          asked and "Working context" not in asked[-1], "")
+          asked and "Working context" not in asked[-1],
+          f"{len(asked)} matching asks; "
+          + (repr(asked[-1][asked[-1].find("Working context"):][:300])
+             if asked else "the ask never reached the engine"))
 
     os.write(mfd, b"exit\r")
     drain_exit(proc, mfd)
@@ -2300,7 +2500,8 @@ def test_memory():
     with open(os.path.join(home, "config.toml"), "w") as f:
         f.write(f'[engine]\nprovider = "ollama"\nhost = "http://127.0.0.1:{port}"\n')
     proc, mfd = spawn(["zsh"], home=home)
-    time.sleep(1.5)
+    check("the shell reached a prompt", shell_ready(mfd),
+          "shell never spoke; everything below is untested")
     # ON by default. Off was not neutral: with nothing in the prompt
     # about memory at all, a model asked to remember something invented
     # a file to write it to and said it had saved it.
@@ -2583,7 +2784,8 @@ def test_stats_row():
     with open(os.path.join(home, "config.toml"), "w") as f:
         f.write("[status]\nstats = true\n")
     proc, mfd = spawn(["zsh"], home=home, rows=24, cols=120)
-    time.sleep(1.5)
+    check("the shell reached a prompt", shell_ready(mfd),
+          "shell never spoke; everything below is untested")
     out = read_until(mfd, rb"slots", 6.0)
     check("stats appear in the chrome row", b"slots" in out and b"ctx" in out,
           out[-200:])
