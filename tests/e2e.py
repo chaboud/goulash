@@ -72,6 +72,25 @@ def pin_engine(home):
     return home
 
 
+def close_menu(mfd, tries=6):
+    """Esc until the chrome says the goulash area is back to its four
+    reserved rows -- i.e. no menu is open.
+
+    Esc is ambiguous on arrival (it prefixes every escape sequence), so
+    goulash holds it briefly to tell a bare Esc from an arrow key, and a
+    test that sleeps a fixed interval and types is racing that hold. It
+    also clears a typed filter on its way up, so the number of Escs
+    needed is not fixed either. Both problems go away by watching for
+    the outcome instead of counting keys.
+    """
+    for _ in range(tries):
+        os.write(mfd, b"\x1b")
+        out = read_until(mfd, rb"x20\+4", 1.2)
+        if saw(out, b"x20+4"):
+            return True
+    return False
+
+
 def spawn(argv, rows=ROWS, cols=COLS, home=None):
     mfd, sfd = pty.openpty()
     set_winsize(mfd, rows, cols)
@@ -1849,8 +1868,15 @@ def test_working_context():
     check("bare #@ opens the pin browser",
           "@ pinned ▸".encode() in out, out[-300:])
     check("browser offers a + pin row", "+ pin a file".encode() in out, out[-400:])
-    os.write(mfd, b"\x1b")
-    time.sleep(0.4)
+    # Wait for the menu to be GONE, not for a fixed interval. A bare Esc
+    # cannot be recognised on arrival -- it is also the first byte of
+    # every arrow key -- so goulash holds it until the input settles.
+    # Typing into that hold sends the keystrokes to a menu that is on its
+    # way out, and the line never reaches the shell: this test asked for
+    # a pin, got nothing, and the five checks after it failed for a
+    # reason none of them named. The chrome's reserved-row count says
+    # when the menu is really closed.
+    close_menu(mfd)
 
     # The deterministic form: no model involved at all.
     os.write(mfd, b"#@/path commandRef.md\r")
@@ -2028,7 +2054,11 @@ def test_working_context():
 
     # Unset really unsets, and the block goes back to costing nothing.
     os.write(mfd, b"#@/unset\r")
-    time.sleep(0.5)
+    # Wait for goulash to SAY it cleared, then force a fresh paint. The
+    # old form slept and then read until "goulash", which matches every
+    # chrome row -- including the one painted before the unset had been
+    # processed, so the assertion below was reading a stale line.
+    read_until(mfd, "@ cleared".encode(), 5.0)
     os.write(mfd, b"true\r")
     out = read_until(mfd, rb"goulash", 5.0)
     # Measure the LAST chrome paint in the window: earlier ones in the
