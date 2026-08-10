@@ -692,6 +692,32 @@ def wait_asks(fd, seen, want, timeout=15.0):
     return len(seen) >= want
 
 
+def drain_quiet(fd, quiet=0.4, cap=6.0):
+    """Drain until the pty has been silent for `quiet` seconds.
+
+    Not a sleep: the signal is goulash having stopped emitting, which is
+    what "it has finished flushing whatever it was holding" looks like
+    from out here. Esc is the reason this is needed -- goulash holds a
+    bare Esc briefly to tell it from an arrow key, and a late release
+    lands the Esc immediately before the next keystroke. ZLE reads
+    `ESC` then `Enter` as Meta-Enter, which INSERTS a newline instead of
+    accepting the line: the command appears on screen, echoed, and never
+    runs. Measured as exactly that -- the assertion text present once,
+    from the echo, and no output.
+    """
+    end = time.time() + cap
+    last = time.time()
+    while time.time() < end and time.time() - last < quiet:
+        r, _, _ = select.select([fd], [], [], 0.1)
+        if fd in r:
+            try:
+                if not os.read(fd, 65536):
+                    return
+            except OSError:
+                return
+            last = time.time()
+
+
 def wait_for(fd, pred, timeout=15.0):
     """Drain the pty until `pred()` is true -- the fact, not its picture.
 
@@ -1474,7 +1500,7 @@ def test_engine_ollama():
     check("esc walks back out of the group before it closes the menu",
           at_root, "never showed the root breadcrumb")
     os.write(mfd, b"\r")            # settle ZLE's meta prefix (dismiss_and_exit)
-    time.sleep(0.3)
+    drain_quiet(mfd)                # ...and let goulash finish releasing it
     # "Closed" means keys reach the SHELL again. The old check waited for
     # the ingress tip, which the rule row only shows while there is no
     # suggestion to show instead -- so once anything had been vended it
@@ -1498,7 +1524,9 @@ def test_engine_ollama():
     os.write(mfd, b"echo MENU-CLOSED\r")
     out = read_until(mfd, rb"MENU-CLOSED[\s\S]*?MENU-CLOSED", 8.0)
     check("a second esc closes the menu",
-          visible(out).count(b"MENU-CLOSED") >= 2, out[-260:])
+          visible(out).count(b"MENU-CLOSED") >= 2,
+          f"seen {visible(out).count(b'MENU-CLOSED')}x | "
+          + repr(visible(out).decode("utf-8", "replace")[-700:]))
     # #/debug: the nerd-stuff drawer. It is a shortcut straight into the
     # `nerd stuff` group of the same tree — so it leads with `..`, and
     # the knob is one Down away.

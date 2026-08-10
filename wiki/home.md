@@ -7,7 +7,7 @@ control with the user.
 
 > Your shell, with a coach.
 
-**Status: shipping, 0.4.0.** zsh and bash are supported; **fish is not
+**Status: shipping, 0.4.1.** zsh and bash are supported; **fish is not
 yet** — it is an adapter in the [Later](product/build-plan.md) pile, so
 treat "universal" as the ambition in the acronym rather than a claim
 about today. The engine speaks ollama and any OpenAI-compatible server

@@ -333,6 +333,47 @@ Field-driven, roughly in order of leverage:
    **Unverified**: proxied by strict fakes in e2e, never pointed at a
    real LM Studio.
 
+10. **A held Esc is a meta prefix for whatever the user types next.**
+    Esc prefixes every escape sequence, so goulash holds a bare one
+    briefly to tell it from an arrow key
+    ([input-ownership](../architecture/input-ownership.md)). Release it
+    late and it lands immediately before the user's next keystroke,
+    where ZLE reads the pair as **Meta-<key>** — and in emacs mode
+    several of those are editing commands rather than characters.
+
+    Measured in bare zsh (no goulash), typing `echo hello world` and
+    then a stray Esc plus one key, reading `$BUFFER` rather than the
+    screen:
+
+    | + key | buffer after | effect |
+    |---|---|---|
+    | *(none)* | `echo hello world` | control |
+    | Enter | `echo hello world\n` | not accepted; a second Enter runs it |
+    | `d` | `echo hello world` | the `d` vanishes (kill-word, nothing to kill) |
+    | `b` then `X` | `echo hello Xworld` | cursor jumped a word; the X lands mid-line |
+    | Backspace | `echo hello ` | backward-kill-word ate the whole word |
+
+    Nothing executes unbidden and nothing escapes the line buffer, but a
+    keystroke can silently disappear, land in the wrong place, or take a
+    word with it. Enter is the mildest case, not the representative one.
+
+    This is zsh's own behaviour for a stray Esc; what goulash adds is
+    the hold, which widens the window in which the collision can happen
+    at all. **Reproduced 2 of 5 runs under load**, closing a
+    `#/settings` menu and typing straight after: the line present
+    exactly once (its echo, no output) with the chrome already back to
+    four reserved rows — so the menu had closed and the keys still went
+    nowhere useful.
+    goulash's own code already works around this internally — the bare
+    CR in `dismiss_and_exit` is commented "load-bearing" for exactly
+    this reason — which means the hazard is known and unhandled for the
+    *user's* keystrokes.
+    Options: shorten the hold and accept more arrow ambiguity; drop the
+    hold when the next byte is not `[` or `O`; or absorb the pairing in
+    the overlay so a held Esc is never emitted adjacent to a CR. The
+    e2e suite now waits for goulash to go quiet before typing, which
+    fixes the *test* (6 of 6 clean) and deliberately does not fix this.
+
 ## Milestone 5 — memory hierarchy + watcher tier
 Rolling cleanup loop (local model if available) setting region markers;
 logarithmic ramp-off retrieval; epoch-based prefix caching for API calls.

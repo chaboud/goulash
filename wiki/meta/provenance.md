@@ -19,7 +19,7 @@ brainstorm conversation into structured pages. That conversation covered:
   name is [settled](../naming/decision.md) on product grounds, which is
   not the same as cleared.
 - Architecture was design-stage reasoning when this was written. **That
-  caveat has expired.** goulash is a working binary at 0.4.0; the PTY
+  caveat has expired.** goulash is a working binary at 0.4.1; the PTY
   overlay, status rows, `#`/`##` interaction, memory store and LLM engine
   all ship, and the engine's settings were chosen from ~5,500 measured
   generations rather than from argument

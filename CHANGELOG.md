@@ -8,7 +8,7 @@ Goulash is pre-1.0, so minor versions may change behaviour. Settings that
 move carry a note here and keep working from an existing `config.toml`
 where that is possible.
 
-## [Unreleased]
+## [0.4.1] — 2026-08-10
 
 ### Fixed
 
@@ -41,6 +41,18 @@ where that is possible.
   and every locale agrees about: exit 127, a bare name, and nothing on
   PATH answering to it. A typed path is not a typo, and 127 out of
   something that *is* installed stays that program's own business.
+- **The status row said `prompt` when goulash had heard nothing.** With
+  no mark from its adapter it fell through to termios, saw a line
+  editor's raw mode, and guessed — so a shell still inside its own
+  startup files, or one whose adapter never loaded, read as a live
+  prompt. Measured against a zsh blocked on `compinit`'s "Ignore
+  insecure directories?" question: `fg_shell` true, `ICANON` false,
+  chrome `prompt`, marks received zero. The row now says `starting`
+  until the shell actually speaks. `Integration` also carries whether
+  an adapter was installed, so "installed and silent" is distinct from
+  "a shell goulash has no adapter for", where termios sensing *is* the
+  design and nothing changed. A foreground child still reads `run`, and
+  a password read still reads `secret`.
 
 ### Tests
 
@@ -77,7 +89,12 @@ where that is possible.
   before fetching a toolchain, so a tag on the wrong commit costs
   seconds rather than four published archives.
 
-Unreleased and untested against a real tag; v0.4.1 exercises it.
+Exercised for real by `v0.4.1-rc.1` before this tag: the version guard
+caught a `Cargo.toml` that said `0.4.1-rc.1` when the workflow strips
+the suffix and expects `0.4.1`, and `verify` caught a release that
+published zero of its eight assets because an earlier failed run had
+left a draft holding the tag name. Both are exactly what those two
+guards exist for, and both cost seconds instead of a bad release.
 
 ## [0.4.0] — 2026-08-01
 
